@@ -153,12 +153,14 @@ class JudgmentLayer:
         try:
             raw = await self._provider.chat(messages)
         except Exception as exc:
-            # LLM 不可用时使用确定性回退
+            # LLM 不可用时使用确定性回退；用 repr 保证空 str() 的异常也可见
+            _err = str(exc) or repr(exc)
+            _log.warning("[judgment] LLM 调用失败: %s", _err)
             return self._simulate_safe_output(
                 failure_count=0,
                 signals=judgment_signals,
                 hard_boundaries=hard_boundaries or [],
-                reason=str(exc),
+                reason=_err,
             )
 
         output = JudgmentOutput.from_llm(raw)

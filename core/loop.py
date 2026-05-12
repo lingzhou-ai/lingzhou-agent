@@ -439,9 +439,11 @@ class CognitionLoop:
             self._ticks_since_judge = 0
 
         # 决策结果输出到 stdout
+        _model_tag = f" model={cfg.model} thinking={cfg.thinking}" if cfg.thinking != "off" else f" model={cfg.model}"
         console.print(
             f"[bold cyan][loop][/bold cyan] tick={cycle} "
             f"decision={action.decision} tool={action.chosen_action_id}"
+            f"[dim]{_model_tag}[/dim]"
         )
         _log.info(
             "[loop] tick=%d decision=%s tool=%s rationale=%s",

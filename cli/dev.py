@@ -137,11 +137,76 @@ def model(
             raise typer.Exit(1)
         chosen_provider = ordered[pidx]
 
-        # 如果选了未配置的 provider，提示先 setup
+        # 如果选了未配置的 provider，引导用户补充配置并写入 lingzhou.json
         if chosen_provider not in configured_providers:
-            console.print(f"[yellow]{chosen_provider} 未在配置文件的 providers 中定义。[/yellow]")
-            console.print(f"[dim]请先在 lingzhou.json 的 providers 中添加 {chosen_provider} 的配置，或运行 lingzhou setup。[/dim]")
-            raise typer.Exit(1)
+            _BUILTIN_PROVIDER_DEFAULTS: dict[str, dict] = {
+                "bailian": {
+                    "type": "openai_compat",
+                    "mode": "openai",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    "api_key_env": "DASHSCOPE_API_KEY",
+                },
+                "copilot": {
+                    "type": "openai_compat",
+                    "mode": "copilot",
+                    "base_url": "https://api.individual.githubcopilot.com",
+                    "api_key_env": "GITHUB_TOKEN",
+                },
+            }
+            defaults = _BUILTIN_PROVIDER_DEFAULTS.get(chosen_provider, {
+                "type": "openai_compat",
+                "mode": "openai",
+                "base_url": "",
+                "api_key_env": "OPENAI_API_KEY",
+            })
+
+            new_provider_cfg: dict = {
+                "type": defaults["type"],
+                "mode": defaults["mode"],
+                "base_url": defaults["base_url"],
+                "api_key_env": defaults["api_key_env"],
+            }
+
+            # copilot 走 auth login 的 token exchange 链，不需要手动填 key
+            if chosen_provider == "copilot":
+                from auth_store import get_auth_profile, COPILOT_PROFILE_ID
+                existing_auth = get_auth_profile(COPILOT_PROFILE_ID)
+                if existing_auth and existing_auth.get("token"):
+                    console.print(f"\n[green]✓ 已检测到 Copilot 登录凭证[/green]  [dim](lingzhou auth login 已完成)[/dim]")
+                else:
+                    console.print(f"\n[yellow]Copilot 尚未登录[/yellow]")
+                    console.print(f"  请在切换后运行: [bold]lingzhou auth login[/bold]")
+            else:
+                # 其他 provider 需要手动输入 API key 或环境变量名
+                import re as _re
+                console.print(f"\n[yellow]{chosen_provider} 未在配置中，现在为你补充配置。[/yellow]")
+                api_key_input = typer.prompt(
+                    "  环境变量名或直接粘贴 API key",
+                    default=defaults["api_key_env"],
+                )
+                new_provider_cfg["api_key_env"] = api_key_input
+                # 如果输入的不是 ENV_VAR 格式（直接贴了 key），存 credentials.json
+                if api_key_input and not _re.match(r'^[A-Z_][A-Z0-9_]*$', api_key_input.strip()):
+                    cred_file = Path.home() / ".lingzhou" / "credentials.json"
+                    cred_file.parent.mkdir(parents=True, exist_ok=True)
+                    creds: dict = {}
+                    if cred_file.exists():
+                        try:
+                            creds = _json.loads(cred_file.read_text(encoding="utf-8"))
+                        except Exception:
+                            pass
+                    cred_key = f"{chosen_provider.upper()}_API_KEY"
+                    creds[cred_key] = api_key_input.strip()
+                    cred_file.write_text(_json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
+                    cred_file.chmod(0o600)
+                    new_provider_cfg["api_key_env"] = cred_key
+                    console.print(f"  [dim]key 已安全存入 {cred_file}，配置中使用 {cred_key}[/dim]")
+
+            if "providers" not in cfg_data:
+                cfg_data["providers"] = {}
+            cfg_data["providers"][chosen_provider] = new_provider_cfg
+            configured_providers.append(chosen_provider)
+            console.print(f"[green]✓ {chosen_provider} 已添加到配置[/green]")
 
         # 选模型
         catalog_models = list_provider_models(chosen_provider)
