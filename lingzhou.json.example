@@ -1,0 +1,143 @@
+{
+  "_doc": "所有运行时参数均在此处配置，代码中不应出现任何硬编码的阈值、路径或模型名。",
+
+  "_doc_providers": [
+    "providers 定义各 LLM 接入点（连接配置，与模型无关）。",
+    "支持同时定义多个 provider，通过顶层 model 字段的 'provider-name/model-id' 格式切换。",
+    "api_key 从环境变量读取，绝不写入配置文件。"
+  ],
+  "providers": {
+    "bailian": {
+      "type": "openai_compat",
+      "_doc_base_url": [
+        "百炼标准端点：https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "百炼套餐端点（sk-sp-* 前缀 key）：https://coding.dashscope.aliyuncs.com/v1"
+      ],
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY"
+    },
+    "copilot": {
+      "type": "openai_compat",
+      "mode": "copilot",
+      "_doc": [
+        "GitHub Copilot 模型 API（OpenAI 兼容接口）。",
+        "api_key 使用 GitHub PAT 或 Copilot 邑验 token（GITHUB_TOKEN 环境变量）。",
+        "mode=copilot: thinking 由顶层 thinking 字段周期尾 reasoning_effort 字符串自动注入。"
+      ],
+      "base_url": "https://api.githubcopilot.com",
+      "api_key_env": "GITHUB_TOKEN"
+    }
+  },
+
+  "_doc_model": [
+    "格式：'provider-name/model-id'，如 'bailian/qwen3.6-plus'。",
+    "切换模型只需改此字段；context_window 会从内置目录自动推断，无需手填。",
+    "",
+    "百炼可用模型参考（内置目录已收录，无需填 context_window_tokens）：",
+    "  bailian/qwen3.6-plus       — 1M 超长上下文，深度思考，推荐日常主力",
+    "  bailian/qwen3.5-plus       — 131K 轻量快速，深度思考，高频判断循环",
+    "  bailian/qwen3-max          — 262K 旗舰推理，深度思考，复杂决策",
+    "  bailian/qwen3-coder-plus   — 1M，代码增强，深度思考",
+    "  bailian/qwen-plus          — 131K 经济型，无思考模式",
+    "",
+    "GitHub Copilot 模型（需先配置 copilot provider）：",
+    "  copilot/gpt-5.4            — 131K GPT-5.4 thinking，reasonging_effort 可调",
+    "  copilot/gpt-5.4-mini       — 131K GPT-5.4-mini thinking",
+    "  copilot/gpt-4.5            — 131K 无 thinking，速度快",
+    "  copilot/o3                 — 200K o3 推理模型",
+    "  copilot/o4-mini            — 200K o4-mini 轻量推理",
+    "  copilot/claude-sonnet-4.5  — 200K Claude Sonnet 4.5"
+  ],
+  "model": "bailian/qwen3.6-plus",
+
+  "temperature": 0.7,
+  "timeout": 60.0,
+
+  "_doc_thinking": [
+    "思考深度等级：\"off\" | \"minimal\" | \"low\" | \"medium\" | \"high\"",
+    "provider.mode=openai（百炼/Qwen）→ enable_thinking + budget_tokens（按比例：minimal=5%, low=15%, medium=40%, high=100%）",
+    "provider.mode=copilot → reasoning_effort 字符串 + temperature=1 自动注入",
+    "切换思考深度只需改这一个字段，不需动 provider 配置。"
+  ],
+  "thinking": "off",
+
+  "_doc_context_window_tokens": [
+    "Escape hatch：仅在使用 provider/models.json 未收录的模型时才需要此项。",
+    "内置目录已收录的模型（如 qwen3.6-plus、kimi-k2.5 等）省略此项，系统自动推断。",
+    "示例（使用自建代理且未收录的模型时）：  \"context_window_tokens\": 32768"
+  ],
+
+  "loop": {
+    "interval": 30,
+    "wake_poll_interval": 1.0,
+    "active_sleep_multiplier": 1.0,
+    "idle_sleep_multiplier": 2.0,
+    "wake_on_task_change": true,
+    "db_path": "~/.lingzhou/state/runtime.db",
+    "memory_dir": "~/.lingzhou/memory",
+    "state_dir": "~/.lingzhou/state",
+    "workspace_dir": "~/.lingzhou/workspace",
+    "act": true,
+    "debug": false,
+    "consolidate_every": 10,
+    "evolve_every": 30,
+    "max_consecutive_errors": 5
+  },
+
+  "prompts": {
+    "system": "prompts/system.md",
+    "judgment": "prompts/judgment.md",
+    "evolution": "prompts/evolution.md"
+  },
+
+  "memory": {
+    "working_capacity": 20,
+    "episodic_max_chars": 4000,
+    "semantic_top_k": 5,
+    "failure_limit": 10,
+    "consolidate_threshold": 0.7,
+    "convergence_bonus": 0.15
+  },
+
+  "emotion": {
+    "baseline_valence": 0.6,
+    "baseline_arousal": 0.5,
+    "ema_alpha": 0.15,
+    "mood_valence_high": 0.65,
+    "mood_valence_low": 0.35,
+    "mood_arousal_high": 0.65,
+    "mood_arousal_low": 0.45,
+    "delta_display_min": 0.03
+  },
+
+  "evolution": {
+    "enabled": true,
+    "sandbox_timeout": 10.0,
+    "max_attempts": 3,
+    "backup": true
+  },
+
+  "soul": {
+    "name": "灵洲",
+    "hard_axioms": [
+      "不执行可能永久损害用户数据或系统文件的不可逆操作",
+      "不尝试访问未授权的网络资源或系统账户",
+      "不欺骗或刻意误导用户",
+      "不绕过人类监督机制"
+    ],
+    "ethos_baseline": {
+      "truth": 0.85,
+      "caution": 0.70,
+      "continuity": 0.65,
+      "curiosity": 0.60,
+      "care": 0.55
+    }
+  },
+
+  "thresholds": {
+    "_doc": "内部感知驱动任务的触发阈值，全部可调",
+    "emotion_activation_task": 0.85,
+    "wm_pressure_task": 0.8,
+    "prediction_error_task": 0.7
+  }
+}

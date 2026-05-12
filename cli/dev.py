@@ -1,0 +1,139 @@
+"""cli/dev.py — evolve / tools / model / update 命令（开发者工具）。"""
+from __future__ import annotations
+
+import asyncio
+import json as _json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+
+from cli._common import console, load_cfg, PROJECT_ROOT
+from core.version import __version__, __codename__
+
+
+def evolve(
+    description: Annotated[str, typer.Argument(help="新工具的自然语言描述")],
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+) -> None:
+    """合成并热加载一个新工具（自进化）。"""
+    cfg = load_cfg(config)
+
+    async def _run() -> None:
+        from provider import create_provider
+        from tools.registry import ToolRegistry
+        from core.evolution import EvolutionEngine
+
+        provider = create_provider(cfg)
+        registry = ToolRegistry()
+        engine = EvolutionEngine(cfg, provider, registry)
+        result = await engine.synthesize_tool(description)
+        await provider.close()
+        if result.success:
+            console.print(f"[green]工具 {result.target!r} 已合成[/green]")
+        else:
+            console.print(f"[red]合成失败: {result.reason}[/red]")
+
+    asyncio.run(_run())
+
+
+def tools(
+    search: Annotated[Optional[str], typer.Argument(help="关键词过滤")] = None,
+) -> None:
+    """列出所有已注册的工具（支持关键词过滤）。"""
+    from tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    tools_dir = PROJECT_ROOT / "tools"
+    reg.discover(tools_dir)
+    manifests = reg.list_manifests()
+
+    if search:
+        kw = search.lower()
+        manifests = [
+            m for m in manifests
+            if kw in m.name.lower() or kw in (m.description or "").lower()
+        ]
+
+    if not manifests:
+        console.print("（没有匹配的工具）")
+        return
+
+    console.print(f"[bold]已注册工具[/bold]  ({len(manifests)} 个)\n")
+    for m in sorted(manifests, key=lambda x: x.name):
+        console.print(f"  [cyan]{m.name:<26}[/cyan] {m.description or ''}")
+
+
+def model(
+    set_model: Annotated[Optional[str], typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    list_all: Annotated[bool, typer.Option("--list", "-l", help="列出所有可用模型")] = False,
+) -> None:
+    """查看或切换当前使用的 LLM provider / 模型。"""
+    from provider.catalog import list_providers, list_provider_models
+
+    if list_all:
+        for pname in list_providers():
+            models_list = list_provider_models(pname)
+            console.print(f"\n[bold]{pname}[/bold]")
+            for m in models_list:
+                ctx_k = (m.get("context_window") or 0) // 1000
+                tags = []
+                if m.get("thinking"):
+                    tags.append("thinking")
+                if m.get("reasoning"):
+                    tags.append("reasoning")
+                tag_str = f"  [dim][{', '.join(tags)}][/dim]" if tags else ""
+                ctx_str = f"  [dim]{ctx_k}K[/dim]" if ctx_k else ""
+                console.print(f"  {m['id']}{ctx_str}{tag_str}")
+        return
+
+    if not config.exists():
+        console.print(f"[red]配置文件不存在: {config}，请先运行 lingzhou setup[/red]")
+        raise typer.Exit(1)
+
+    cfg_data = _json.loads(config.read_text(encoding="utf-8"))
+    current = cfg_data.get("model", "(未设置)")
+
+    if not set_model:
+        console.print(f"当前模型: [bold cyan]{current}[/bold cyan]")
+        console.print(f"[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
+        console.print(f"[dim]查看全部: lingzhou model --list[/dim]")
+        return
+
+    cfg_data["model"] = set_model
+    config.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
+    console.print("[dim]重启 lingzhou gateway start 后生效[/dim]")
+
+
+def update() -> None:
+    """更新 lingzhou 到最新版本（git pull + 重新安装依赖）。"""
+    console.print(f"当前版本: [bold]v{__version__}[/bold]  代号: {__codename__}")
+
+    repo_dir = PROJECT_ROOT
+    if not (repo_dir / ".git").exists():
+        console.print("[yellow]当前目录不是 git 工作区，请手动拉取最新代码后重新安装：[/yellow]")
+        console.print("  git pull && uv pip install -e .")
+        raise typer.Exit(1)
+
+    console.print("[dim]执行 git pull...[/dim]")
+    result = subprocess.run(["git", "pull"], cwd=repo_dir, capture_output=True, text=True)
+    if result.returncode != 0:
+        console.print(f"[red]git pull 失败:[/red]\n{result.stderr.strip()}")
+        raise typer.Exit(1)
+    console.print(f"[green]{result.stdout.strip() or 'Already up to date.'}[/green]")
+
+    uv = shutil.which("uv")
+    pip_cmd = [uv, "pip", "install", "-e", "."] if uv else [
+        shutil.which("pip") or "pip", "install", "-e", "."
+    ]
+    console.print(f"[dim]重装依赖: {' '.join(pip_cmd)}[/dim]")
+    result = subprocess.run(pip_cmd, cwd=repo_dir, capture_output=True, text=True)
+    if result.returncode == 0:
+        console.print("[green]✓ 更新完成，重启 lingzhou 生效[/green]")
+    else:
+        console.print(f"[red]依赖安装失败:[/red]\n{result.stderr.strip()}")
+        raise typer.Exit(1)

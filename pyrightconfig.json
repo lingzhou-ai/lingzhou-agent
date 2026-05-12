@@ -1,0 +1,19 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard",
+  "include": [
+    "core",
+    "memory",
+    "provider",
+    "tools",
+    "tests",
+    "cli",
+    "lingzhou.py"
+  ],
+  "exclude": [
+    ".venv",
+    "scripts"
+  ]
+}

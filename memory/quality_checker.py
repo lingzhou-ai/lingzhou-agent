@@ -1,0 +1,145 @@
+"""memory/quality_checker.py — 语义记忆检索质量评估。
+
+三个核心指标：
+1. 相关度：词缮 Jaccard 相似度（向量嵌入可用时可替换为 cosine 相似度）。
+2. 时间衰减：基于 Ebbinghaus 遗忘曲线的时间衰减因子。
+3. 完整度：检索结果对查询关键词的覆盖率。
+"""
+from __future__ import annotations
+
+import math
+import re
+from datetime import datetime, UTC
+from typing import Any
+
+
+def calculate_relevance(query: str, retrieved_text: str) -> float:
+    """计算相关度分（词缮 Jaccard）。
+
+    当前为轻量级 token 交集值；向量嵌入可用时可替换为 cosine 相似度。
+    """
+    if not query.strip() or not retrieved_text.strip():
+        return 0.0
+    
+    q_tokens = set(re.findall(r"\w+", query.lower()))
+    r_tokens = set(re.findall(r"\w+", retrieved_text.lower()))
+    
+    if not q_tokens or not r_tokens:
+        return 0.0
+        
+    intersection = len(q_tokens & r_tokens)
+    union = len(q_tokens | r_tokens)
+    
+    return intersection / union if union > 0 else 0.0
+
+
+def calculate_recency_decay(created_at_iso: str, decay_lambda: float = 0.1) -> float:
+    """基于 Ebbinghaus 遗忘曲线计算时间衰减因子。
+
+    返回 0−1 之间的浮点数，1 = 刚建立，随时间趋近 0。
+    decay_lambda 控制衰减速率（默认 0.1，即约 10 天衰减到 37%）。
+    """
+    try:
+        created = datetime.fromisoformat(created_at_iso)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        
+        now = datetime.now(UTC)
+        days_since = max(0.0, (now - created).total_seconds() / 86400)
+        
+        # 指数衰减：e^(-lambda * t)
+        return math.exp(-decay_lambda * days_since)
+    except Exception:
+        return 0.5  # 时间格式解析失败时返回中性默认值
+
+
+def check_completeness(query: str, retrieved_memories: list[dict[str, Any]]) -> dict[str, Any]:
+    """检查检索结果对查询关键词的覆盖率。
+
+    返回包含覆盖率和未覆盖关键词的字典。
+    """
+    if not query.strip():
+        return {"coverage": 1.0, "missing_keywords": []}
+
+    # 提取查询中的有效关键词（可按需添加停用词过滤）
+    query_keywords = set(re.findall(r"\w+", query.lower()))
+
+    if not query_keywords:
+        return {"coverage": 1.0, "missing_keywords": []}
+
+    # 汇总检索结果中所有 token
+    retrieved_tokens: set[str] = set()
+    for mem in retrieved_memories:
+        text = f"{mem.get('title', '')} {mem.get('body', '')}"
+        retrieved_tokens.update(re.findall(r"\w+", text.lower()))
+
+    # 计算覆盖率
+    covered_keywords = query_keywords & retrieved_tokens
+    missing_keywords = list(query_keywords - covered_keywords)
+
+    coverage_ratio = len(covered_keywords) / len(query_keywords)
+    
+    return {
+        "coverage": coverage_ratio,
+        "missing_keywords": missing_keywords,
+        "total_keywords": len(query_keywords),
+        "covered_count": len(covered_keywords)
+    }
+
+
+def evaluate_retrieval_quality(
+    query: str,
+    retrieved_memories: list[dict[str, Any]],
+    decay_lambda: float = 0.1,
+    *,
+    w_rel: float = 0.5,
+    w_comp: float = 0.3,
+    w_rec: float = 0.2,
+) -> dict[str, Any]:
+    """综合评估检索质量：相关度 + 时间新近度 + 完整度加权合成。
+
+    权重默认值：相关度（w_rel=0.5）> 完整度（w_comp=0.3）> 时间新近度（w_rec=0.2）。
+    三个权重之和应为 1.0；调用方可按需传入自定义权重。
+    """
+    if not retrieved_memories:
+        return {
+            "overall_score": 0.0,
+            "relevance": 0.0,
+            "avg_recency": 0.0,
+            "completeness": 0.0,
+            "details": "无检索结果",
+        }
+        
+    # 1. 相关度（各结果平均）
+    relevances: list[float] = []
+    for mem in retrieved_memories:
+        text = f"{mem.get('title', '')} {mem.get('body', '')}"
+        rel = calculate_relevance(query, text)
+        relevances.append(rel)
+    avg_relevance = sum(relevances) / len(relevances) if relevances else 0.0
+
+    # 2. 时间新近度（衰减因子平均）
+    recencies: list[float] = []
+    for mem in retrieved_memories:
+        created_at = str(mem.get("created_at", ""))
+        if created_at:
+            recencies.append(calculate_recency_decay(created_at, decay_lambda))
+    avg_recency = sum(recencies) / len(recencies) if recencies else 0.0
+
+    # 3. 完整度
+    completeness_data = check_completeness(query, retrieved_memories)
+    completeness_score = float(completeness_data["coverage"])
+
+    # 加权合成：相关度 > 完整度 > 时间新近度
+    overall_score = (w_rel * avg_relevance) + (w_comp * completeness_score) + (w_rec * avg_recency)
+    
+    return {
+        "overall_score": round(overall_score, 4),
+        "metrics": {
+            "relevance": round(avg_relevance, 4),
+            "recency": round(avg_recency, 4),
+            "completeness": round(completeness_score, 4)
+        },
+        "completeness_details": completeness_data,
+        "result_count": len(retrieved_memories)
+    }

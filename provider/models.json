@@ -1,0 +1,130 @@
+{
+  "_doc": "内置模型目录。context_window 用于推导 judgment 输入预算；max_tokens 是输出上限（provider 侧约束，代码不发送 max_tokens 参数）。用户可通过 lingzhou.json 的 context_window_tokens 字段覆盖此处的值。",
+
+  "bailian": {
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "sp_base_url": "https://coding.dashscope.aliyuncs.com/v1",
+    "models": [
+      {
+        "id": "qwen3.6-plus",
+        "context_window": 1000000,
+        "max_tokens": 65536,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+      },
+      {
+        "id": "qwen3.5-plus",
+        "context_window": 131072,
+        "max_tokens": 8192,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 4096 }
+      },
+      {
+        "id": "qwen3-max",
+        "context_window": 262144,
+        "max_tokens": 65536,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+      },
+      {
+        "id": "qwen3-max-2026-01-23",
+        "context_window": 262144,
+        "max_tokens": 65536,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+      },
+      {
+        "id": "qwen3-coder-plus",
+        "context_window": 1000000,
+        "max_tokens": 65536,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+      },
+      {
+        "id": "qwen3-coder-next",
+        "context_window": 262144,
+        "max_tokens": 65536,
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+      },
+      {
+        "id": "qwen-plus",
+        "context_window": 131072,
+        "max_tokens": 8192
+      },
+      {
+        "id": "qwen-max",
+        "context_window": 32768,
+        "max_tokens": 8192
+      },
+      {
+        "id": "qwen-long",
+        "context_window": 1000000,
+        "max_tokens": 6000
+      },
+      {
+        "id": "glm-5",
+        "context_window": 131072,
+        "max_tokens": 16384,
+        "thinking": { "supported": true }
+      },
+      {
+        "id": "glm-4.7",
+        "context_window": 202752,
+        "max_tokens": 16384,
+        "thinking": { "supported": true }
+      },
+      {
+        "id": "kimi-k2.5",
+        "context_window": 262144,
+        "max_tokens": 65536
+      },
+      {
+        "id": "MiniMax-M2.5",
+        "context_window": 1000000,
+        "max_tokens": 65536
+      }
+    ]
+  },
+
+  "copilot": {
+    "base_url": "https://api.githubcopilot.com",
+    "_doc": [
+      "copilot 模型的 thinking 通过 reasoning_effort 字符串控制（low/medium/high），",
+      "不使用 Qwen 的 enable_thinking/budget_tokens 体系。",
+      "reasoning_effort 须通过 lingzhou.json providers.copilot.extra_body 传入，",
+      "代码层面通过 extra_body 合并到 payload，无需在此记录为 thinking spec。",
+      "reasoning=true 仅作元数据标记（展示/路由用），不影响 payload 构造。"
+    ],
+    "models": [
+      {
+        "id": "gpt-5.4",
+        "context_window": 400000,
+        "max_tokens": 65536,
+        "reasoning": true
+      },
+      {
+        "id": "gpt-5.4-mini",
+        "context_window": 400000,
+        "max_tokens": 65536,
+        "reasoning": true
+      },
+      {
+        "id": "gpt-4.5",
+        "context_window": 131072,
+        "max_tokens": 16384
+      },
+      {
+        "id": "claude-sonnet-4.5",
+        "context_window": 200000,
+        "max_tokens": 16384
+      },
+      {
+        "id": "o3",
+        "context_window": 200000,
+        "max_tokens": 100000,
+        "reasoning": true
+      },
+      {
+        "id": "o4-mini",
+        "context_window": 200000,
+        "max_tokens": 100000,
+        "reasoning": true
+      }
+    ]
+  }
+}
