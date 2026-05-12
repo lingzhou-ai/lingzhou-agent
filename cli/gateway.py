@@ -4,6 +4,9 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import os
+import signal
+import sys
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -13,6 +16,31 @@ from typing import Annotated, Any, Optional
 import typer
 
 from cli._common import console, load_cfg
+
+_PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
+
+
+def _daemonize(argv: list[str]) -> None:
+    """fork 子进程后台运行，父进程立即退出。"""
+    # 去掉 --daemon / -d 标志，避免子进程再次 fork
+    clean_argv = [a for a in argv if a not in ("--daemon", "-d")]
+    pid = os.fork()
+    if pid > 0:
+        # 父进程：打印 PID 后退出
+        console.print(f"[green]✓ 已后台启动[/green]  PID={pid}  日志: ~/.lingzhou/logs/")
+        console.print(f"  停止: [bold]lingzhou stop[/bold]")
+        raise typer.Exit(0)
+    # 子进程：脱离终端
+    os.setsid()
+    # 关闭 stdin/stdout/stderr，重定向到 /dev/null
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    os.close(devnull)
+    # 写 PID
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+
 
 # channel名称 → (描述, 是否需要 setup 配置)
 _GATEWAY_CHANNELS: dict[str, tuple[str, bool]] = {
@@ -26,7 +54,7 @@ _GATEWAY_CHANNELS: dict[str, tuple[str, bool]] = {
 # 已实现的渠道
 _GATEWAY_READY = {"local", "webhook"}
 
-gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True)
+gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 
 
 @gateway_app.command("channels")
@@ -103,6 +131,7 @@ def gateway_start(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+    daemon: Annotated[bool, typer.Option("--daemon", "-d", help="后台运行（daemonize）")] = False,
 ) -> None:
     """启动认知循环 + 消息渠道（loop 是内核，channel 是 I/O 层）。
 
@@ -117,6 +146,10 @@ def gateway_start(
     if channel not in _GATEWAY_READY:
         console.print(f"[yellow]{channel} 渠道尚在开发中。当前可用: {', '.join(_GATEWAY_READY)}[/yellow]")
         raise typer.Exit(1)
+
+    if daemon and hasattr(os, "fork"):
+        _daemonize(sys.argv)
+        # 子进程从这里继续执行（父进程已退出）
 
     # 非 local 渠道需要提前 setup
     gw_conf: dict[str, Any] = {}
@@ -166,9 +199,30 @@ def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+    daemon: Annotated[bool, typer.Option("--daemon", "-d", help="后台运行（daemonize）")] = False,
 ) -> None:
     """启动认知循环（等同于 gateway start --channel local）。"""
-    gateway_start(channel="local", config=config, debug=debug, dry_run=dry_run)
+    gateway_start(channel="local", config=config, debug=debug, dry_run=dry_run, daemon=daemon)
+
+
+def stop() -> None:
+    """停止后台运行的认知循环。"""
+    if not _PID_FILE.exists():
+        console.print("[yellow]未找到运行中的 lingzhou 进程（~/.lingzhou/lingzhou.pid 不存在）[/yellow]")
+        raise typer.Exit(1)
+    pid_str = _PID_FILE.read_text(encoding="utf-8").strip()
+    try:
+        pid = int(pid_str)
+        os.kill(pid, signal.SIGTERM)
+        _PID_FILE.unlink(missing_ok=True)
+        console.print(f"[green]✓ 已发送停止信号[/green]  PID={pid}")
+    except ProcessLookupError:
+        console.print(f"[yellow]进程 {pid_str} 已不存在，清理 PID 文件[/yellow]")
+        _PID_FILE.unlink(missing_ok=True)
+        raise typer.Exit(1)
+    except ValueError:
+        console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
+        raise typer.Exit(1)
 
 
 def _start_webhook_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:

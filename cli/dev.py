@@ -70,6 +70,7 @@ def model(
     set_model: Annotated[Optional[str], typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
     list_all: Annotated[bool, typer.Option("--list", "-l", help="列出所有可用模型")] = False,
+    interactive: Annotated[bool, typer.Option("--interactive", "-i", help="交互式选择 provider 和模型")] = False,
 ) -> None:
     """查看或切换当前使用的 LLM provider / 模型。"""
     from provider.catalog import list_providers, list_provider_models
@@ -90,23 +91,92 @@ def model(
                 console.print(f"  {m['id']}{ctx_str}{tag_str}")
         return
 
-    if not config.exists():
+    cfg_path = config if config.exists() else None
+    # 尝试在搜索路径中找到配置
+    if cfg_path is None:
+        from cli._common import find_config
+        try:
+            cfg_path = find_config(config)
+        except SystemExit:
+            cfg_path = None
+
+    if cfg_path is None or not cfg_path.exists():
         console.print(f"[red]配置文件不存在: {config}，请先运行 lingzhou setup[/red]")
         raise typer.Exit(1)
 
-    cfg_data = _json.loads(config.read_text(encoding="utf-8"))
+    cfg_data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     current = cfg_data.get("model", "(未设置)")
 
-    if not set_model:
+    # ── 交互式选择 ─────────────────────────────────────────────────────────
+    if interactive or (not set_model):
         console.print(f"当前模型: [bold cyan]{current}[/bold cyan]")
-        console.print(f"[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
-        console.print(f"[dim]查看全部: lingzhou model --list[/dim]")
-        return
+        if not interactive:
+            console.print(f"[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
+            console.print(f"[dim]交互切换: lingzhou model -i[/dim]")
+            console.print(f"[dim]查看全部: lingzhou model --list[/dim]")
+            return
 
+        # 交互式：先选 provider
+        configured_providers = list(cfg_data.get("providers", {}).keys())
+        all_catalog = list_providers()
+        # 配置了的 provider 排在前面
+        ordered = configured_providers + [p for p in all_catalog if p not in configured_providers]
+
+        console.print("\n[bold]选择 provider[/bold]")
+        for i, p in enumerate(ordered, 1):
+            mark = "[green]✓[/green]" if p in configured_providers else "[dim]  [/dim]"
+            console.print(f"  {i}. {mark} {p}")
+
+        raw_p = typer.prompt("Provider 编号", default="1")
+        try:
+            pidx = int(raw_p.strip()) - 1
+        except ValueError:
+            pidx = 0
+        if not (0 <= pidx < len(ordered)):
+            console.print("[red]无效编号[/red]")
+            raise typer.Exit(1)
+        chosen_provider = ordered[pidx]
+
+        # 如果选了未配置的 provider，提示先 setup
+        if chosen_provider not in configured_providers:
+            console.print(f"[yellow]{chosen_provider} 未在配置文件的 providers 中定义。[/yellow]")
+            console.print(f"[dim]请先在 lingzhou.json 的 providers 中添加 {chosen_provider} 的配置，或运行 lingzhou setup。[/dim]")
+            raise typer.Exit(1)
+
+        # 选模型
+        catalog_models = list_provider_models(chosen_provider)
+        console.print(f"\n[bold]选择模型[/bold]  [dim](provider={chosen_provider})[/dim]")
+        if catalog_models:
+            for i, m in enumerate(catalog_models, 1):
+                ctx_k = (m.get("context_window") or 0) // 1000
+                tags = []
+                if m.get("thinking"):
+                    tags.append("thinking")
+                if m.get("reasoning"):
+                    tags.append("reasoning")
+                ctx_str = f"  [dim]{ctx_k}K[/dim]" if ctx_k else ""
+                tag_str = f"  [dim][{', '.join(tags)}][/dim]" if tags else ""
+                console.print(f"  {i}. {m['id']}{ctx_str}{tag_str}")
+            console.print(f"  {len(catalog_models)+1}. 手动输入")
+            raw_m = typer.prompt("  模型编号", default="1")
+            try:
+                midx = int(raw_m.strip()) - 1
+            except ValueError:
+                midx = -1
+            if 0 <= midx < len(catalog_models):
+                chosen_model_id = catalog_models[midx]["id"]
+            else:
+                chosen_model_id = typer.prompt("  手动输入模型 ID")
+        else:
+            chosen_model_id = typer.prompt(f"  {chosen_provider} 模型 ID")
+
+        set_model = f"{chosen_provider}/{chosen_model_id}"
+
+    # ── 写入配置 ───────────────────────────────────────────────────────────
     cfg_data["model"] = set_model
-    config.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    cfg_path.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
     console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
-    console.print("[dim]重启 lingzhou gateway start 后生效[/dim]")
+    console.print("[dim]lingzhou 运行中时将在下一轮自动生效（配置热重载）[/dim]")
 
 
 def update() -> None:

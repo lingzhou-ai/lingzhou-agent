@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import typer
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -13,6 +14,37 @@ if TYPE_CHECKING:
 PROJECT_ROOT: Path = Path(__file__).parent.parent
 
 console = Console()
+
+# 全局配置文件搜索顺序（当 --config 指向的路径不存在时依次尝试）
+_CONFIG_SEARCH_PATHS: list[Path] = [
+    Path("lingzhou.json"),
+    Path.home() / ".lingzhou" / "lingzhou.json",
+    Path.home() / ".config" / "lingzhou" / "lingzhou.json",
+]
+
+
+def find_config(hint: Path) -> Path:
+    """返回可用的配置文件路径；若 hint 存在则直接使用，否则按预设顺序搜索。
+    若均不存在，自动启动 setup 向导，向导完成后返回生成的路径。
+    """
+    if hint.exists():
+        return hint
+    for candidate in _CONFIG_SEARCH_PATHS:
+        if candidate.exists():
+            return candidate
+    # 未找到配置 — 自动引导 setup
+    console.print("[yellow]未找到 lingzhou.json，自动启动初始化向导…[/yellow]\n")
+    from cli.soul import setup as _setup
+    _setup()
+    # setup 默认写到 ./lingzhou.json
+    default_out = Path("lingzhou.json")
+    if default_out.exists():
+        return default_out
+    # 兜底：再搜一遍
+    for candidate in _CONFIG_SEARCH_PATHS:
+        if candidate.exists():
+            return candidate
+    raise typer.Exit(1)
 
 
 def resolve_config_path(config: Path) -> Path:
@@ -35,4 +67,4 @@ def resolve_config_path(config: Path) -> Path:
 
 def load_cfg(config: Path) -> "Config":
     from core.config import Config
-    return Config.load(resolve_config_path(config))
+    return Config.load(find_config(config))

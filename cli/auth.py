@@ -23,7 +23,7 @@ from auth_store import (
     set_token_profile,
 )
 
-auth_app = typer.Typer(name="auth", help="凭证授权管理")
+auth_app = typer.Typer(name="auth", help="凭证授权管理", context_settings={"help_option_names": ["-h", "--help"]})
 
 
 def _load_copilot_client_id(config: Path) -> str:

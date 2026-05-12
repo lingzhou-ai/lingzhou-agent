@@ -131,6 +131,10 @@ class CognitionLoop:
         self._last_heartbeat_at: float = 0.0
         # 按请求计费聚合：追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
+        # 配置文件热重载：记录初始 mtime，每轮 sleep 后检查
+        _cfg_file = cfg._base_dir / "lingzhou.json"
+        self._cfg_file: Path = _cfg_file
+        self._cfg_mtime: float = _cfg_file.stat().st_mtime if _cfg_file.exists() else 0.0
 
     @property
     def semantic(self) -> SemanticMemory:
@@ -139,6 +143,36 @@ class CognitionLoop:
     @property
     def episodic(self) -> EpisodicMemory:
         return self._episodic
+
+    async def _maybe_hot_reload_provider(self) -> None:
+        """检测 lingzhou.json mtime；若已改变则热换 provider 和相关组件。"""
+        if not self._cfg_file.exists():
+            return
+        mtime = self._cfg_file.stat().st_mtime
+        if mtime <= self._cfg_mtime:
+            return
+        self._cfg_mtime = mtime
+        try:
+            new_cfg = Config.load(self._cfg_file)
+        except Exception as e:
+            _log.warning("[hot-reload] 配置解析失败，跳过热换: %s", e)
+            return
+        old_model = self._cfg.model
+        new_model = new_cfg.model
+        if old_model == new_model:
+            # 其他配置变更；静默更新 cfg 引用
+            self._cfg = new_cfg
+            return
+        _log.info("[hot-reload] 检测到模型变更: %s → %s，开始热换 provider", old_model, new_model)
+        try:
+            await self._provider.close()
+        except Exception:
+            pass
+        self._cfg = new_cfg
+        self._provider = create_provider(new_cfg)
+        self._judgment = JudgmentLayer(self._provider, self._registry, new_cfg)
+        self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
+        console.print(f"[green]✓ 模型热换完成:[/green] {old_model} → [bold cyan]{new_model}[/bold cyan]")
 
     def _make_ctx(self) -> ToolContext:
         return ToolContext(
@@ -219,6 +253,9 @@ class CognitionLoop:
                         if now_sig != before_sig:
                             _log.info("[wake] task state changed: %s -> %s", before_sig, now_sig)
                             break
+                # sleep 结束后检测配置变更（模型热换）
+                await self._maybe_hot_reload_provider()
+                cfg = self._cfg  # 可能已更新
         finally:
             await self._task_store.close()
             await self._provider.close()

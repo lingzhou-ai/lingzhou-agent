@@ -27,7 +27,7 @@ from cli.dev import evolve, tools, model, update
 from cli.diag import version, doctor
 from cli.auth import auth_app
 from cli.config import config_app
-from cli.gateway import gateway_app, gateway_start, run
+from cli.gateway import gateway_app, gateway_start, run, stop
 
 
 def _version_callback(value: bool) -> None:
@@ -41,6 +41,7 @@ app = typer.Typer(
     help="自编程自进化认知 agent 种子",
     no_args_is_help=False,
     invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 
@@ -77,6 +78,14 @@ app.command()(update)
 app.command()(version)
 app.command()(doctor)
 app.command()(run)
+app.command()(stop)
+
+
+@app.command(name="help", hidden=True)
+def _help(ctx: typer.Context) -> None:
+    """显示帮助信息（等同于 --help）。"""
+    import subprocess, sys
+    subprocess.run([sys.argv[0], "--help"])
 
 
 if __name__ == "__main__":

@@ -82,9 +82,14 @@ def setup(
         default_api_key_env = typer.prompt("  api_key_env 环境变量名", default="OPENAI_API_KEY")
 
     # ── 2. API Key env var ────────────────────────────────────────────
+    import re as _re
     console.print("\n[bold]步骤 2 / 5 — API Key 环境变量[/bold]")
-    console.print(f"  [dim]API key 将从此环境变量读取，[bold]不会写入配置文件[/bold][/dim]")
-    api_key_env = typer.prompt("  环境变量名", default=default_api_key_env)
+    console.print(f"  [dim]填写存放 API key 的 [bold]环境变量名[/bold]（如 DASHSCOPE_API_KEY），")
+    console.print(f"  [dim]也可直接粘贴 API key，将安全存储到配置文件。[/dim]")
+    api_key_env = typer.prompt("  环境变量名或 API key", default=default_api_key_env)
+    # 如果用户输入了实际的 key（不符合 ENV_VAR 命名规则），保留原值；setup 向导就当 literal key 处理
+    if api_key_env and not _re.match(r'^[A-Z_][A-Z0-9_]*$', api_key_env.strip()):
+        console.print("  [dim]检测到直接输入的 key，将写入配置文件（仅本机使用）。[/dim]")
 
     # ── 3. 选择模型 ─────────────────────────────────────────────────
     console.print("\n[bold]步骤 3 / 5 — 选择模型[/bold]")

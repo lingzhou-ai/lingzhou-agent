@@ -39,6 +39,10 @@ class ProviderDefinition(BaseModel):
 
     @property
     def api_key(self) -> str:
+        import re as _re
+        # 若 api_key_env 不符合环境变量命名规则（如直接填入了 key 值），当作 literal key
+        if self.api_key_env and not _re.match(r'^[A-Z_][A-Z0-9_]*$', self.api_key_env):
+            return self.api_key_env
         # 1. 优先读环境变量
         key = os.environ.get(self.api_key_env, "").strip()
         if key:
@@ -63,7 +67,7 @@ class ProviderDefinition(BaseModel):
             )
 
         raise EnvironmentError(
-            f"未找到 {self.api_key_env!r} 的凭证。\n"
+            f"未找到环境变量 {self.api_key_env!r}。\n"
             f"请执行以下任一操作：\n"
             f"  export {self.api_key_env}=your_token"
         )
@@ -361,12 +365,21 @@ class Config(BaseModel):
         return budget
 
     def load_prompt(self, key: str) -> str:
-        """按 key（对应 PromptsConfig 字段名）加载提示词文件内容。"""
+        """按 key（对应 PromptsConfig 字段名）加载提示词文件内容。
+        搜索顺序：
+        1. config.prompts.<key> 指定的路径（相对于 lingzhou.json 所在目录）
+        2. 包内置 prompts/<key>.md（lingzhou.py 同级目录）
+        """
         raw_path = getattr(self.prompts, key)
         path = self.resolve(raw_path)
-        if not path.exists():
-            raise FileNotFoundError(
-                f"提示词文件不存在: {path}\n"
-                f"（config.prompts.{key} = {raw_path!r}）"
-            )
-        return path.read_text(encoding="utf-8")
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        # 回退：包内置 prompt（core/ 的上级目录下的 prompts/）
+        builtin = Path(__file__).parent.parent / "prompts" / f"{key}.md"
+        if builtin.exists():
+            return builtin.read_text(encoding="utf-8")
+        raise FileNotFoundError(
+            f"提示词文件不存在: {path}\n"
+            f"也未找到内置回退: {builtin}\n"
+            f"（config.prompts.{key} = {raw_path!r}）"
+        )
