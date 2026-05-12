@@ -307,9 +307,9 @@ class CognitionLoop:
             before_task.id if before_task else None,
             before_task.status if before_task else None,
         )
-        deadline = asyncio.get_event_loop().time() + max_wait
+        deadline = asyncio.get_running_loop().time() + max_wait
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             await asyncio.sleep(min(poll, remaining))

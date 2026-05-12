@@ -71,11 +71,14 @@
   ],
 
   "loop": {
-    "interval": 30,
-    "wake_poll_interval": 1.0,
-    "active_sleep_multiplier": 1.0,
-    "idle_sleep_multiplier": 2.0,
+    "_comment": "事件驱动时序：认知唤醒由事件/预测误差驱动，而非固定时钟节拍（Active Inference）",
+    "min_act_gap": 2.0,
+    "max_idle_gap": 60,
+    "wake_poll_interval": 0.5,
     "wake_on_task_change": true,
+    "chat_reply_timeout": 300,
+    "chat_thinking": "low",
+    "autonomous_thinking": "medium",
     "db_path": "~/.lingzhou/state/runtime.db",
     "memory_dir": "~/.lingzhou/memory",
     "state_dir": "~/.lingzhou/state",
