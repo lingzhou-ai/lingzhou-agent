@@ -185,6 +185,42 @@ def gateway_stop() -> None:
         console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
 
 
+@gateway_app.command("status")
+def gateway_status() -> None:
+    """查看认知循环运行状态。"""
+    import time as _t
+
+    if not _PID_FILE.exists():
+        console.print("[yellow]● 未运行[/yellow]  (PID 文件不存在)")
+        raise typer.Exit(1)
+
+    pid_str = _PID_FILE.read_text(encoding="utf-8").strip()
+    try:
+        pid = int(pid_str)
+        os.kill(pid, 0)  # 仅探测进程是否存在，不发送真实信号
+    except ProcessLookupError:
+        console.print(f"[yellow]● 进程已退出[/yellow]  PID={pid_str}（PID 文件残留，可运行 lingzhou gateway stop 清理）")
+        raise typer.Exit(1)
+    except ValueError:
+        console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
+        raise typer.Exit(1)
+
+    # 用 PID 文件 mtime 估算运行时长
+    try:
+        mtime = _PID_FILE.stat().st_mtime
+        uptime_s = int(_t.time() - mtime)
+        h, rem = divmod(uptime_s, 3600)
+        m, s = divmod(rem, 60)
+        uptime_str = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+    except OSError:
+        uptime_str = "未知"
+
+    console.print(f"[green]● 运行中[/green]  PID={pid}  已运行 {uptime_str}")
+    console.print(f"  日志: [dim]~/.lingzhou/logs/[/dim]")
+    console.print(f"  停止: [dim]lingzhou gateway stop[/dim]")
+    console.print(f"  重启: [dim]lingzhou gateway restart[/dim]")
+
+
 @gateway_app.command("restart")
 def gateway_restart(
     channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",

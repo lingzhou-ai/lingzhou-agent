@@ -95,9 +95,13 @@ class JudgmentOutput:
     @classmethod
     def from_llm(cls, text: str) -> "JudgmentOutput":
         """从 LLM 输出文本解析 JudgmentOutput，容错处理。"""
-        text = text.strip()
+        original = text.strip()
+        text = original
         # 防御：剥离 <think>...</think> 块（provider 层已处理，此处兜底）
         text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+        # 裸代码检测：LLM 直接输出 bash/python 脚本时提前标记
+        _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
+        _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
         # 提取 JSON 块（支持 ```json ... ``` 或裸 JSON）
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
         if match:
@@ -111,6 +115,18 @@ class JudgmentOutput:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
+            # 裸代码兜底：将代码内容封装到 reply_to_user，不丢失产出
+            if _is_raw_code:
+                return cls(
+                    decision="pause",
+                    chosen_action_id="",
+                    params={},
+                    rationale="[auto-wrap] LLM 输出了裸代码，已封装为 reply_to_user",
+                    reflection="格式错误：代码应放入 reply_to_user 或 params 字段，不能直接输出",
+                    reply_to_user=original,
+                    next_step="",
+                    model_strategy={},
+                )
             return cls.wait(reason=f"LLM 输出解析失败: {text[:100]}")
 
         return cls(
@@ -729,9 +745,10 @@ class JudgmentLayer:
                 role="system",
                 content=(
                     "你是一个严格的 JSON 修复器。"
-                    "只输出合法 JSON，不要解释，不要使用 markdown。"
+                    "只输出合法 JSON，不要解释，不要使用 markdown 代码块。"
                     "必须遵循这个 schema: {decision, chosen_action_id, params, rationale, reflection, reply_to_user, next_step, model_strategy}."
                     "如果原输出被截断，请根据上下文重新生成一个完整、简短的 JSON。"
+                    "如果 broken_output 是裸代码（bash/python 脚本等），将代码原文放入 reply_to_user 字段，decision 设为 pause，rationale 说明代码已封装。"
                 ),
             ),
             Message(
@@ -740,7 +757,7 @@ class JudgmentLayer:
                     "下面是原始判断上下文和一段损坏/截断的模型输出，请修复为合法 JSON。\n\n"
                     f"[context]\n{context_text}\n\n"
                     f"[broken_output]\n{raw[:4000]}\n\n"
-                    "只返回 JSON。"
+                    "只返回 JSON，不要用 markdown 代码块包裹。"
                 ),
             ),
         ]
