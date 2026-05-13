@@ -168,8 +168,12 @@ async def _interactive(
                 for m in new_msgs:
                     cur_last_id = m["id"]
                     if m["role"] == "assistant":
-                        # \n 前缀避免打断用户正在输入的行；print 后用户继续输入即可
+                        # \n 前缀避免打断用户正在输入的行
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
+                        # 回复打印后重补 [你] 提示符，使用户知道可以继续输入
+                        import sys as _sys
+                        _sys.stdout.write("[你] ")
+                        _sys.stdout.flush()
         except asyncio.CancelledError:
             pass
 
