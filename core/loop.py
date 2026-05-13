@@ -248,10 +248,28 @@ class CognitionLoop:
         await self._soul.bootstrap(self._judgment)
         await self._restore_state_from_db()
 
+        # 路由摘要：展示各 tier 实际使用的 model（方便排查 provider 缺失问题）
+        _routing_lines: list[str] = []
+        for _tier, _model_ref in cfg.routing.items():
+            if _model_ref == cfg.model:
+                _routing_lines.append(f"  {_tier}: {_model_ref} (= main, no separate provider)")
+            elif _tier in self._routing_providers:
+                _routing_lines.append(f"  {_tier}: {_model_ref} ✓")
+            else:
+                _routing_lines.append(f"  {_tier}: {_model_ref} ✗ MISSING — provider 创建失败，实际回退至 {cfg.model}")
+        if cfg.routing and not self._routing_providers:
+            _log.warning(
+                "[routing] 所有 routing provider 均创建失败，整个 routing 降级为单模型 %s。"
+                "请检查各 provider 的 API key 环境变量是否已设置。",
+                cfg.model,
+            )
+        _routing_summary = "\n".join(_routing_lines) if _routing_lines else "  (无路由配置，全部使用主模型)"
+
         console.print(Panel(
             f"[bold green]lingzhou[/bold green] 启动\n"
             f"provider={cfg.model}  idle_gap={cfg.loop.max_idle_gap}s  "
-            f"act={'yes' if cfg.loop.act else 'dry-run'}",
+            f"act={'yes' if cfg.loop.act else 'dry-run'}\n"
+            f"routing:\n{_routing_summary}",
             title="🌱 认知循环"
         ))
 
