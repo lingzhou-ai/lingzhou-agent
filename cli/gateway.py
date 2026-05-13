@@ -165,6 +165,38 @@ def gateway_setup(
     console.print(f"\n  启动: [bold]lingzhou gateway start --channel {channel}[/bold]")
 
 
+@gateway_app.command("stop")
+def gateway_stop() -> None:
+    """停止后台运行的认知循环。"""
+    if not _PID_FILE.exists():
+        console.print("[yellow]未找到运行中的 lingzhou 进程（~/.lingzhou/lingzhou.pid 不存在）[/yellow]")
+        raise typer.Exit(1)
+    pid_str = _PID_FILE.read_text(encoding="utf-8").strip()
+    try:
+        pid = int(pid_str)
+        os.kill(pid, signal.SIGTERM)
+        _PID_FILE.unlink(missing_ok=True)
+        console.print(f"[green]✓ 已发送停止信号[/green]  PID={pid}")
+    except ProcessLookupError:
+        console.print(f"[yellow]进程 {pid_str} 已不存在，清理 PID 文件[/yellow]")
+        _PID_FILE.unlink(missing_ok=True)
+        raise typer.Exit(1)
+    except ValueError:
+        console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
+
+
+@gateway_app.command("restart")
+def gateway_restart(
+    channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
+    dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+) -> None:
+    """重启认知循环（stop + start）。"""
+    _kill_existing_loop(quiet=False)
+    gateway_start(channel=channel, config=config, debug=debug, dry_run=dry_run, daemon=True)
+
+
 @gateway_app.command("start")
 def gateway_start(
     channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
