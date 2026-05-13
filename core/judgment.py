@@ -238,7 +238,7 @@ class JudgmentLayer:
         code = self._classify_error_code(err_text)
         health = self._get_health(model_ref)
         health.failure_streak += 1
-        health.last_error = err_text[:240]
+        health.last_error = err_text  # 保留完整错误信息，不截断
         health.last_code = code
         health.cooldown_until = time.time() + self._cooldown_seconds(code, health.failure_streak)
         self._provider_errors[model_ref] = health.last_error
@@ -584,7 +584,7 @@ class JudgmentLayer:
             if repaired is not None:
                 output = repaired
             else:
-                await task_store.record_failure("judgment_parse", output.rationale[:200])
+                await task_store.record_failure("judgment_parse", output.rationale)  # 保留完整信息，不截断
 
         if output.decision not in ("act", "pause", "wait"):
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
@@ -857,7 +857,7 @@ class JudgmentLayer:
             "emotion_arousal": f"{emotion.arousal:.2f}",
             "emotion_dominant": emotion.dominant or "（未确定）",
             "emotion_regulation": f"{emotion.regulation.strategy}（{emotion.regulation.reason}）" if emotion.regulation.reason else emotion.regulation.strategy,
-            "wm_section": _fmt_wm(_wm_items),
+            "wm_section": _fmt_wm(_wm_items, wm_count=len(wm), wm_capacity=wm._capacity),
             "failures_section": _fmt_failures(failures),
             "episodic_section": episodic_text or "（暂无情节记忆）",
             "entity_section": entity_section,
@@ -932,15 +932,16 @@ def _fmt_current_time() -> str:
     return f"当前时间: {local_iso}\n参考 UTC: {utc_str}"
 
 
-def _fmt_wm(items: list[dict[str, Any]]) -> str:
+def _fmt_wm(items: list[dict[str, Any]], wm_count: int = 0, wm_capacity: int = 20) -> str:
+    header = f"[{wm_count}/{wm_capacity}，{wm_count / wm_capacity:.0%}]"
     if not items:
-        return "（工作记忆为空）"
+        return f"{header} （工作记忆为空）"
     # 反循环感知条目（self_awareness / heartbeat 中的循环警告）强制置顶，
     # 避免被正常工具结果条目淹没（Hermes 借鉴：高优先级信号不受顺序影响）
     anti_loop = [i for i in items if i.get("kind") == "self_awareness"]
     rest = [i for i in items if i.get("kind") != "self_awareness"]
     ordered = anti_loop + rest
-    lines = [f"- [{i['kind']}] {i['content']}" for i in ordered]
+    lines = [header] + [f"- [{i['kind']}] {i['content']}" for i in ordered]
     return "\n".join(lines)
 
 

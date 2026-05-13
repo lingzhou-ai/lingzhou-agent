@@ -407,8 +407,8 @@ class CognitiveSignals:
             )
         if self.wm_pressure_alert:
             lines.append(
-                f"⚠️ 工作记忆压力偏高（{self.wm_pressure:.0%}）："
-                "请先调用 memory.snapshot（快照并清空 WM），"
+                f"⚠️ 工作记忆压力偏高（{self.wm_pressure:.0%}）"
+                "  请先调用 memory.snapshot（快照并清空 WM），"
                 "再视情况用 reflect.structural 提炼洞察"
             )
         if self.prediction_error_alert:
