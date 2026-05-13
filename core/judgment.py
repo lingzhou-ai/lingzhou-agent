@@ -39,7 +39,7 @@ _REASONER_TOOLS = frozenset({
     "shell.run",
     "file.write",
     "task.add", "task.update", "task.advance", "task.complete", "task.fail",
-    "memory.add_wm", "memory.add_semantic", "memory.set_fact",
+    "memory.add_wm", "memory.add_semantic", "memory.set_fact", "memory.snapshot",
     "reflect.structural",
     "schedule.add",
 })
