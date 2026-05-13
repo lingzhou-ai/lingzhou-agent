@@ -13,6 +13,10 @@ from typing import Annotated, Optional  # noqa: F401
 
 import typer
 from rich.panel import Panel
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memory.task_store import TaskStore
 
 from cli._common import console, load_cfg
 

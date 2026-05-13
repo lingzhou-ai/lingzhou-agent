@@ -863,38 +863,38 @@ class CognitionLoop:
                     self._emotion.valence + min(max(_delta, -0.05), 0.05), 4
                 )
 
-        # 7b. 事件结晶：每 N 轮 reflection → kind="event" 节点（Park et al. 2023 重要性模型）
-        #     零额外 LLM call：直接从 LLM 产出的 reflection 蒸馏，积累当天对话摘要
-        if action.reflection and active_task:
-            _turns_key = f"chat:{active_task.id}:turns"
-            _turns_val, _ = await self._task_store.get_fact(_turns_key)
-            _turns = int(_turns_val or "0") + 1
-            await self._task_store.set_fact(_turns_key, str(_turns), scope="system")
-            _crystallize_every = self._cfg.memory.chat_crystallize_every
-            if _turns % _crystallize_every == 0:
-                _ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
-                _evt_id = f"event-task{active_task.id}-{_ts_label}"
-                _existing = self._semantic.get(_evt_id)
-                if _existing:
-                    # 同一天：追加 reflection，保持最近 600 字
-                    _existing.body = (_existing.body + f"\n— {_clean_reflection[:_EVENT_APPEND_CHARS]}")[- _EVENT_BODY_MAX_CHARS:]
-                    _existing.activation = min(1.0, _existing.activation + 0.05)
-                    self._semantic.upsert(_existing)
-                else:
-                    _source = getattr(active_task, "source", "") or ""
-                    _chat_id = _source[5:] if _source.startswith("chat:") else _source
-                    _tags = ["event", _ts_label]
-                    if _chat_id:
-                        _tags.append(_chat_id)
-                    self._semantic.upsert(MemoryNode(
-                        id=_evt_id,
-                        kind="event",
-                        title=f"[{_ts_label}] {active_task.title[:_EVENT_TITLE_CHARS]}",
-                        body=_clean_reflection[:_EVENT_NEW_BODY_CHARS],
-                        activation=0.85,
-                        valence=self._emotion.valence,
-                        tags=_tags,
-                    ))
+            # 7b. 事件结晶：每 N 轮 reflection → kind="event" 节点（Park et al. 2023 重要性模型）
+            #     零额外 LLM call：直接从 LLM 产出的 reflection 蒸馏，积累当天对话摘要
+            if active_task:
+                _turns_key = f"chat:{active_task.id}:turns"
+                _turns_val, _ = await self._task_store.get_fact(_turns_key)
+                _turns = int(_turns_val or "0") + 1
+                await self._task_store.set_fact(_turns_key, str(_turns), scope="system")
+                _crystallize_every = self._cfg.memory.chat_crystallize_every
+                if _turns % _crystallize_every == 0:
+                    _ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+                    _evt_id = f"event-task{active_task.id}-{_ts_label}"
+                    _existing = self._semantic.get(_evt_id)
+                    if _existing:
+                        # 同一天：追加 reflection，保持最近 600 字
+                        _existing.body = (_existing.body + f"\n— {_clean_reflection[:_EVENT_APPEND_CHARS]}")[- _EVENT_BODY_MAX_CHARS:]
+                        _existing.activation = min(1.0, _existing.activation + 0.05)
+                        self._semantic.upsert(_existing)
+                    else:
+                        _source = getattr(active_task, "source", "") or ""
+                        _chat_id = _source[5:] if _source.startswith("chat:") else _source
+                        _tags = ["event", _ts_label]
+                        if _chat_id:
+                            _tags.append(_chat_id)
+                        self._semantic.upsert(MemoryNode(
+                            id=_evt_id,
+                            kind="event",
+                            title=f"[{_ts_label}] {active_task.title[:_EVENT_TITLE_CHARS]}",
+                            body=_clean_reflection[:_EVENT_NEW_BODY_CHARS],
+                            activation=0.85,
+                            valence=self._emotion.valence,
+                            tags=_tags,
+                        ))
 
         # 8. 用户消息 & 回复写入情节记忆（Ricoeur 叙事连续性）
         if user_message:
