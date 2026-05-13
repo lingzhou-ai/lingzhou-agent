@@ -193,6 +193,7 @@ class CognitionLoop:
             self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
             self._routing_providers = _build_routing_providers(new_cfg)
             self._judgment.set_routing_providers(self._routing_providers)
+            await self._soul.refresh_identity(self._judgment)
             console.print("[green]✓ 检测到 token 更新，provider 已重建[/green]")
             return
         if old_model == new_model:
@@ -213,6 +214,7 @@ class CognitionLoop:
         self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
         self._routing_providers = _build_routing_providers(new_cfg)
         self._judgment.set_routing_providers(self._routing_providers)
+        await self._soul.refresh_identity(self._judgment)
         console.print(f"[green]✓ 模型热换完成:[/green] {old_model} → [bold cyan]{new_model}[/bold cyan]")
 
     def _make_ctx(self) -> ToolContext:
@@ -972,9 +974,20 @@ class CognitionLoop:
         self._episodic.record(role="consolidation", content=summary, task_id=task_id)
         # 保留身份锚点（bootstrap_identity），不参与周期轮换
         self._wm.clear(preserve_kinds={"bootstrap_identity"})
+        # 清空后注入任务锚点，避免下一轮因 WM 为空而丢失任务上下文
+        if active_task:
+            self._wm.add(WMItem(
+                kind="task_anchor",
+                content=(
+                    f"[任务锚点] {active_task.title}\n"
+                    f"目标: {active_task.goal or '（未指定）'}\n"
+                    f"下一步: {active_task.next_step or '（未指定）'}"
+                ),
+                priority=0.95,
+            ))
         # 同步感知基准，避免下一轮因 WM 大小骤降产生假预测误差
         self._perception.reset_wm_baseline(len(self._wm))
-        _log.info("[consolidate] WM→episodic %d items, WM cleared (bootstrap preserved)", len(items))
+        _log.info("[consolidate] WM→episodic %d items, WM cleared (bootstrap+task_anchor preserved)", len(items))
 
 
 # ── 模块级辅助函数 ────────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ _log = logging.getLogger("lingzhou.judgment")
 # 低成本读取/枚举类工具 → reader tier
 _READER_TOOLS = frozenset({
     "file.list", "file.read",
-    "memory.get_fact", "memory.snapshot",
+    "memory.get_fact",
     "schedule.list", "schedule.ack", "schedule.cancel",
     "shell.capabilities",
     "task.list",
