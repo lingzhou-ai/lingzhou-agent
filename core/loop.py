@@ -142,6 +142,7 @@ class CognitionLoop:
         self._wait_llm_skip_streak: int = 0        # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
         self._pending_tier: str | None = None
         self._pending_idle_gap: float | None = None  # LLM 通过 model_strategy.next_idle_gap_secs 动态调控等待时长
+        self._pending_routing_overrides: dict[str, str] | None = None  # LLM 通过 routing_overrides 临时覆盖 tier→model
         _cfg_file = cfg._base_dir / "lingzhou.json"
         self._cfg_file: Path = _cfg_file
         self._cfg_mtime: float = _cfg_file.stat().st_mtime if _cfg_file.exists() else 0.0
@@ -548,6 +549,7 @@ class CognitionLoop:
                 thinking_override=_thinking_override,
                 phase="initial",
                 prefer_tier=self._pending_tier,
+                routing_overrides=self._pending_routing_overrides,
             )
             # 消费上一轮 LLM 表达的 tier 偏好（用完即清）
             self._pending_tier = None
@@ -721,6 +723,20 @@ class CognitionLoop:
                 self._pending_idle_gap = None
         else:
             self._pending_idle_gap = None
+
+        # LLM 通过 model_strategy.routing_overrides 临时覆盖 tier→model 映射（持久到显式修改）
+        _raw_overrides = (action.model_strategy or {}).get("routing_overrides")
+        if isinstance(_raw_overrides, dict):
+            if not _raw_overrides:
+                # 显式传入空字典 = 清除覆盖
+                self._pending_routing_overrides = None
+            else:
+                _valid = {
+                    k: v for k, v in _raw_overrides.items()
+                    if k in {"reader", "reasoner", "repair"} and isinstance(v, str) and v
+                }
+                if _valid:
+                    self._pending_routing_overrides = _valid
 
         # 情绪状态持久化（跨重启情绪连续性，与 ethos_baseline 对称）
         await self._task_store.set_fact("soul:emotion_state", json.dumps({

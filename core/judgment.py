@@ -160,6 +160,8 @@ class JudgmentLayer:
         self._provider_errors: dict[str, str] = {}
         # 每个模型的健康状态（429/400/timeout 触发冷却窗口，避免短时间重复打爆同一 provider）
         self._model_health: dict[str, ModelHealth] = {}
+        # 运行时临时 provider 缓存：routing_overrides 指定的临时 model 按需创建并缓存
+        self._override_providers: dict[str, "Provider"] = {}
 
     def set_identity_prefix(self, prefix: str) -> None:
         """由 SoulManager.bootstrap() 调用，将 BOOTSTRAP.md/IDENTITY.md 永久注入 system prompt。"""
@@ -252,6 +254,18 @@ class JudgmentLayer:
     def _is_model_available(self, model_ref: str) -> bool:
         return self._get_health(model_ref).cooldown_until <= time.time()
 
+    def _find_or_create_provider(self, model_ref: str) -> "Provider":
+        """按 model_ref 找到或创建 provider（用于 routing_overrides 临时覆盖）。"""
+        if model_ref == self._cfg.model:
+            return self._provider
+        for p in self._routing_providers.values():
+            if getattr(p, "_model", None) == model_ref:
+                return p
+        if model_ref not in self._override_providers:
+            from provider import create_provider_with_model
+            self._override_providers[model_ref] = create_provider_with_model(self._cfg, model_ref)
+        return self._override_providers[model_ref]
+
     def _fallback_tiers(self, tier: str) -> tuple[str, ...]:
         if tier == "reasoner":
             return ("reader", "repair")
@@ -302,6 +316,7 @@ class JudgmentLayer:
         tool_history: list[dict[str, Any]] | None = None,
         prefer_tier: str | None = None,
         thinking_override: str | None = None,
+        routing_overrides: dict[str, str] | None = None,
     ) -> tuple["Provider", ModelSelection]:
         tier = self._select_tier(
             phase=phase,
@@ -310,6 +325,15 @@ class JudgmentLayer:
             tool_history=tool_history,
             prefer_tier=prefer_tier,
         )
+        # routing_overrides 临时覆盖 tier→model（运行时动态切换，无需重启）
+        if routing_overrides and tier in routing_overrides:
+            override_model = routing_overrides[tier]
+            if override_model and self._is_model_available(override_model):
+                thinking = thinking_override if thinking_override is not None else self._cfg.thinking
+                return (
+                    self._find_or_create_provider(override_model),
+                    ModelSelection(phase=phase, tier=tier, model_ref=override_model, thinking=thinking),
+                )
         route_key, model_ref = self._resolve_tier_model(tier)
         chosen_tier = tier
         chosen_route_key = route_key
@@ -414,6 +438,9 @@ class JudgmentLayer:
                 "• next_idle_gap_secs：下一轮空闲等待时长（秒，整数，范围 5-600）。默认 60。"
                 "示例：已发起 shell 命令，预计 30s 出结果 → next_idle_gap_secs=35；"
                 "无任务等待用户下一步 → next_idle_gap_secs=120；任务进行中需快速追踪 → next_idle_gap_secs=10；\n"
+                "• routing_overrides：临时覆盖 tier→model 映射，格式 {\"reader\": \"bailian/qwen3.6-plus\"}。"
+                "可选 tier: reader / reasoner / repair。从 catalog_models 中选择可用模型。"
+                "设为 {} 可清除覆盖。覆盖持久到显式修改，无需每轮重复设置。\n"
                 "没有明确偏好时用 default，进化机制将决定。"
             ),
             "budget_state": {
@@ -428,6 +455,18 @@ class JudgmentLayer:
                 "user_message_present": bool(user_message),
             },
         }
+        # 全量 catalog 模型列表（所有 provider 所有模型），让 LLM 能看到可用选项
+        from provider import catalog as _cat
+        catalog_entries: list[dict[str, Any]] = []
+        for _pname in _cat.list_providers():
+            for _m in _cat.list_provider_models(_pname):
+                catalog_entries.append({
+                    "model": f"{_pname}/{_m.get('id', '')}",
+                    "provider": _pname,
+                    "reasoning": bool(_m.get("reasoning")),
+                    "context_window": _m.get("context_window"),
+                })
+        payload["catalog_models"] = catalog_entries
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     async def decide(
@@ -446,11 +485,13 @@ class JudgmentLayer:
         cognitive_signals: "CognitiveSignals | None" = None,
         thinking_override: "str | None" = None,
         prefer_tier: "str | None" = None,
+        routing_overrides: "dict[str, str] | None" = None,
         phase: str = "initial",
     ) -> JudgmentOutput:
         """组装上下文，调用 LLM，返回决策。
         
         thinking_override: 覆盖 cfg.thinking（如 chat 模式用 "low" 加速首轮判断）。
+        routing_overrides: 临时覆盖 tier→model 映射（由 loop.py 从 model_strategy 读取）。
         """
         from provider.base import Message
 
@@ -484,6 +525,7 @@ class JudgmentLayer:
             user_message=user_message,
             prefer_tier=prefer_tier,
             thinking_override=thinking_override,
+            routing_overrides=routing_overrides,
         )
         raw: str | None = None
         for _attempt in range(2):
@@ -509,6 +551,7 @@ class JudgmentLayer:
                         tool_history=None,
                         prefer_tier=_fallback_tier,
                         thinking_override=thinking_override,
+                        routing_overrides=routing_overrides,
                     )
                     if fb_selection.model_ref != selection.model_ref:
                         _log.warning(
