@@ -395,6 +395,7 @@ class JudgmentLayer:
         user_message: str,
         current_action: str,
         tool_history: list[dict[str, Any]] | None,
+        routing_overrides: dict[str, str] | None = None,
     ) -> str:
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
@@ -410,6 +411,8 @@ class JudgmentLayer:
             reasoning = bool(spec.get("reasoning"))
             last_error = self._provider_errors.get(model_ref)
             health = self._get_health(model_ref)
+            # 检查该 tier 是否被临时覆盖
+            override_model = (routing_overrides or {}).get(tier)
             available_models.append({
                 "tier": tier,
                 "model": model_ref,
@@ -422,6 +425,7 @@ class JudgmentLayer:
                 "last_error": last_error,
                 "last_error_code": health.last_code or None,
                 "cooldown_remaining_sec": max(0, int(health.cooldown_until - time.time())),
+                "overridden_by": override_model if override_model and override_model != model_ref else None,
             })
 
         task_explore_count = 0
@@ -443,6 +447,7 @@ class JudgmentLayer:
         posture = "respond" if user_message else ("converge" if task_explore_count >= 4 else "conserve")
         payload = {
             "available_models": available_models,
+            "active_overrides": routing_overrides or {},
             "tier_descriptions": {
                 "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
                 "reasoner": "深度推理层：适合用户交互、要求判断、处理复杂状态、制定或调整计划",
@@ -527,6 +532,7 @@ class JudgmentLayer:
             phase=phase,
             current_action="",
             tool_history=None,
+            routing_overrides=routing_overrides,
         )
         # 缓存给内层工具循环的续判请求用
         self._last_context_text = context_text
@@ -817,6 +823,7 @@ class JudgmentLayer:
         phase: str = "initial",
         current_action: str = "",
         tool_history: list[dict[str, Any]] | None = None,
+        routing_overrides: "dict[str, str] | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
         task = await task_store.get_active()
@@ -899,6 +906,7 @@ class JudgmentLayer:
                 user_message=user_message,
                 current_action=current_action,
                 tool_history=tool_history,
+                routing_overrides=routing_overrides,
             ),
             "current_time_section": _fmt_current_time(),
             "user_message": user_message or "",
