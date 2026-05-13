@@ -154,6 +154,8 @@ async def _interactive(
                 user_text = line.strip()
                 if user_text:
                     await store.add_chat_message("user", user_text, session_id)
+                    # 告知用户消息已入队，loop 在后台处理（异步模式核心体验）
+                    console.print("[dim]  ↑ 已发送，等待回复中…（可继续输入下一条）[/dim]")
         except (KeyboardInterrupt, asyncio.CancelledError):
             stop.set()
 
@@ -166,8 +168,8 @@ async def _interactive(
                 for m in new_msgs:
                     cur_last_id = m["id"]
                     if m["role"] == "assistant":
-                        # 换行前缀避免回复打断用户正在输入的提示符行
-                        console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}")
+                        # \n 前缀避免打断用户正在输入的行；print 后用户继续输入即可
+                        console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
         except asyncio.CancelledError:
             pass
 
