@@ -807,9 +807,7 @@ class JudgmentLayer:
         reason: str = "",
     ) -> JudgmentOutput:
         """LLM 不可用时的确定性回退（Hermes simulate.go 移植）。
-        行为原则：hard_boundary > posture > wait。"""
-        if hard_boundaries:
-            return JudgmentOutput.wait(reason=f"[fallback] hard_boundary 阻断，LLM 不可用: {reason}")
+        行为原则：posture > wait。"""
         if signals:
             if signals.posture in ("pause", "narrow"):
                 return JudgmentOutput.wait(reason=f"[fallback] posture={signals.posture}, LLM 不可用: {reason}")
