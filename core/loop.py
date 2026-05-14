@@ -122,7 +122,9 @@ class CognitionLoop:
 
         # 子系统：Soul 文件管理 + 行为模式追踪
         self._soul = SoulManager(self._cfg, self._task_store, self._wm)
-        self._behavior = BehaviorTracker()
+        self._behavior = BehaviorTracker(
+            wait_streak_notify=list(cfg.loop.wait_streak_notify),
+        )
 
         # tick 间连续性追踪（预测误差 + 认知信号计算用）
         self._last_next_step: str = ""

@@ -28,7 +28,9 @@ _EXPLORE_THRESHOLDS = (8, 12, 16)
 class BehaviorTracker:
     """行为模式追踪器：检测循环 + 确定性兜底门控。"""
 
-    def __init__(self) -> None:
+    def __init__(self, wait_streak_notify: list[int] | None = None) -> None:
+        # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
+        self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
         self._recent_actions: deque[tuple[str, str]] = deque(maxlen=3)
         self._recent_read_fps: deque[tuple[str, int, str]] = deque(maxlen=3)
         self._action_streak_sig: tuple[str, str] | None = None
@@ -40,7 +42,7 @@ class BehaviorTracker:
         self._explore_task_id: str | None = None
         self._explore_warned: set[int] = set()
         self._wait_streak: int = 0          # 连续 wait/pause 决策次数
-        self._wait_streak_warned: set[int] = set()  # 已触发提示的阈值
+        self._wait_streak_warned: set[int] = set()   # 已触发通知的阈值
 
     # ── 状态接口 ──────────────────────────────────────────────────────────────
 
@@ -174,10 +176,11 @@ class BehaviorTracker:
         return items
 
     def on_wait(self, decision: str, has_active_task: bool) -> list["WMItem"]:
-        """追踪连续 wait/pause 决策，注入自我感知提示。
+        """追踪连续 wait/pause 决策，向 WM 注入状态汇报。
 
-        阈值（3, 6）：分别对应"轻提示"和"强提示"，不阻断，由 LLM 自主决策。
-        act 决策后重置计数。
+        原则：只汇报事实，由 LLM 自主决定是否继续等待。不做硬阻断。
+        阈值来自配置（wait_streak_notify），每个阈值首次触达时发出一条通知。
+        act 后重置计数。
         """
         from memory.working import WMItem
 
@@ -189,28 +192,29 @@ class BehaviorTracker:
         self._wait_streak += 1
         items: list[WMItem] = []
 
-        _thresholds = (3, 6)
-        for thresh in _thresholds:
+        # 找到本轮应触发的最高阈值（每个阈值只触发一次）
+        for thresh in self._wait_notify_thresholds:
             if self._wait_streak >= thresh and thresh not in self._wait_streak_warned:
                 self._wait_streak_warned.add(thresh)
-                if thresh == 3:
-                    _msg = (
-                        f"[自我感知] 我已连续 {self._wait_streak} 轮选择 wait/pause。"
-                        "请重新评估：当前等待的'信号'是否有明确的到达条件？"
-                        "若任务 next_step 不再准确，请用 task.advance 更新它，而非持续等待。"
-                    )
-                    _priority = 0.88
-                else:
-                    _msg = (
-                        f"[自我感知] 我已连续 {self._wait_streak} 轮 wait/pause，"
-                        "这可能是认知停滞的信号。"
-                        "必须采取行动：或用 task.advance 更新 next_step，"
-                        "或用 task.complete/task.fail 结束任务，或直接执行下一步工具调用。"
-                    )
-                    _priority = 0.95
-                _log.warning("[self-awareness] 连续 %d 轮 wait/pause", self._wait_streak)
+                # 阶段数：当前是第几个阈值（影响 priority，越晚越高）
+                _stage = self._wait_notify_thresholds.index(thresh)
+                _max_stage = max(len(self._wait_notify_thresholds) - 1, 1)
+                _priority = round(0.85 + 0.1 * (_stage / _max_stage), 3)
+                _msg = (
+                    f"[行为汇报] 当前已连续 {self._wait_streak} 轮决策为 {decision}。"
+                    f" 任务存在：{'是' if has_active_task else '否'}。"
+                    f" 这是第 {_stage + 1}/{len(self._wait_notify_thresholds)} 级通知。"
+                    " 以下信息供参考，由你决定下一步："
+                    " (1) 当前等待条件是否仍然成立？"
+                    " (2) next_step 描述是否仍然准确？"
+                    " (3) 是否有可以立即执行的小动作推进任务？"
+                    " (4) 是否需要向用户说明当前状态？"
+                    " 你可以继续 wait，也可以行动——这只是一条状态通知。"
+                )
+                _log.info("[behavior] wait-streak=%d, thresh=%d, priority=%.3f",
+                          self._wait_streak, thresh, _priority)
                 items.append(WMItem(kind="self_awareness", content=_msg, priority=_priority))
-                break
+                break  # 每轮最多触发一条通知
         return items
 
     def apply_execution_gate(

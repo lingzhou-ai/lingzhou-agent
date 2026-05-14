@@ -173,6 +173,14 @@ class LoopConfig(BaseModel):
             "达到上限后自动注入兜底回复，保证 chat 客户端不超时。"
         ),
     )
+    wait_streak_notify: list[int] = Field(
+        default=[3, 6],
+        description=(
+            "连续 wait/pause 轮数触发自我感知通知的阈值列表（升序）。"
+            "每个阈值首次达到时向工作记忆注入一条状态汇报，由 LLM 自主决定是否继续等待。"
+            "空列表 [] 表示禁用此机制。示例：[3] 仅轻提示；[3,6,10] 三级递进。"
+        ),
+    )
 
 
 class PromptsConfig(BaseModel):
