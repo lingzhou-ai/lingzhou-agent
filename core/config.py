@@ -208,19 +208,19 @@ class PromptsConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
-    working_capacity: int = Field(default=20, ge=1, description="工作记忆最大条目数（条目数上限兜底）")
+    working_capacity: int = Field(default=40, ge=1, description="工作记忆最大条目数（条目数上限兑底）")
     wm_token_budget_ratio: float = Field(
-        default=0.08, ge=0.001, le=0.5,
+        default=0.15, ge=0.001, le=0.5,
         description=(
             "工作记忆 token 预算占 judgment 输入预算的比例（自动随模型 context window 伸缩）。"
-            "默认 0.08（8%）：GPT-5.4 400K → ~24K；Qwen3.6-plus 1M → ~60K。"
+            "默认 0.15（15%）：GPT-5.4 400K → ~45K；Qwen3.6-plus 1M → ~112K。"
             "pressure = total_wm_tokens / effective_wm_token_budget()。"
         ),
     )
-    episodic_max_chars: int = Field(default=40000, ge=100, description="注入 context 的情节记忆字符上限")
+    episodic_max_chars: int = Field(default=80000, ge=100, description="注入 context 的情节记忆字符上限；资源充裕模型可适当增大以保留更多任务历史证据")
     semantic_top_k: int = Field(default=5, ge=1, description="语义检索返回条目数")
     failure_limit: int = Field(default=10, ge=1, description="注入 bundle 的失败记录数")
-    consolidate_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="WM 压力超过此值触发整合")
+    consolidate_threshold: float = Field(default=0.90, ge=0.0, le=1.0, description="WM 压力超过此値触发整合；提高阈値可减少快照频率，让更多证据在 WM 中存活更长")
     convergence_bonus: float = Field(default=0.15, ge=0.0, le=1.0, description="多锚点召回的收敛奖励系数：每增加一个独立线索命中，相关度提升此比例")
     max_events: int = Field(default=500, ge=10, description="events.jsonl 最大条目数，超出后裁剪最旧记录")
     semantic_decay_lambda: float = Field(default=0.1, ge=0.0, le=10.0, description="语义记忆激活衰减率（Ebbinghaus，λ/天）；0 表示不衰减")
@@ -311,7 +311,7 @@ class ThresholdsConfig(BaseModel):
     截图中那些硬编码的 0.85 / 0.8 / 0.7 全部搬到这里。"""
 
     emotion_activation_task: float = Field(default=0.85, description="情绪激活 > 此值 → 自检任务")
-    wm_pressure_task: float = Field(default=0.8, description="WM 压力 > 此值 → 整合任务")
+    wm_pressure_task: float = Field(default=0.95, description="WM 压力 > 此值 → 整合任务；应高于 consolidate_threshold（默认 0.90），避免整合任务与自动快照相互干扰")
     prediction_error_task: float = Field(default=0.7, description="预测误差 > 此值 → 探索任务")
     curiosity_idle_task: float = Field(
         default=0.65,

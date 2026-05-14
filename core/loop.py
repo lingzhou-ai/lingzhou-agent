@@ -1072,7 +1072,7 @@ class CognitionLoop:
 
     async def _consolidate(self, active_task: Task | None) -> None:
         """将 WM 高优先级条目写入情节记忆，然后清空 WM，保留身份锚点。"""
-        items = self._wm.get_top(10)
+        items = self._wm.get_top(25)
         if not items:
             return
         task_id = str(active_task.id) if active_task else None
