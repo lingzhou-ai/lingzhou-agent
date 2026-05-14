@@ -16,10 +16,11 @@ PROJECT_ROOT: Path = Path(__file__).parent.parent
 console = Console()
 
 # 全局配置文件搜索顺序（当 --config 指向的路径不存在时依次尝试）
+# 用户目录优先于当前工作目录，避免源码目录的 lingzhou.json 被误加载。
 _CONFIG_SEARCH_PATHS: list[Path] = [
-    Path("lingzhou.json"),
     Path.home() / ".lingzhou" / "lingzhou.json",
     Path.home() / ".config" / "lingzhou" / "lingzhou.json",
+    Path("lingzhou.json"),
 ]
 
 
