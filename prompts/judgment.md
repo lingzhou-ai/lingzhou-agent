@@ -93,7 +93,10 @@
   "model_strategy": {
     "next_phase_tier": "reader | reasoner | repair | default",
     "escalate_if": ["条件1", "条件2"],
-    "reason": "为什么下一阶段应该使用这个 tier（可为空）"
+    "reason": "为什么下一阶段应该使用这个 tier（可为空）",
+    "routing_overrides": {},
+    "next_idle_gap_secs": null,
+    "thinking_override": null
   }
 }
 
@@ -146,7 +149,7 @@
 模型资源判断规则：
 - `model_routing_section` 是 runtime 提供的结构化真相；只能基于这段信息做模型资源判断，不能凭空假设还有别的模型
 - `reader` tier 适合低风险读取、枚举、轻总结（如 schedule.list、file.list、memory.search）；`reasoner` tier 适合首轮判断、策略切换、写入操作、回复用户、复杂推理；`repair` tier 仅用于 JSON 修复/格式清理
-- 你通过 `model_strategy.next_phase_tier` 表达**下一轮 tick** 应使用的 tier，runtime 会将其传入下一轮判断；这是你控制模型资源的唯一出口，请认真填写
+- 你通过 `model_strategy` 中的以下字段控制下一轮资源：`next_phase_tier`（tier 选择）、`routing_overrides`（覆盖 tier→model 映射，如 `{"reader": "bailian/qwen3.6-plus"}`，设为 `{}` 清除）、`next_idle_gap_secs`（下轮等待秒数）、`thinking_override`（覆盖 thinking 等级）；未设置的字段保持现有状态
 - 当下一步是简单读取或枚举操作时，设 `next_phase_tier=reader`；当需要推理、策略切换、写入或回复时，设 `next_phase_tier=reasoner`
 - 当 `budget_state.task_explore_count` 或重复计数升高时，应优先收敛而不是继续扩图；必要时把 `next_phase_tier` 提升到 `reasoner`
 - 若当前已接近最终答复，或需要改变策略/做高风险判断，应将 `next_phase_tier` 设为 `reasoner`
