@@ -209,13 +209,12 @@ class PromptsConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     working_capacity: int = Field(default=20, ge=1, description="工作记忆最大条目数（条目数上限兜底）")
-    wm_token_budget: int = Field(
-        default=8000, ge=256,
+    wm_token_budget_ratio: float = Field(
+        default=0.08, ge=0.001, le=0.5,
         description=(
-            "工作记忆 token 预算。pressure 按 total_tokens/wm_token_budget 计算，"
-            "比条目数更准确反映对 LLM 上下文的实际占用。"
-            "设为 0 回退到纯条目数压力（不推荐）。"
-            "建议设为 context_window 的 5-10%：131K 模型 → 6000-13000；1M 模型 → 50000-100000。"
+            "工作记忆 token 预算占 judgment 输入预算的比例（自动随模型 context window 伸缩）。"
+            "默认 0.08（8%）：GPT-5.4 400K → ~24K；Qwen3.6-plus 1M → ~60K。"
+            "pressure = total_wm_tokens / effective_wm_token_budget()。"
         ),
     )
     episodic_max_chars: int = Field(default=40000, ge=100, description="注入 context 的情节记忆字符上限")
@@ -511,6 +510,18 @@ class Config(BaseModel):
         if self.max_judgment_input_tokens is not None:
             budget = min(budget, self.max_judgment_input_tokens)
         return budget
+
+    def effective_wm_token_budget(self) -> int:
+        """WM token 预算 = judgment 输入预算 × wm_token_budget_ratio。
+
+        自动随模型 context window 伸缩，无需手动配置。
+        若模型不在内置目录且未配置 context_window_tokens，则回退到 8000。
+        """
+        try:
+            ctx = self.judgment_input_token_budget()
+        except ValueError:
+            return 8000  # 未知模型 fallback
+        return max(256, int(ctx * self.memory.wm_token_budget_ratio))
 
     def load_prompt(self, key: str) -> str:
         """按 key（对应 PromptsConfig 字段名）加载提示词文件内容。
