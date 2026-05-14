@@ -135,8 +135,10 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=(
-                    f"[自我感知] 我已连续 3 次执行 ({tool_id}, {key_param or '相同参数'})，"
-                    "这是行为死循环的信号。必须在 reflection 中诊断原因，并立刻改变策略。"
+                    f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。"
+                    " 这可能是重复，也可能是必要的重试——请你自行判断："
+                    " (1) 这 3 次的目的相同吗？(2) 是否已获得足够信息？"
+                    " (3) 如果是循环，原因是什么？你可以继续执行，也可以改变策略。"
                 ),
                 priority=0.95,
             ))
@@ -168,8 +170,10 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=(
-                    f"[自我感知] 我已连续 3 次读取相同内容 ({path})，"
-                    "这不是必要的代码审计增量。下一步必须切换文件或转为总结/修改。"
+                    f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。"
+                    " 请你判断：(1) 这是必要的确认还是无效重复？"
+                    " (2) 是否已从该文件获得了所需信息？"
+                    " 你可以继续读取，也可以切换到下一步。"
                 ),
                 priority=0.95,
             ))
@@ -222,9 +226,9 @@ class BehaviorTracker:
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
     ) -> "JudgmentOutput":
-        """执行前门控（当前无硬拦截）。
+        """透传：不做任何硬拦截，行为决策权完全归 LLM。
 
-        所有重复行为预警均通过 WMItem 注入工作记忆，由 LLM 根据执行结果自主判断是否改变策略。
-        保留此方法作为未来扩展点（如需针对特定系统级死锁场景补充兜底）。
+        重复行为信号已在 on_act / on_read 中以 WMItem 形式注入工作记忆，
+        LLM 在下一轮 judgment 时自主看到并决定是否改变策略。
         """
         return action

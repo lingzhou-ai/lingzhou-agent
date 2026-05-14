@@ -1024,14 +1024,25 @@ class CognitionLoop:
         curiosity = getattr(ethos_state.values, "curiosity", 0.0) if ethos_state else 0.0
         if curiosity < cfg.thresholds.curiosity_idle_task:
             return
-        # 防重复：最近 10 任务中若已有未完成的 curiosity 任务则跳过
+        # 检查是否已存在未完成的 curiosity 任务，作为信号注入 WM，由 LLM 决定是否需要新任务
         recent = await self._task_store.list_tasks(limit=10)
-        for t in recent:
-            if (
-                getattr(t, "source", None) == "curiosity"
-                and getattr(t, "status", "done") not in ("done", "failed")
-            ):
-                return
+        pending_curiosity = [
+            t for t in recent
+            if getattr(t, "source", None) == "curiosity"
+            and getattr(t, "status", "done") not in ("done", "failed")
+        ]
+        if pending_curiosity:
+            t0 = pending_curiosity[0]
+            self._wm.add(WMItem(
+                kind="self_awareness",
+                content=(
+                    f"[好奇心信号] 当前已有 {len(pending_curiosity)} 个未完成的探索任务"
+                    f"（如：#{getattr(t0, 'id', '?')} {getattr(t0, 'title', '')}）。"
+                    " 系统倾向再生成一个探索任务，但由你判断是否真正需要。"
+                ),
+                priority=0.80,
+            ))
+            return
         await self._task_store.add_task(
             title="自主探索：回顾近期经历并整合语义记忆",
             goal="回顾最近情节记忆和工作记忆中的洞察，提炼新的 reflection 写入语义记忆，更新自我认知",
