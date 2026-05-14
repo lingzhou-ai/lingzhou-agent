@@ -707,3 +707,12 @@ def test_behavior_gate_passthrough():
         items = tracker.on_act("shell.run", "ls", task_id="t1")
     assert any("行为信号" in i.content for i in items), "连续 3 次相同行为应注入 WM 行为信号"
 
+    # on_act 连续不同命令（key_param 不同）不应触发 streak
+    tracker2 = BehaviorTracker()
+    tracker2.on_act("shell.run", "cat USER.md", task_id="t2")
+    tracker2.on_act("shell.run", "cat SOUL.md", task_id="t2")
+    items2 = tracker2.on_act("shell.run", "sed -n '1p' TOOLS.md", task_id="t2")
+    assert not any("行为信号" in i.content for i in items2), (
+        "不同 shell.run 命令不应触发 streak（key_param 已区分命令内容）"
+    )
+

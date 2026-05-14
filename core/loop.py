@@ -607,7 +607,7 @@ class CognitionLoop:
         if action.decision == "act":
             _tool_id = action.chosen_action_id or ""
             _p = action.params or {}
-            _key_param = _p.get("path") or _p.get("name") or _p.get("title") or str(_p.get("id") or "") or _p.get("key") or ""
+            _key_param = _p.get("path") or _p.get("name") or _p.get("title") or str(_p.get("id") or "") or _p.get("key") or _p.get("command") or ""
             _cur_task_id = str(active_task.id) if active_task else None
             for _item in self._behavior.on_act(_tool_id, _key_param, _cur_task_id):
                 self._wm.add(_item)
@@ -774,6 +774,7 @@ class CognitionLoop:
             if not _raw_overrides:
                 # 显式传入空字典 = 清除覆盖
                 self._pending_routing_overrides = None
+                await self._task_store.set_fact("pref:routing_overrides", "", scope="system")
             else:
                 _valid = {
                     k: v for k, v in _raw_overrides.items()
@@ -781,6 +782,7 @@ class CognitionLoop:
                 }
                 if _valid:
                     self._pending_routing_overrides = _valid
+                    await self._task_store.set_fact("pref:routing_overrides", json.dumps(_valid), scope="system")
 
         # LLM 通过 model_strategy.thinking_override 覆盖下轮 thinking 等级
         _VALID_THINKING = {"off", "minimal", "low", "medium", "high"}
@@ -811,7 +813,7 @@ class CognitionLoop:
         return action.reply_to_user
 
     async def _restore_state_from_db(self) -> None:
-        """从 DB 恢复上次持久化的情绪状态，实现跨重启情绪连续性。"""
+        """从 DB 恢复上次持久化的情绪状态和路由偏好，实现跨重启连续性。"""
         _em_json, _em_found = await self._task_store.get_fact("soul:emotion_state")
         if _em_found and _em_json:
             try:
@@ -819,6 +821,20 @@ class CognitionLoop:
                 self._emotion.valence   = float(_em.get("valence",   self._emotion.valence))
                 self._emotion.arousal   = float(_em.get("arousal",   self._emotion.arousal))
                 self._emotion.dominance = float(_em.get("dominance", self._emotion.dominance))
+            except Exception:
+                pass
+        # 恢复 routing_overrides（用户/LLM 上次设置的模型路由偏好）
+        _ro_json, _ro_found = await self._task_store.get_fact("pref:routing_overrides")
+        if _ro_found and _ro_json:
+            try:
+                _ro = json.loads(_ro_json)
+                if isinstance(_ro, dict) and _ro:
+                    self._pending_routing_overrides = {
+                        k: v for k, v in _ro.items()
+                        if k in {"reader", "reasoner", "repair"} and isinstance(v, str) and v
+                    } or None
+                    if self._pending_routing_overrides:
+                        _log.info("[routing] 从 DB 恢复 routing_overrides: %s", self._pending_routing_overrides)
             except Exception:
                 pass
 
@@ -1066,12 +1082,20 @@ class CognitionLoop:
         self._wm.clear(preserve_kinds={"bootstrap_identity"})
         # 清空后注入任务锚点，避免下一轮因 WM 为空而丢失任务上下文
         if active_task:
+            _progress_line = ""
+            try:
+                _prog, _prog_found = await self._task_store.get_fact(f"task:{active_task.id}:progress")
+                if _prog_found and _prog:
+                    _progress_line = f"\n进度: {_prog}"
+            except Exception:
+                pass
             self._wm.add(WMItem(
                 kind="task_anchor",
                 content=(
                     f"[任务锚点] {active_task.title}\n"
                     f"目标: {active_task.goal or '（未指定）'}\n"
                     f"下一步: {active_task.next_step or '（未指定）'}"
+                    f"{_progress_line}"
                 ),
                 priority=0.95,
             ))
