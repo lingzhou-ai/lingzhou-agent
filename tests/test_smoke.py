@@ -671,8 +671,12 @@ def test_select_tier_logic():
     assert tier2 == "reasoner"
 
 
-def test_behavior_gate_blocks_shell_run_loop():
-    """apply_execution_gate 在 shell.run/file.list 连续重复 ≥ 3 时强制 wait。"""
+def test_behavior_gate_passthrough():
+    """apply_execution_gate 为纯透传：决策权归 LLM，不做硬拦截。
+
+    重复行为信号由 on_act/on_read 以 WMItem 形式注入工作记忆，
+    LLM 在下一轮 judgment 时自主决定是否改变策略。
+    """
     from core.behavior_tracker import BehaviorTracker
     from core.judgment import JudgmentOutput
 
@@ -692,25 +696,14 @@ def test_behavior_gate_blocks_shell_run_loop():
         params={"command": "ls"},
         rationale="再跑一次",
     )
+    # 透传：gate 不改变决策，信号已通过 WM 注入交由 LLM 判断
     gated = tracker.apply_execution_gate(action, _Signals())
-    assert gated.decision == "wait", "shell.run 连续 3 次应被门控为 wait"
+    assert gated.decision == "act", "apply_execution_gate 应透传，不强制改变决策"
+    assert gated is action, "apply_execution_gate 应返回原对象（零拷贝）"
 
-    # file.list 同理
-    action2 = JudgmentOutput(
-        decision="act",
-        chosen_action_id="file.list",
-        params={"path": "."},
-        rationale="再列一次",
-    )
-
-    class _Signals2:
-        repeat_action_count = 3
-        repeat_action_tool = "file.list"
-        repeat_action_key = "."
-        repeat_read_count = 0
-        repeat_read_path = ""
-        loop_probe_version = 6
-
-    gated2 = tracker.apply_execution_gate(action2, _Signals2())
-    assert gated2.decision == "wait", "file.list 连续 3 次应被门控为 wait"
+    # on_act 连续相同行为时应生成 WMItem 信号
+    items = []
+    for _ in range(3):
+        items = tracker.on_act("shell.run", "ls", task_id="t1")
+    assert any("行为信号" in i.content for i in items), "连续 3 次相同行为应注入 WM 行为信号"
 
