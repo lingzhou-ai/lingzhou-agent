@@ -20,7 +20,7 @@ DB 是不可绕过的单一真相源；SOUL.md 是快照，不是源。
 
 ---
 
-## 2. 六个 workspace Markdown 文件
+## 2. 七个 workspace Markdown 文件
 
 ### 2.1 BOOTSTRAP.md（生命内核引导文件）
 
@@ -128,8 +128,8 @@ _初始状态为空，随运行时间增长。_
 
 **定位**：人类可以向 lingzhou 主动输入的长期背景知识。  
 **作用**：每次 session 开始时作为补充记忆注入 context（类比 OpenClaw 的 MEMORY.md）。  
-**谁写**：**完全由用户手写**，lingzhou 不自动修改此文件。  
-**演化**：用户主动维护。lingzhou 的 `semantic.py` nodes 是程序侧记忆，MEMORY.md 是人类侧记忆。
+**谁写**：默认以人为主维护；agent 可在明确迁移/整理任务中适配写入。  
+**演化**：lingzhou 的 `semantic.py` nodes 是程序侧记忆，MEMORY.md 是人类可读的长期记忆窗口。
 
 适合写入的内容：
 - 用户的偏好和习惯（"不喜欢 PR 分太多文件"）
@@ -165,7 +165,7 @@ _初始状态为空，随运行时间增长。_
 # core/soul.py — SoulManager.bootstrap()（已实现）
 
 # 按 _BOOTSTRAP_FILES 顺序：
-# ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md")
+# ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md")
 for fname in _BOOTSTRAP_FILES:
     fpath = workspace / fname
     if fpath.exists():
@@ -183,11 +183,14 @@ if judgment is not None and identity_parts:
 
 **当前注入规则**：
 - `BOOTSTRAP.md` + `IDENTITY.md` → WM + system prompt 前缀（永久注入，不随 WM 轮换丢失）
-- `SOUL.md` / `USER.md` / `TOOLS.md` / `HEARTBEAT.md` → 仅 WM（priority=0.85，随 WM 轮换可能驱逐）
+- `SOUL.md` / `USER.md` / `TOOLS.md` / `HEARTBEAT.md` / `MEMORY.md` → 进入 WM（priority=0.85，随 WM 轮换可能驱逐）
 - `SOUL.md` **不**进入 system prompt：soul 通过 `task_store.get_fact("soul:*")` 进入 judgment bundle，hard_axioms 受 DB 层保护，无法被 Markdown 文件修改绕过
-- `DREAMS.md` 和 `MEMORY.md` 目前**不在** `_BOOTSTRAP_FILES` 内，不自动注入（后续可扩展）
+- `MEMORY.md` 已加入 `_BOOTSTRAP_FILES`，用于补充长期记忆；它是窗口，不是 DB truth
+- `DREAMS.md` 仍单独注入 WM，不进 system prompt 前缀
 
 ### 3.1 上下文压缩机制（输入侧）
+
+> 注：2026-05-14 起，MEMORY.md 已进入 bootstrap 注入链路。
 
 Hermes / OpenClaw / lingzhou 的压缩重点都在“把什么注入上下文”，而不是“限制最终回复长度”。
 

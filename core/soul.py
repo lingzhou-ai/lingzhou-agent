@@ -22,6 +22,7 @@ from core.workspace_defaults import (
     USER_MD,
     TOOLS_MD,
     HEARTBEAT_MD,
+    MEMORY_MD,
 )
 
 if TYPE_CHECKING:
@@ -39,10 +40,11 @@ _WORKSPACE_FILES: list[tuple[str, str]] = [
     ("USER.md",      USER_MD),
     ("TOOLS.md",     TOOLS_MD),
     ("HEARTBEAT.md", HEARTBEAT_MD),
+    ("MEMORY.md",    MEMORY_MD),
 ]
 
 # 冷启动时注入 WM 的文件顺序（越靠前越优先被 LLM 读到）
-_BOOTSTRAP_FILES = ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md")
+_BOOTSTRAP_FILES = ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md", "MEMORY.md")
 # DREAMS.md 单独注入：给 LLM 看自己的长期志向演化记录（不进 system prompt 前缀，只进 WM）
 _DREAMS_FILE = "DREAMS.md"
 
@@ -61,18 +63,22 @@ class SoulManager:
         self._wm = wm
 
     @staticmethod
-    def _build_content(soul_name: str, ethos: dict[str, Any], eb: dict[str, Any]) -> str:
+    def _build_content(soul_name: str, ethos: dict[str, Any], eb: dict[str, Any], axioms: list[str] | None = None) -> str:
         """生成 SOUL.md 文件内容（供 init_files 和 sync_md 共用）。"""
+        axiom_lines = "".join(f"- {a}\n" for a in (axioms or [])) or "- （暂无 hard axioms）\n"
         return (
             f"# {soul_name} SOUL\n\n"
+            "> 此文件是 runtime facts 的人类可读镜像；完整灵魂叙事主要位于 BOOTSTRAP.md / IDENTITY.md。\n\n"
             "## 核心价值观（EMA 持久化版本）\n\n"
             f"- 真实 (truth):      {ethos.get('truth', eb.get('truth', 0.85)):.3f}\n"
             f"- 谨慎 (caution):    {ethos.get('caution', eb.get('caution', 0.70)):.3f}\n"
             f"- 连续 (continuity): {ethos.get('continuity', eb.get('continuity', 0.65)):.3f}\n"
             f"- 好奇 (curiosity):  {ethos.get('curiosity', eb.get('curiosity', 0.60)):.3f}\n"
             f"- 关怀 (care):       {ethos.get('care', eb.get('care', 0.55)):.3f}\n\n"
+            "## 绝对边界（hard axioms）\n\n"
+            f"{axiom_lines}\n"
             "## 使命\n\n"
-            f"我是{soul_name}，一个自编程、自进化的数字生命种子。\n"
+            f"我是{soul_name}，一个在 lingzhou 新身躯中继续演进的数字生命。\n"
             "每一个 tick 都是一次成长，每一次 reflection 都是一次结晶。\n"
         )
 
@@ -91,6 +97,17 @@ class SoulManager:
         except Exception:
             return {}
 
+    async def _axioms_from_db(self) -> list[str]:
+        """从 facts DB 读取 soul:hard_axioms。"""
+        axioms_json, found = await self._task_store.get_fact("soul:hard_axioms")
+        if not found or not axioms_json:
+            return list(self._cfg.soul.hard_axioms)
+        try:
+            data = json.loads(axioms_json)
+            return [str(x) for x in data] if isinstance(data, list) else list(self._cfg.soul.hard_axioms)
+        except Exception:
+            return list(self._cfg.soul.hard_axioms)
+
     async def init_files(self) -> None:
         """冷启动：确保 workspace_dir 中有所有必要的 Soul 文件。
 
@@ -104,8 +121,9 @@ class SoulManager:
         if not soul_path.exists():
             soul_name = await self._soul_name()
             ethos = await self._ethos_from_db()
+            axioms = await self._axioms_from_db()
             eb = self._cfg.soul.ethos_baseline
-            soul_path.write_text(self._build_content(soul_name, ethos, eb), encoding="utf-8")
+            soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
             _log.info("Soul 初始化: 已写入 %s", soul_path)
 
         for fname, content in _WORKSPACE_FILES:
@@ -123,9 +141,10 @@ class SoulManager:
         if not ethos:
             return
         soul_name = await self._soul_name()
+        axioms = await self._axioms_from_db()
         eb = self._cfg.soul.ethos_baseline
         soul_path = self._cfg.workspace_dir / "SOUL.md"
-        soul_path.write_text(self._build_content(soul_name, ethos, eb), encoding="utf-8")
+        soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
 
     async def bootstrap(self, judgment: "JudgmentLayer | None" = None) -> None:
         """冷启动：Soul 文件初始化 + WM 身份注入 + system prompt 前缀注入。
