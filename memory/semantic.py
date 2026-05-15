@@ -307,7 +307,17 @@ class SemanticMemory:
             return MemoryNode.from_dict(json.loads(path.read_text(encoding="utf-8")))
         return None
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        *,
+        kind: str | None = None,
+        tag: str | None = None,
+        task_id: str | int | None = None,
+        path_prefix: str | None = None,
+        id_prefix: str | None = None,
+    ) -> list[dict[str, Any]]:
         """单锤点语义检索：返回与查询最相关的 top_k 节点。
 
         FTS5 预过滤把候选集从 O(n) 压缩到 O(log n)；
@@ -320,8 +330,32 @@ class SemanticMemory:
                 query_vec = self._embed_fn(query)
             except Exception:
                 pass
-        candidate_ids = self._fts_candidates(query, limit=50)
+        candidate_ids = self._fts_candidates(query, limit=100 if any((kind, tag, task_id, path_prefix, id_prefix)) else 50)
         nodes = self._load_by_ids(candidate_ids) if candidate_ids else self._load_all()
+        if any((kind, tag, task_id, path_prefix, id_prefix)):
+            nodes = [
+                node for node in nodes
+                if self._matches_filters(
+                    node,
+                    kind=kind,
+                    tag=tag,
+                    task_id=task_id,
+                    path_prefix=path_prefix,
+                    id_prefix=id_prefix,
+                )
+            ]
+            if candidate_ids and not nodes:
+                nodes = [
+                    node for node in self._load_all()
+                    if self._matches_filters(
+                        node,
+                        kind=kind,
+                        tag=tag,
+                        task_id=task_id,
+                        path_prefix=path_prefix,
+                        id_prefix=id_prefix,
+                    )
+                ]
         if not nodes:
             return []
         scored = [(self._score(query, n, query_vec=query_vec), n) for n in nodes]
@@ -332,6 +366,42 @@ class SemanticMemory:
             qm = evaluate_retrieval_quality(query, retrieved, self._decay_lambda)
             _log.debug("[semantic.retrieve] quality=%s", qm.get("overall_score", 0))
         return retrieved
+
+    @staticmethod
+    def _matches_filters(
+        node: MemoryNode,
+        *,
+        kind: str | None = None,
+        tag: str | None = None,
+        task_id: str | int | None = None,
+        path_prefix: str | None = None,
+        id_prefix: str | None = None,
+    ) -> bool:
+        if kind and node.kind != str(kind).strip():
+            return False
+        if tag:
+            normalized_tag = str(tag).strip()
+            if normalized_tag and normalized_tag not in node.tags:
+                return False
+        if task_id is not None:
+            expected_task_tag = f"task:{str(task_id).strip()}"
+            if expected_task_tag not in node.tags:
+                return False
+        if id_prefix:
+            normalized_id_prefix = str(id_prefix).strip()
+            if normalized_id_prefix and not node.id.startswith(normalized_id_prefix):
+                return False
+        if path_prefix:
+            normalized_path = str(path_prefix).strip().replace("\\", "/")
+            if normalized_path:
+                haystack = [
+                    node.title.replace("\\", "/"),
+                    node.body.replace("\\", "/"),
+                    *(tag_item.replace("\\", "/") for tag_item in node.tags),
+                ]
+                if not any(normalized_path in item for item in haystack):
+                    return False
+        return True
 
     def retrieve_multi_anchor(
         self, anchors: list[str], top_k: int = 5, convergence_bonus: float = 0.15

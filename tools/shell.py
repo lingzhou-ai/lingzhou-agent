@@ -143,20 +143,30 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         }
         evidence = json.dumps(payload, ensure_ascii=False)
         if proc.returncode == 0:
+            payload["log_summary"] = (
+                f"shell.run exit=0 chars={payload['output_chars']} workdir={workdir} "
+                f"cmd={command[:80]}"
+            )
             return ToolResult(
                 summary=f"执行成功:\n{truncated}",
                 evidence=evidence,
                 resource_key=command[:120],
                 fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
+                state_delta={"process": "finished", "exit_code": proc.returncode},
                 metadata=payload,
             )
         else:
+            payload["log_summary"] = (
+                f"shell.run exit={proc.returncode} chars={payload['output_chars']} workdir={workdir} "
+                f"cmd={command[:80]}"
+            )
             return ToolResult(
                 summary=f"执行出错 (exit={proc.returncode}):\n{truncated}",
                 evidence=evidence,
                 error=output[:300],
                 resource_key=command[:120],
                 fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
+                state_delta={"process": "finished", "exit_code": proc.returncode},
                 metadata=payload,
             )
     except Exception as exc:

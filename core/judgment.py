@@ -180,7 +180,9 @@ class JudgmentLayer:
             "tier": "default",
             "model_ref": cfg.model,
             "thinking": cfg.thinking,
+            "skills": "",
         }
+        self._last_selected_skills: list[Skill] = []
         # 每个模型最近一次调用错误（用于注入 model routing truth）
         self._provider_errors: dict[str, str] = {}
         # 每个模型的健康状态（429/400/timeout 触发冷却窗口，避免短时间重复打爆同一 provider）
@@ -211,6 +213,12 @@ class JudgmentLayer:
     @property
     def last_call_meta(self) -> dict[str, str]:
         return dict(self._last_call_meta)
+
+    @staticmethod
+    def _skills_for_log(skills: list["Skill"]) -> str:
+        if not skills:
+            return "none"
+        return ",".join(skill.name for skill in skills[:3])
 
     def _routing_aliases(self, tier: str) -> tuple[str, ...]:
         return {
@@ -627,6 +635,7 @@ class JudgmentLayer:
                 "tier": selection.tier,
                 "model_ref": selection.model_ref,
                 "thinking": selection.thinking,
+                "skills": self._skills_for_log(self._last_selected_skills),
             }
             try:
                 raw = await selected_provider.chat(messages, thinking_override=thinking_override)
@@ -685,8 +694,9 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _log.info(
-            "[judgment] phase=%s tier=%s model=%s thinking=%s decision=%s action=%s rationale=%s",
+            "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
+            self._last_call_meta.get("skills") or "none",
             output.decision, output.chosen_action_id, (output.rationale or "")[:120],
         )
 
@@ -765,6 +775,7 @@ class JudgmentLayer:
             "tier": selection.tier,
             "model_ref": selection.model_ref,
             "thinking": resolved_thinking or selection.thinking,
+            "skills": self._last_call_meta.get("skills") or "none",
         }
         raw: str | None = None
         for _attempt in range(2):
@@ -812,9 +823,10 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _log.info(
-            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s decision=%s action=%s",
+            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s",
             len(tool_history), selection.phase, selection.tier, selection.model_ref,
-            self._last_call_meta["thinking"], output.decision, output.chosen_action_id,
+            self._last_call_meta["thinking"], self._last_call_meta.get("skills") or "none",
+            output.decision, output.chosen_action_id,
         )
         return output
 
@@ -910,6 +922,7 @@ class JudgmentLayer:
         recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
         waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
         durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
+        context_facts = await _load_context_facts_snapshot(task_store, task)
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
@@ -956,9 +969,11 @@ class JudgmentLayer:
         )
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
+        self._last_selected_skills = list(skills)
 
         ctx = {
             "task_section": _fmt_task(task),
+            "task_facts_section": _fmt_context_facts(context_facts),
             "waiting_tasks_section": _fmt_waiting_tasks(waiting_tasks),
             "recent_runs_section": _fmt_recent_runs(recent_runs),
             "emotion_valence": f"{emotion.valence:.2f}",
@@ -1059,6 +1074,82 @@ def _fmt_recent_runs(runs: list["Run"]) -> str:
             line += f" summary={summary}"
         lines.append(line)
     return "\n".join(lines)
+
+
+_FACT_CONTEXT_EXCLUDE_PREFIXES = (
+    "control:",
+    "durable_failure:",
+    "evolution:",
+    "pref:",
+    "run:",
+    "soul:",
+)
+
+
+async def _load_context_facts_snapshot(
+    task_store: "TaskStore",
+    task: "Task | None",
+    *,
+    task_limit: int = 6,
+    global_limit: int = 4,
+) -> list[tuple[str, str]]:
+    seen: set[str] = set()
+    selected: list[tuple[str, str]] = []
+    task_prefix = f"task:{task.id}:" if task else ""
+
+    async def _add_facts(items: list[tuple[str, str]], limit: int) -> None:
+        for key, value in items:
+            if key in seen:
+                continue
+            if key.startswith(_FACT_CONTEXT_EXCLUDE_PREFIXES):
+                continue
+            if key.startswith("task:") and task_prefix and not key.startswith(task_prefix):
+                continue
+            if key.startswith("task:") and not task_prefix:
+                continue
+            seen.add(key)
+            selected.append((key, value))
+            if limit > 0 and len(selected) >= limit:
+                return
+
+    if task_prefix:
+        task_facts = await task_store.list_facts(prefix=task_prefix, limit=task_limit)
+        await _add_facts(task_facts, task_limit)
+
+    current_global = len(selected)
+    if global_limit > 0:
+        recent_facts = await task_store.list_facts(limit=max(global_limit * 3, 12))
+        before = len(selected)
+        await _add_facts(recent_facts, current_global + global_limit)
+        if len(selected) == before and not selected:
+            return []
+
+    return selected
+
+
+def _format_fact_value(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return "（空）"
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return _clip_text(text, 180)
+    if isinstance(payload, dict):
+        parts = [f"{k}={payload[k]}" for k in sorted(payload)]
+        return _clip_text("; ".join(parts), 180)
+    if isinstance(payload, list):
+        return _clip_text(", ".join(str(item) for item in payload), 180)
+    return _clip_text(str(payload), 180)
+
+
+def _fmt_context_facts(facts: list[tuple[str, str]]) -> str:
+    if not facts:
+        return "（暂无近期关键事实）"
+    return "\n".join(
+        f"- {key} = {_format_fact_value(value)}"
+        for key, value in facts
+    )
 
 
 def _fmt_waiting_tasks(tasks: list["Task"]) -> str:

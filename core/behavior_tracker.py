@@ -23,10 +23,8 @@ _log = logging.getLogger("lingzhou.behavior_tracker")
 
 _EXPLORE_TOOLS = frozenset(("file.list", "file.read"))
 _EXPLORE_THRESHOLDS = (8, 12, 16)
-
-
 class BehaviorTracker:
-    """行为模式追踪器：检测循环 + 确定性兜底门控。"""
+    """行为模式追踪器：检测循环并把信号交给 LLM。"""
 
     def __init__(self, wait_streak_notify: list[int] | None = None) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
@@ -56,6 +54,8 @@ class BehaviorTracker:
         signals.repeat_action_key = (self._action_streak_sig or ("", ""))[1]
         signals.repeat_read_count = self._read_streak_count
         signals.repeat_read_path = (self._read_streak_fp or ("", 0, ""))[0]
+        signals.repeat_list_count = self._list_streak_count
+        signals.repeat_list_path = (self._list_streak_fp or ("", ""))[0]
         signals.loop_probe_version = self._loop_probe_version
 
     def snapshot(self) -> dict[str, Any]:
@@ -272,9 +272,22 @@ class BehaviorTracker:
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
     ) -> "JudgmentOutput":
-        """透传：不做任何硬拦截，行为决策权完全归 LLM。
+        """透传：不替 LLM 做决定，只把行为探针信号写进上下文与日志。"""
+        if action.decision != "act" or cognitive_signals is None:
+            return action
 
-        重复行为信号已在 on_act / on_read 中以 WMItem 形式注入工作记忆，
-        LLM 在下一轮 judgment 时自主看到并决定是否改变策略。
-        """
+        tool_id = action.chosen_action_id or ""
+        repeat_action_count = int(getattr(cognitive_signals, "repeat_action_count", 0) or 0)
+        repeat_action_tool = str(getattr(cognitive_signals, "repeat_action_tool", "") or "")
+        repeat_read_count = int(getattr(cognitive_signals, "repeat_read_count", 0) or 0)
+        repeat_read_path = str(getattr(cognitive_signals, "repeat_read_path", "") or "")
+        repeat_list_count = int(getattr(cognitive_signals, "repeat_list_count", 0) or 0)
+        repeat_list_path = str(getattr(cognitive_signals, "repeat_list_path", "") or "")
+
+        if repeat_action_count >= 3 and repeat_action_tool == tool_id:
+            _log.info("[behavior-sense] repeated action delegated to llm: tool=%s count=%d key=%s", tool_id, repeat_action_count, getattr(cognitive_signals, "repeat_action_key", "") or "")
+        if tool_id == "file.read" and repeat_read_count >= 3:
+            _log.info("[behavior-sense] repeated read delegated to llm: path=%s count=%d", repeat_read_path, repeat_read_count)
+        if tool_id == "file.list" and repeat_list_count >= 3:
+            _log.info("[behavior-sense] repeated list delegated to llm: path=%s count=%d", repeat_list_path, repeat_list_count)
         return action

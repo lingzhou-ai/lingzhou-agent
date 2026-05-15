@@ -1001,7 +1001,7 @@ def test_image_source_helpers():
 async def _file_list_and_memory_search():
     from tools.file import file_list, file_read
     from tools.memory_ops import memory_search, memory_add_semantic
-    from memory.semantic import SemanticMemory
+    from memory.semantic import MemoryNode, SemanticMemory
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as d:
@@ -1025,8 +1025,21 @@ async def _file_list_and_memory_search():
         assert read_empty.error == 'EmptyPath'
 
         await memory_add_semantic({'title': 'bug fix note', 'body': 'reader tasks should use qwen3.6-plus', 'kind': 'fact'}, ctx)
+        semantic.upsert(MemoryNode(
+            id='task-note-1',
+            kind='fact',
+            title='openclaw primary carrier',
+            body='/root/.openclaw/memory/main.sqlite',
+            tags=['task:33', 'path:/root/.openclaw/memory'],
+        ))
         found = await memory_search({'query': 'bug'}, ctx)
         assert 'bug fix note' in found.summary
+
+        filtered = await memory_search({'query': 'openclaw', 'task_id': '33', 'path_prefix': '/root/.openclaw/memory'}, ctx)
+        assert 'openclaw primary carrier' in filtered.summary
+
+        excluded = await memory_search({'query': 'openclaw', 'task_id': '34'}, ctx)
+        assert excluded.skipped is True
 
 
 def test_exec_process_write_pipe_roundtrip():
@@ -1106,6 +1119,8 @@ async def _exec_and_shell_explicit_no_output():
     shell_res = await shell_run({"command": "python3 -c \"pass\""}, ctx)
     assert shell_res.error is None
     assert "(无输出)" in shell_res.summary
+    assert shell_res.state_delta == {"process": "finished", "exit_code": 0}
+    assert shell_res.metadata["log_summary"].startswith("shell.run exit=0 chars=0")
 
 
 def test_execution_durable_failure_sensing():
@@ -3191,35 +3206,49 @@ def test_prefer_tier_for_task_uses_pending_then_task_default():
     assert _prefer_tier_for_task(None, task) is None
 
 
-def test_behavior_gate_passthrough():
-    """apply_execution_gate 为纯透传：决策权归 LLM，不做硬拦截。
-
-    重复行为信号由 on_act/on_read/on_list 以 WMItem 形式注入工作记忆，
-    LLM 在下一轮 judgment 时自主决定是否改变策略。
-    """
+def test_behavior_gate_passthrough_and_logs_observation(caplog):
+    """重复信号只做感知和日志，不替 LLM 改 decision。"""
     from core.behavior_tracker import BehaviorTracker
     from core.judgment import JudgmentOutput
 
+    caplog.set_level(logging.INFO, logger="lingzhou.behavior_tracker")
     tracker = BehaviorTracker()
 
     class _Signals:
         repeat_action_count = 3
-        repeat_action_tool = "shell.run"
-        repeat_action_key = "ls"
+        repeat_action_tool = "memory.search"
+        repeat_action_key = "openclaw"
         repeat_read_count = 0
         repeat_read_path = ""
         loop_probe_version = 5
 
     action = _judgment_output(
         decision="act",
-        chosen_action_id="shell.run",
-        params={"command": "ls"},
-        rationale="再跑一次",
+        chosen_action_id="memory.search",
+        params={"query": "openclaw"},
+        rationale="再搜一次",
     )
-    # 透传：gate 不改变决策，信号已通过 WM 注入交由 LLM 判断
     gated = tracker.apply_execution_gate(action, _Signals())
-    assert gated.decision == "act", "apply_execution_gate 应透传，不强制改变决策"
-    assert gated is action, "apply_execution_gate 应返回原对象（零拷贝）"
+    assert gated.decision == "act"
+    assert gated is action
+    assert any("delegated to llm" in rec.message for rec in caplog.records)
+
+    class _ReadSignals:
+        repeat_action_count = 0
+        repeat_action_tool = ""
+        repeat_action_key = ""
+        repeat_read_count = 3
+        repeat_read_path = "/tmp/demo.txt"
+        loop_probe_version = 6
+
+    read_action = _judgment_output(
+        decision="act",
+        chosen_action_id="file.read",
+        params={"path": "/tmp/demo.txt"},
+    )
+    gated_read = tracker.apply_execution_gate(read_action, _ReadSignals())
+    assert gated_read.decision == "act"
+    assert gated_read is read_action
 
     # on_act 连续相同行为时应生成 WMItem 信号
     items = []
@@ -3235,6 +3264,67 @@ def test_behavior_gate_passthrough():
     assert not any("行为信号" in i.content for i in items2), (
         "不同 shell.run 命令不应触发 streak（key_param 已区分命令内容）"
     )
+
+
+def test_cognitive_signals_include_last_action_feedback_and_repeat_list():
+    from core.perception import CognitiveSignals
+
+    text = CognitiveSignals(
+        repeat_action_count=3,
+        repeat_action_tool="memory.search",
+        repeat_action_key="openclaw sqlite",
+        repeat_read_count=0,
+        repeat_read_path="",
+        repeat_list_count=3,
+        repeat_list_path="/root/.openclaw/memory",
+        loop_probe_version=9,
+        last_action_tool="shell.run",
+        last_action_key="find /root/.openclaw",
+        last_action_status="ok",
+        last_action_summary="找到了 main.sqlite，但没有进一步推进 next_step",
+        last_action_error="",
+        last_action_state_delta="process=finished; exit_code=0",
+        last_action_progressful=False,
+        recent_action_history=[
+            "tool=file.list | key=/root/.openclaw | status=ok | progressful=True",
+            "tool=memory.search | key=openclaw sqlite | status=ok | progressful=False",
+        ],
+    ).to_text()
+
+    assert "last_action={tool='shell.run'" in text
+    assert "repeat_list_count=3" in text
+    assert "没有推进 next_step" in text
+    assert "recent_actions:" in text
+    assert "tool=memory.search | key=openclaw sqlite" in text
+
+
+def test_skill_registry_logs_selected_skills(caplog):
+    from core.skill import SkillRegistry
+
+    caplog.set_level(logging.INFO, logger="core.skill")
+    reg = SkillRegistry()
+    skills = reg.match_for_context(
+        wm_pressure=0.5,
+        has_active_task=True,
+        has_next_step=True,
+        failure_count=2,
+        high_error_streak=1,
+        context_text="当前任务需要继续推进，但已经有失败和参数错误。",
+    )
+
+    assert skills
+    assert any("[skill.match] selected=" in rec.message for rec in caplog.records)
+
+
+def test_judgment_skills_for_log_formats_selected_names():
+    from core.judgment import JudgmentLayer
+    from core.skill import Skill
+
+    assert JudgmentLayer._skills_for_log([]) == "none"
+    assert JudgmentLayer._skills_for_log([
+        Skill(name="runtime.bootstrap", description="", guidance=""),
+        Skill(name="task.continuity", description="", guidance=""),
+    ]) == "runtime.bootstrap,task.continuity"
 
 
 def test_behavior_list_result_aware():
@@ -3647,6 +3737,35 @@ def test_action_made_progress_result_aware():
     assert _action_made_progress(unknown_action, unknown_with_delta) is True
 
 
+def test_write_success_stall_meta_reflection_records_task_hint():
+    asyncio.run(_write_success_stall_meta_reflection_records_task_hint())
+
+
+async def _write_success_stall_meta_reflection_records_task_hint():
+    from core.loop import _write_success_stall_meta_reflection
+    from memory.task_store import TaskStore
+    from tools.registry import ToolResult
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "stall.db")
+        await store.open()
+        task_id = await store.add_task("分析空转", goal="减少重复探索")
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+
+        action = _judgment_output(decision="act", chosen_action_id="memory.search", params={"query": "openclaw"})
+        result = ToolResult(summary="命中旧记忆：/root/.openclaw/memory/main.sqlite")
+        await _write_success_stall_meta_reflection(store, task, action, result, streak=2, cycle=12)
+
+        raw, found = await store.get_fact(f"task:{task_id}:meta_reflection")
+        assert found
+        payload = json.loads(raw)
+        assert payload["target_kind"] == "stall_recovery"
+        assert payload["tool_name"] == "memory.search"
+        assert "停止重复 memory.search" in payload["proposal"]
+        await store.close()
+
+
 def test_fallback_reply_for_user_describes_waiting_state():
     from core.loop import _fallback_reply_for_user
     from tools.registry import ToolResult
@@ -3686,6 +3805,7 @@ def test_should_continue_within_tick_for_autonomous_act():
     from core.loop import _should_continue_within_tick
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
+    assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="task.complete")) is False
     assert _should_continue_within_tick(_judgment_output(decision="wait")) is False
     assert _should_continue_within_tick(
         _judgment_output(decision="act", chosen_action_id="file.read"),
@@ -3782,6 +3902,34 @@ def test_fmt_task_exposes_runtime_state_to_llm():
     assert "模型层级: repair" in section
     assert "当前步骤: 检查 run monitor" in section
     assert "最近运行状态: failed" in section
+
+
+def test_fmt_context_facts_surfaces_task_and_recent_general_facts():
+    asyncio.run(_fmt_context_facts_surfaces_task_and_recent_general_facts())
+
+
+async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
+    from core.judgment import _fmt_context_facts, _load_context_facts_snapshot
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / 'facts.db')
+        await store.open()
+        task_id = await store.add_task('分析 openclaw 记忆', goal='确认 carrier')
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+
+        await store.set_fact(f'task:{task_id}:progress', '已确认 sqlite 为主载体', scope='task')
+        await store.set_fact('openclaw.workspace_memory.primary_carrier', '/root/.openclaw/memory/main.sqlite')
+        await store.set_fact('pref:routing_overrides', '{"reader":"demo"}', scope='system')
+
+        facts = await _load_context_facts_snapshot(store, task)
+        text = _fmt_context_facts(facts)
+
+        assert f'task:{task_id}:progress' in text
+        assert 'openclaw.workspace_memory.primary_carrier' in text
+        assert 'pref:routing_overrides' not in text
+        await store.close()
 
 
 def test_tool_result_log_fields_include_state_delta():

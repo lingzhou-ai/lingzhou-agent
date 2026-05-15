@@ -6,6 +6,9 @@
 ### 活跃任务
 {{task_section}}
 
+### 近期关键事实
+{{task_facts_section}}
+
 ### Waiting 任务
 {{waiting_tasks_section}}
 

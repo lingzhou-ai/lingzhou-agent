@@ -68,6 +68,7 @@ _EVENT_NEW_BODY_CHARS = 16000  # 新事件节点 body 上限
 # P1-B: reflection → 情绪效价的关键词启发式推断（模块级，无 LLM 依赖）
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
 _VALENCE_NEG = frozenset(["失败", "错误", "困惑", "卡住", "无法", "问题", "不对", "不清", "循环", "重复", "卡顿"])
+_SUCCESS_STALL_TRACK_TOOLS = frozenset(("file.read", "file.list", "memory.search", "shell.run"))
 
 
 
@@ -104,6 +105,43 @@ def _clip_reply_for_log(text: str, limit: int = _LOG_REPLY_CHARS) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[:limit] + "..."
+
+
+def _clip_signal_text(text: str, limit: int = 160) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)] + "..."
+
+
+def _summarize_state_delta(state_delta: dict[str, Any] | None, limit: int = 120) -> str:
+    if not state_delta:
+        return ""
+    parts = [f"{key}={state_delta[key]}" for key in sorted(state_delta)]
+    return _clip_signal_text("; ".join(parts), limit)
+
+
+def _format_action_feedback_line(
+    action: JudgmentOutput,
+    result: ToolResult,
+    *,
+    progressful: bool,
+) -> str:
+    tool = action.chosen_action_id or action.decision or "-"
+    key = _action_key_param(action.params) if action.decision == "act" else ""
+    status = "error" if result.error else ("skipped" if result.skipped else ("ok" if action.decision == "act" else action.decision))
+    parts = [f"tool={tool}"]
+    if key:
+        parts.append(f"key={key}")
+    parts.append(f"status={status}")
+    parts.append(f"progressful={progressful}")
+    if result.error:
+        parts.append(f"error={_clip_signal_text(result.error, 80)}")
+    if result.state_delta:
+        parts.append(f"state_delta={_summarize_state_delta(result.state_delta, 90)}")
+    if result.summary:
+        parts.append(f"summary={_clip_signal_text(result.summary, 100)}")
+    return " | ".join(parts)
 
 
 def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_task: Task | None) -> str:
@@ -274,6 +312,42 @@ def _action_made_progress(
     return True
 
 
+async def _write_success_stall_meta_reflection(
+    task_store: TaskStore,
+    task: Task,
+    action: JudgmentOutput,
+    result: ToolResult,
+    *,
+    streak: int,
+    cycle: int,
+) -> None:
+    tool_name = action.chosen_action_id or "unknown"
+    summary = " ".join((result.summary or "").split())
+    if len(summary) > 160:
+        summary = summary[:157] + "..."
+    payload = {
+        "reflection_id": f"stall-{task.id}-{cycle}",
+        "decision": "apply",
+        "target_kind": "stall_recovery",
+        "proposal": (
+            f"连续 {streak} 次成功动作均未推进 next_step，先停止重复 {tool_name}，"
+            "基于当前已知事实收敛，再决定是否换路径、换工具或转写入。"
+        ),
+        "verification_plan": (
+            "下一轮应先总结当前事实并给出更窄的下一步，"
+            "而不是继续同类探索。"
+        ),
+        "tool_name": tool_name,
+        "recent_summary": summary,
+    }
+    await task_store.set_fact(
+        f"task:{task.id}:meta_reflection",
+        json.dumps(payload, ensure_ascii=False),
+        scope="task",
+    )
+    _log.info("[stall-reflection] task=%s tool=%s streak=%d", task.id, tool_name, streak)
+
+
 def _should_continue_within_tick(
     action: JudgmentOutput,
     *,
@@ -282,6 +356,8 @@ def _should_continue_within_tick(
 ) -> bool:
     """有新用户消息且本轮进入前已存在活跃任务时，不让旧任务在同一 tick 里继续插队。"""
     if action.decision != "act":
+        return False
+    if (action.chosen_action_id or "") in {"task.complete", "task.fail"}:
         return False
     if user_message and has_active_task:
         return False
@@ -346,6 +422,15 @@ class CognitionLoop:
         self._last_decision: str = "wait"
         self._last_act_error: bool = False   # 兼容旧信号：上轮 act 是否以工具错误结束
         self._last_act_progressful: bool = False
+        self._last_action_tool: str = ""
+        self._last_action_key: str = ""
+        self._last_action_status: str = ""
+        self._last_action_summary: str = ""
+        self._last_action_error: str = ""
+        self._last_action_state_delta: str = ""
+        self._success_stall_task_id: str | None = None
+        self._success_stall_streak: int = 0
+        self._recent_action_feedback: deque[str] = deque(maxlen=3)
         self._last_action_sig: str = ""
         self._last_result_fp: str = ""
         self._idle_cycles: int = 0
@@ -712,6 +797,14 @@ class CognitionLoop:
         )
         # 注入结构化循环探针
         self._behavior.apply_cognitive_probe(cognitive_signals)
+        cognitive_signals.last_action_tool = self._last_action_tool
+        cognitive_signals.last_action_key = self._last_action_key
+        cognitive_signals.last_action_status = self._last_action_status
+        cognitive_signals.last_action_summary = self._last_action_summary
+        cognitive_signals.last_action_error = self._last_action_error
+        cognitive_signals.last_action_state_delta = self._last_action_state_delta
+        cognitive_signals.last_action_progressful = self._last_act_progressful if self._last_action_status else None
+        cognitive_signals.recent_action_history = list(self._recent_action_feedback)
 
         # 3a. 情绪更新（在判断前）：OCC 评价理论，感知信号确定性推导
         failures_recent = await self._task_store.list_failures(limit=5)
@@ -840,10 +933,11 @@ class CognitionLoop:
         _actual_thinking = _call_meta.get("thinking") or cfg.thinking
         _actual_tier = _call_meta.get("tier") or "default"
         _actual_phase = _call_meta.get("phase") or "initial"
+        _actual_skills = _call_meta.get("skills") or "none"
         _model_tag = (
-            f" model={_actual_model} tier={_actual_tier} phase={_actual_phase} thinking={_actual_thinking}"
+            f" model={_actual_model} tier={_actual_tier} phase={_actual_phase} thinking={_actual_thinking} skills={_actual_skills}"
             if _actual_thinking != "off"
-            else f" model={_actual_model} tier={_actual_tier} phase={_actual_phase}"
+            else f" model={_actual_model} tier={_actual_tier} phase={_actual_phase} skills={_actual_skills}"
         )
         console.print(
             f"[bold cyan][loop][/bold cyan] tick={cycle} "
@@ -851,9 +945,9 @@ class CognitionLoop:
             f"[dim]{_model_tag}[/dim]"
         )
         _log.info(
-            "[loop] tick=%d decision=%s tool=%s model=%s tier=%s phase=%s thinking=%s rationale=%s",
+            "[loop] tick=%d decision=%s tool=%s model=%s tier=%s phase=%s thinking=%s skills=%s rationale=%s",
             cycle, action.decision, action.chosen_action_id, _actual_model, _actual_tier,
-            _actual_phase, _actual_thinking,
+            _actual_phase, _actual_thinking, _actual_skills,
             (action.rationale or "")[: _LOG_RATIONALE_CHARS],
         )
 
@@ -869,7 +963,7 @@ class CognitionLoop:
             for _item in self._behavior.on_wait(action.decision, active_task is not None):
                 self._wm.add(_item)
 
-        # 4. 执行前本地硬门控：重复循环时强制 wait
+        # 4. 执行前行为信号采样：不替 LLM 决策，只记录重复/空转观察
         action = self._behavior.apply_execution_gate(action, cognitive_signals)
 
         # 5. 执行
@@ -963,7 +1057,7 @@ class CognitionLoop:
 
                 action = _cont
                 result = _cont_result
-                if action.reply_to_user or action.decision != "act":
+                if action.reply_to_user or not _should_continue_within_tick(action):
                     break
 
         # chat/interact 模式下，内层循环结束仍无回复时给用户兜底真实状态，而非固定 ACK
@@ -1023,6 +1117,27 @@ class CognitionLoop:
         self._last_decision = action.decision
         self._last_act_error = bool(action.decision == "act" and result.error)
         self._last_act_progressful = _action_made_progress(action, result, prev_sig=_prev_sig, prev_fp=_prev_fp)
+        self._last_action_tool = action.chosen_action_id or ""
+        self._last_action_key = _action_key_param(action.params) if action.decision == "act" else ""
+        self._last_action_summary = _clip_signal_text(result.summary or "") if action.decision == "act" else ""
+        self._last_action_error = _clip_signal_text(result.error or "", 100) if action.decision == "act" else ""
+        self._last_action_state_delta = _summarize_state_delta(result.state_delta) if action.decision == "act" else ""
+        if action.decision == "act":
+            if result.error:
+                self._last_action_status = "error"
+            elif result.skipped:
+                self._last_action_status = "skipped"
+            else:
+                self._last_action_status = "ok"
+        else:
+            self._last_action_status = action.decision
+        self._recent_action_feedback.append(
+            _format_action_feedback_line(
+                action,
+                result,
+                progressful=self._last_act_progressful,
+            )
+        )
         self._last_action_sig = _cur_sig
         self._last_result_fp = _cur_fp
         active_task = await _sync_task_progress_state(
@@ -1033,6 +1148,7 @@ class CognitionLoop:
             progressful=self._last_act_progressful,
             state_delta=result.state_delta,
         )
+        await self._maybe_record_success_stall_reflection(active_task, action, result, cycle)
 
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
@@ -1096,6 +1212,45 @@ class CognitionLoop:
         }))
 
         return action.reply_to_user
+
+    async def _maybe_record_success_stall_reflection(
+        self,
+        active_task: Task | None,
+        action: JudgmentOutput,
+        result: ToolResult,
+        cycle: int,
+    ) -> None:
+        tool_name = action.chosen_action_id or ""
+        qualifies = (
+            active_task is not None
+            and action.decision == "act"
+            and not result.error
+            and not result.skipped
+            and not self._last_act_progressful
+            and tool_name in _SUCCESS_STALL_TRACK_TOOLS
+        )
+        if not qualifies:
+            self._success_stall_task_id = str(active_task.id) if active_task else None
+            self._success_stall_streak = 0
+            return
+
+        task_id = str(active_task.id)
+        if self._success_stall_task_id != task_id:
+            self._success_stall_task_id = task_id
+            self._success_stall_streak = 0
+
+        self._success_stall_streak += 1
+        if self._success_stall_streak != 2:
+            return
+
+        await _write_success_stall_meta_reflection(
+            self._task_store,
+            active_task,
+            action,
+            result,
+            streak=self._success_stall_streak,
+            cycle=cycle,
+        )
 
     async def _restore_state_from_db(self) -> None:
         """从 DB 恢复上次持久化的情绪状态和路由偏好，实现跨重启连续性。"""

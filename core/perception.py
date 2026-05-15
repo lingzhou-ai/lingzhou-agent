@@ -386,10 +386,26 @@ class CognitiveSignals:
     repeat_action_key: str = ""
     repeat_read_count: int = 0
     repeat_read_path: str = ""
+    repeat_list_count: int = 0
+    repeat_list_path: str = ""
     loop_probe_version: int = 0
+    last_action_tool: str = ""
+    last_action_key: str = ""
+    last_action_status: str = ""
+    last_action_summary: str = ""
+    last_action_error: str = ""
+    last_action_state_delta: str = ""
+    last_action_progressful: bool | None = None
+    recent_action_history: list[str] = field(default_factory=list[str])
 
     def to_text(self) -> str:
         """格式化为 LLM 可读文本，注入 judgment bundle。"""
+        def _clip(text: str, limit: int = 120) -> str:
+            cleaned = " ".join((text or "").split())
+            if len(cleaned) <= limit:
+                return cleaned
+            return cleaned[: max(0, limit - 3)] + "..."
+
         lines: list[str] = []
         lines.append(
             "loop_probe="
@@ -398,8 +414,45 @@ class CognitiveSignals:
             f"repeat_action_tool='{self.repeat_action_tool}', "
             f"repeat_action_key='{self.repeat_action_key}', "
             f"repeat_read_count={self.repeat_read_count}, "
-            f"repeat_read_path='{self.repeat_read_path}'}}"
+            f"repeat_read_path='{self.repeat_read_path}', "
+            f"repeat_list_count={self.repeat_list_count}, "
+            f"repeat_list_path='{self.repeat_list_path}'}}"
         )
+        if self.last_action_tool or self.last_action_status:
+            lines.append(
+                "last_action="
+                f"{{tool='{self.last_action_tool}', "
+                f"key='{self.last_action_key}', "
+                f"status='{self.last_action_status}', "
+                f"progressful={self.last_action_progressful}, "
+                f"error='{_clip(self.last_action_error, 80)}', "
+                f"state_delta='{_clip(self.last_action_state_delta, 100)}', "
+                f"summary='{_clip(self.last_action_summary, 140)}'}}"
+            )
+        if self.recent_action_history:
+            lines.append("recent_actions:")
+            lines.extend(f"- {_clip(item, 180)}" for item in self.recent_action_history[:3])
+        if self.repeat_action_count >= 3 and self.repeat_action_tool:
+            lines.append(
+                f"⚠️ 最近动作已连续重复 {self.repeat_action_count} 次："
+                f"tool={self.repeat_action_tool} key={self.repeat_action_key or '（空）'}。"
+                "请结合最近结果、错误与参数判断是否还值得继续。"
+            )
+        if self.repeat_read_count >= 3 and self.repeat_read_path:
+            lines.append(
+                f"⚠️ 最近读取已连续命中相同内容 {self.repeat_read_count} 次：{self.repeat_read_path}。"
+                "若没有新的外部变化，继续读取大概率只会重复。"
+            )
+        if self.repeat_list_count >= 3 and self.repeat_list_path:
+            lines.append(
+                f"⚠️ 最近目录枚举已连续命中相同结果 {self.repeat_list_count} 次：{self.repeat_list_path}。"
+                "请先判断是否需要切换到读取、写入或总结。"
+            )
+        if self.last_action_tool and self.last_action_progressful is False and self.last_action_status in {"ok", "skipped"}:
+            lines.append(
+                f"⚠️ 上一轮动作 {self.last_action_tool} 没有推进 next_step。"
+                "请先基于参数、结果和错误重新评估，而不是默认重复。"
+            )
         if self.emotion_alert:
             lines.append(
                 f"⚠️ 情绪激活偏高（{self.emotion_activation:.2f}）："

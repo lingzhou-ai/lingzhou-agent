@@ -1,6 +1,7 @@
 """tools/memory_ops.py — 记忆操作工具。"""
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -9,6 +10,16 @@ from memory.working import WMItem
 from memory.semantic import MemoryNode
 
 _PRIORITY_ALIASES = {"high": 0.9, "medium": 0.6, "mid": 0.6, "low": 0.3, "critical": 1.0}
+
+
+def _coerce_fact_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list, tuple, bool, int, float)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value).strip()
 
 def _parse_float(val: Any, default: float) -> float:
     """把 '0.8' / 'high' / 0.8 / None 都安全转成 float。"""
@@ -84,7 +95,7 @@ async def memory_add_semantic(params: dict[str, Any], ctx: ToolContext) -> ToolR
 ))
 async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     key = (params.get("key") or "").strip()
-    value = (params.get("value") or "").strip()
+    value = _coerce_fact_value(params.get("value"))
     if not key:
         return ToolResult(summary="key 不能为空", skipped=True)
     await ctx.task_store.set_fact(key, value, scope=params.get("scope") or "general")
@@ -97,6 +108,11 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     params=[
         ToolParam("query", "string", "搜索查询", required=True),
         ToolParam("top_k", "number", "返回条数，默认 5", required=False),
+        ToolParam("kind", "string", "仅返回指定 kind 的节点", required=False),
+        ToolParam("tag", "string", "仅返回包含指定 tag 的节点", required=False),
+        ToolParam("task_id", "string", "仅返回包含 task:{id} tag 的节点", required=False),
+        ToolParam("path_prefix", "string", "仅返回标题/正文/tag 中包含该路径前缀的节点", required=False),
+        ToolParam("id_prefix", "string", "仅返回 id 以该前缀开头的节点", required=False),
     ],
 ))
 async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -104,7 +120,15 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not query:
         return ToolResult(summary="query 不能为空", skipped=True)
     top_k = int(params.get("top_k") or 5)
-    hits = ctx.semantic.retrieve(query, top_k=top_k)
+    hits = ctx.semantic.retrieve(
+        query,
+        top_k=top_k,
+        kind=(params.get("kind") or "").strip() or None,
+        tag=(params.get("tag") or "").strip() or None,
+        task_id=(params.get("task_id") or "").strip() or None,
+        path_prefix=(params.get("path_prefix") or "").strip() or None,
+        id_prefix=(params.get("id_prefix") or "").strip() or None,
+    )
     if not hits:
         return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
     lines = []
