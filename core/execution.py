@@ -100,7 +100,11 @@ def _classify_durable_failure(result: ToolResult) -> str | None:
     return None
 
 
-def _infer_run_profile(tool_name: str) -> tuple[str, str]:
+def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> tuple[str, str]:
+    p = params or {}
+    if p.get("monitor_fact_key") or p.get("status_fact_key"):
+        _log.debug("[run-profile] tool=%s classified as llm-worker via fact monitor", tool_name)
+        return "llm", "llm-worker"
     if tool_name in _EXEC_RUN_TOOLS:
         return "exec", "exec-worker"
     if tool_name in _MULTIMODAL_RUN_TOOLS:
@@ -396,7 +400,7 @@ class ExecutionLayer:
         durable_threshold = int(durable_policy.get("threshold") or _DURABLE_FAILURE_THRESHOLD)
         durable_ttl_sec = int(durable_policy.get("ttl_sec") or _DURABLE_FAILURE_TTL_SEC)
         if ctx.task_store is not None:
-            run_type, worker_type = _infer_run_profile(action.chosen_action_id or "")
+            run_type, worker_type = _infer_run_profile(action.chosen_action_id or "", action.params)
             run_id = await ctx.task_store.add_run(
                 task_id=active_task.id if active_task else 0,
                 run_type=run_type,

@@ -13,11 +13,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import deque
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rich.console import Console
 from rich.panel import Panel
@@ -31,7 +32,11 @@ from core.perception import (
     derive_ethos_state, compute_judgment_signals,
 )
 from core.judgment import JudgmentLayer, JudgmentOutput, READER_TOOLS
-from core.execution import ExecutionLayer
+from core.execution import (
+    ExecutionLayer,
+    _build_meta_reflection,
+    _record_meta_reflection,
+)
 from core.evolution import EvolutionEngine
 from memory.working import WorkingMemory, WMItem
 from memory.episodic import EpisodicMemory
@@ -132,8 +137,15 @@ def _run_monitor_config(run: Run) -> dict[str, Any] | None:
         (run.output_json.get("metadata") or {}).get("run_monitor") if isinstance(run.output_json, dict) else None,
     ]
     for candidate in candidates:
-        if isinstance(candidate, dict) and str(candidate.get("kind") or "").strip() == "fact" and str(candidate.get("key") or "").strip():
+        if not isinstance(candidate, dict):
+            continue
+        kind = str(candidate.get("kind") or "").strip()
+        if kind == "fact" and str(candidate.get("key") or "").strip():
             return candidate
+        if kind == "process" and str(candidate.get("session_id") or "").strip():
+            return candidate
+    if run.session_id:
+        return {"kind": "process", "session_id": run.session_id}
     return None
 
 
@@ -213,6 +225,76 @@ def _record_refreshed_run_outcome(
     ))
 
 
+async def _finalize_refreshed_run_learning(
+    task_store: TaskStore,
+    *,
+    run: Run,
+    status: str,
+    summary: str,
+    error: str,
+    evidence: str,
+    episodic: EpisodicMemory | None = None,
+    semantic: SemanticMemory | None = None,
+) -> None:
+    if error:
+        _log.debug("[run-refresh] record failure for run=%s tool=%s error=%s", run.id, run.tool_name, error[:120])
+        await task_store.record_failure(
+            kind=run.tool_name or run.worker_type or "run",
+            summary=summary[:300],
+            context=evidence[:200],
+            task_id=str(run.task_id) if run.task_id else "",
+        )
+
+    result = ToolResult(
+        summary=summary,
+        evidence=evidence,
+        error=error,
+        skipped=(status == "cancelled"),
+        kind="execute_result",
+        metadata={
+            "tool_name": run.tool_name,
+            "worker_type": run.worker_type,
+            "session_id": run.session_id,
+        },
+    )
+    meta = _build_meta_reflection(
+        run_id=run.id,
+        task_id=run.task_id,
+        tool_name=run.tool_name,
+        result=result,
+    )
+    if not meta:
+        return
+    _log.debug(
+        "[run-refresh] meta reflection run=%s target=%s decision=%s",
+        run.id,
+        meta.get("target_kind"),
+        meta.get("decision"),
+    )
+    await task_store.add_meta_reflection(
+        reflection_id=str(meta["reflection_id"]),
+        target_kind=str(meta["target_kind"]),
+        trigger=str(meta["trigger"]),
+        loop_level=str(meta["loop_level"]),
+        diagnosis=str(meta["diagnosis"]),
+        proposal=str(meta["proposal"]),
+        verification_plan=str(meta["verification_plan"]),
+        decision=str(meta["decision"]),
+        task_id=int(meta["task_id"]),
+        run_id=int(meta["run_id"]),
+        tool_name=str(meta["tool_name"]),
+    )
+    if episodic is None and semantic is None:
+        return
+
+    class _ReflectionCtx:
+        def __init__(self) -> None:
+            self.episodic = episodic
+            self.semantic = semantic
+
+    _record_meta_reflection(cast(Any, _ReflectionCtx()), meta)
+
+
 async def _refresh_run_via_fact_monitor(
     task_store: TaskStore,
     run: Run,
@@ -266,6 +348,16 @@ async def _refresh_run_via_fact_monitor(
             summary=summary,
             error=error,
         )
+        await _finalize_refreshed_run_learning(
+            task_store,
+            run=run,
+            status=status,
+            summary=summary,
+            error=error,
+            evidence=str(payload if isinstance(payload, dict) else raw)[:1200],
+            episodic=episodic,
+            semantic=semantic,
+        )
     return {
         "run_id": run.id,
         "task_id": run.task_id,
@@ -273,6 +365,110 @@ async def _refresh_run_via_fact_monitor(
         "session_id": run.session_id,
         "crystal": crystal[:400],
     }
+
+
+async def _refresh_run_via_process_monitor(
+    task_store: TaskStore,
+    run: Run,
+    monitor: dict[str, Any],
+    *,
+    manager: Any,
+    episodic: EpisodicMemory | None = None,
+    semantic: SemanticMemory | None = None,
+) -> dict[str, Any]:
+    session_id = str(monitor.get("session_id") or run.session_id or "").strip()
+    if not session_id or manager is None:
+        return {"run_id": run.id, "task_id": run.task_id, "status": run.status}
+
+    info = manager.get(session_id)
+    if info is None:
+        return {"run_id": run.id, "task_id": run.task_id, "status": run.status}
+    if not info.finished:
+        _log.debug("[run-monitor] process session=%s run=%s still running", session_id, run.id)
+        stdout_text = info.stdout or ""
+        last_crystal_chars = int(run.extras.get("last_crystal_chars", 0) or 0)
+        crystal_excerpt = ""
+        if len(stdout_text) - last_crystal_chars >= _RUN_PROGRESS_CRYSTAL_CHARS:
+            crystal_excerpt = stdout_text[last_crystal_chars:][-400:].strip()
+            await task_store.update_run(
+                run.id,
+                status="running",
+                output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
+                log_text=stdout_text[-4000:],
+                session_id=session_id,
+                progress=crystal_excerpt[:2000],
+                extras={**run.extras, "last_crystal_chars": len(stdout_text), "run_monitor": monitor},
+            )
+            if run.task_id and crystal_excerpt:
+                await task_store.set_fact(f"task:{run.task_id}:progress", crystal_excerpt[:800], scope="task")
+        return {
+            "run_id": run.id,
+            "task_id": run.task_id,
+            "status": "running",
+            "session_id": session_id,
+            "crystal": crystal_excerpt,
+        }
+
+    status = "succeeded" if (info.return_code in (0, None) and not info.timed_out and not info.error) else "failed"
+    _log.info("[run-monitor] process session=%s run=%s finished status=%s", session_id, run.id, status)
+    output_json = dict(run.output_json)
+    output_json.update({
+        "session_id": session_id,
+        "return_code": info.return_code,
+        "timed_out": info.timed_out,
+        "stdout": info.stdout[-4000:],
+        "stderr": info.stderr[-2000:],
+        "error": info.error,
+    })
+    await task_store.update_run(
+        run.id,
+        status=status,
+        output_json=output_json,
+        log_text=info.stdout[-4000:],
+        error_text=info.error or ("timed_out" if info.timed_out else (f"exit_code={info.return_code}" if status == "failed" else "")),
+        session_id=session_id,
+        progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
+        extras={
+            **run.extras,
+            "return_code": info.return_code,
+            "timed_out": info.timed_out,
+            "background": info.background,
+            "run_monitor": monitor,
+        },
+    )
+    if run.task_id:
+        await task_store.update_task_result(
+            run.task_id,
+            {
+                "last_run_id": run.id,
+                "last_run_status": status,
+                "worker_type": run.worker_type,
+                "tool_name": run.tool_name,
+                "session_id": session_id,
+                "summary": output_json.get("stdout", "")[:200] or f"process {status}",
+                "error": output_json.get("error"),
+            },
+        )
+    _record_refreshed_run_outcome(
+        episodic,
+        semantic,
+        run=run,
+        status=status,
+        progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
+        summary=output_json.get("stdout", "")[:200] or f"process {status}",
+        error=str(output_json.get("error") or ""),
+    )
+    await _finalize_refreshed_run_learning(
+        task_store,
+        run=run,
+        status=status,
+        summary=output_json.get("stdout", "")[:200] or f"process {status}",
+        error=str(output_json.get("error") or ""),
+        evidence=((info.stderr or "") + "\n" + (info.error or "")).strip()[:1200],
+        episodic=episodic,
+        semantic=semantic,
+    )
+    return {"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": session_id}
 
 
 async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: WorkingMemory) -> list[str]:
@@ -296,12 +492,15 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                         policy["ttl_sec"] = int(loaded.get("ttl_sec") or policy["ttl_sec"])
                 except Exception:
                     pass
+            suggested = _extract_reflection_policy(
+                "\n".join([reflection.diagnosis, reflection.proposal, reflection.verification_plan])
+            )
             if reflection.decision == "rollback":
                 policy = {"threshold": 3, "ttl_sec": 7200}
                 applied_change = "reset durable failure policy"
             else:
-                policy["threshold"] = max(1, policy["threshold"] + 1)
-                policy["ttl_sec"] = max(900, policy["ttl_sec"] // 2)
+                policy["threshold"] = max(1, int(suggested.get("threshold") or (policy["threshold"] + 1)))
+                policy["ttl_sec"] = max(900, int(suggested.get("ttl_sec") or (policy["ttl_sec"] // 2)))
                 applied_change = f"set durable failure threshold={policy['threshold']} ttl={policy['ttl_sec']}"
             await task_store.set_fact("control:durable_failure_policy", json.dumps(policy, ensure_ascii=False), scope="system")
         elif reflection.target_kind == "task_split" and reflection.task_id:
@@ -329,6 +528,7 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                             "decision": reflection.decision,
                             "tool_name": reflection.tool_name,
                             "proposal": reflection.proposal,
+                            "preferred_tier": _suggest_tier_from_text(reflection.proposal),
                         },
                         ensure_ascii=False,
                     ),
@@ -339,6 +539,21 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 applied_change = "cleared routing overrides"
             else:
                 applied_change = "set routing guard"
+        else:
+            await task_store.set_fact(
+                f"control:meta_reflection_hint:{reflection.target_kind}",
+                json.dumps(
+                    {
+                        "reflection_id": reflection.id,
+                        "decision": reflection.decision,
+                        "proposal": reflection.proposal,
+                        "verification_plan": reflection.verification_plan,
+                    },
+                    ensure_ascii=False,
+                ),
+                scope="system",
+            )
+            applied_change = f"queued {reflection.target_kind} control hint"
         wm.add(WMItem(
             kind="meta_reflection",
             content=(
@@ -366,8 +581,152 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 scope="task",
             )
         await task_store.set_fact(fact_key, datetime.now(UTC).isoformat(), scope="system")
+        _log.info("[meta-reflection] applied reflection=%s target=%s change=%s", reflection.id, reflection.target_kind, applied_change)
         injected.append(reflection.id)
     return injected
+
+
+async def _consume_task_runtime_hints(
+    task_store: TaskStore,
+    task: Task | None,
+    wm: WorkingMemory,
+) -> Task | None:
+    if task is None:
+        return None
+
+    updated = False
+    last_replan_id = str(task.extras.get("last_replan_reflection_id") or "")
+    raw_replan, replan_found = await task_store.get_fact(f"task:{task.id}:needs_replan")
+    if replan_found and raw_replan.strip():
+        try:
+            replan = json.loads(raw_replan)
+        except Exception:
+            replan = {}
+        reflection_id = str(replan.get("reflection_id") or "")
+        if reflection_id and reflection_id != last_replan_id:
+            proposal = str(replan.get("proposal") or "").strip()
+            verification = str(replan.get("verification_plan") or "").strip()
+            replan_step = proposal or verification or "先重拆任务，再继续执行。"
+            if task.next_step != replan_step:
+                await task_store.update_status(task.id, task.status, next_step=replan_step)
+                task.next_step = replan_step
+                updated = True
+                _log.info("[runtime-hint] task=%s apply replan next_step=%s", task.id, replan_step[:120])
+            await task_store.update_task_data(task.id, {"last_replan_reflection_id": reflection_id})
+            task.extras["last_replan_reflection_id"] = reflection_id
+            wm.add(WMItem(
+                kind="task_replan",
+                content=f"[任务重规划] task#{task.id} {replan_step[:240]}",
+                priority=0.84,
+            ))
+
+    last_meta_id = str(task.extras.get("last_task_meta_reflection_id") or "")
+    raw_meta, meta_found = await task_store.get_fact(f"task:{task.id}:meta_reflection")
+    if meta_found and raw_meta.strip():
+        try:
+            meta_payload = json.loads(raw_meta)
+        except Exception:
+            meta_payload = {}
+        reflection_id = str(meta_payload.get("reflection_id") or "")
+        if reflection_id and reflection_id != last_meta_id:
+            target_kind = str(meta_payload.get("target_kind") or "reflection")
+            decision = str(meta_payload.get("decision") or "defer")
+            proposal = str(meta_payload.get("proposal") or "").strip()
+            verification = str(meta_payload.get("verification_plan") or "").strip()
+            wm.add(WMItem(
+                kind="task_reflection",
+                content=(
+                    f"[任务级反思 {decision}] target={target_kind}\n"
+                    f"建议：{proposal or '（无）'}\n"
+                    f"验证：{verification or '（无）'}"
+                )[:320],
+                priority=0.78,
+            ))
+            await task_store.update_task_data(task.id, {"last_task_meta_reflection_id": reflection_id})
+            task.extras["last_task_meta_reflection_id"] = reflection_id
+            _log.info("[runtime-hint] task=%s surface task meta reflection=%s", task.id, reflection_id)
+
+    last_routing_id = str(task.extras.get("last_routing_reflection_id") or "")
+    raw_guard, guard_found = await task_store.get_fact(f"task:{task.id}:routing_guard")
+    if guard_found and raw_guard.strip():
+        try:
+            guard = json.loads(raw_guard)
+        except Exception:
+            guard = {}
+        reflection_id = str(guard.get("reflection_id") or "")
+        if reflection_id and reflection_id != last_routing_id:
+            tool_name = str(guard.get("tool_name") or "unknown")
+            proposal = str(guard.get("proposal") or "").strip()
+            preferred_tier = str(guard.get("preferred_tier") or "").strip()
+            tier = preferred_tier if preferred_tier in _VALID_MODEL_TIERS else "repair"
+            if task.model_tier != tier:
+                await task_store.update_task_data(task.id, {"model_tier": tier})
+                task.model_tier = tier
+                updated = True
+                _log.info("[runtime-hint] task=%s apply routing guard via %s tier for tool=%s", task.id, tier, tool_name)
+            await task_store.update_task_data(task.id, {"last_routing_reflection_id": reflection_id})
+            task.extras["last_routing_reflection_id"] = reflection_id
+            wm.add(WMItem(
+                kind="routing_guard",
+                content=f"[路由护栏] task#{task.id} tool={tool_name} {proposal[:220] or f'切换到 {tier} tier 复核动作选择。'}",
+                priority=0.82,
+            ))
+
+    if updated:
+        refreshed = await task_store.get_task_by_id(task.id)
+        return refreshed or task
+    return task
+
+
+async def _sync_task_progress_state(
+    task_store: TaskStore,
+    task: Task | None,
+    *,
+    previous_next_step: str,
+    action: JudgmentOutput,
+    progressful: bool,
+) -> Task | None:
+    if task is None:
+        return None
+
+    latest = await task_store.get_task_by_id(task.id) or task
+    planned_next = str(action.next_step or "").strip()
+    current_step = latest.current_step
+    next_step = latest.next_step
+    updated = False
+
+    if progressful and previous_next_step:
+        if current_step != previous_next_step:
+            current_step = previous_next_step
+            updated = True
+        if planned_next:
+            if not next_step or next_step == previous_next_step:
+                next_step = planned_next
+                updated = True
+        elif next_step == previous_next_step:
+            next_step = ""
+            updated = True
+    elif planned_next and not next_step:
+        next_step = planned_next
+        updated = True
+
+    if not updated:
+        return latest
+
+    await task_store.sync_task_progress(
+        latest.id,
+        current_step=current_step,
+        next_step=next_step,
+    )
+    _log.info(
+        "[task-progress] task=%s current_step=%s next_step=%s progressful=%s",
+        latest.id,
+        current_step[:120],
+        next_step[:120],
+        progressful,
+    )
+    refreshed = await task_store.get_task_by_id(latest.id)
+    return refreshed or latest
 
 
 def _result_fingerprint(summary: str) -> str:
@@ -375,6 +734,25 @@ def _result_fingerprint(summary: str) -> str:
     if not text:
         return ""
     return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _suggest_tier_from_text(text: str) -> str | None:
+    lowered = (text or "").lower()
+    for tier in ("repair", "reasoner", "reader"):
+        if tier in lowered:
+            return tier
+    return None
+
+
+def _extract_reflection_policy(text: str) -> dict[str, int]:
+    policy: dict[str, int] = {}
+    threshold_match = re.search(r"(?:threshold|阈值)\s*[:=：]?\s*(\d+)", text, re.IGNORECASE)
+    ttl_match = re.search(r"(?:ttl(?:_sec)?|静默(?:窗口|时长)?)\s*[:=：]?\s*(\d+)", text, re.IGNORECASE)
+    if threshold_match:
+        policy["threshold"] = int(threshold_match.group(1))
+    if ttl_match:
+        policy["ttl_sec"] = int(ttl_match.group(1))
+    return policy
 
 
 def _action_made_progress(
@@ -406,7 +784,15 @@ def _action_made_progress(
             return False
         return True
 
-    # 未知工具保守处理：成功视为推进，但后续可按工具类型细化
+    # 未知工具保守处理：需要明确副作用信号，或返回了非空且有变化的结果。
+    if result.state_delta or result.artifact_paths or result.resource_key:
+        return True
+    fp = _result_fingerprint(result.summary)
+    if not fp:
+        return False
+    cur_sig = f"{tool}|{_action_key_param(action.params)}"
+    if cur_sig == prev_sig and fp == prev_fp:
+        return False
     return True
 
 
@@ -444,93 +830,17 @@ async def _refresh_running_runs(
     for run in await task_store.list_runs(status="running", limit=20):
         monitor = _run_monitor_config(run)
         if monitor is not None:
-            updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic))
+            if str(monitor.get("kind") or "") == "fact":
+                updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic))
+            elif str(monitor.get("kind") or "") == "process":
+                updates.append(await _refresh_run_via_process_monitor(task_store, run, monitor, manager=_MANAGER, episodic=episodic, semantic=semantic))
+            else:
+                updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
         if run.worker_type != "exec-worker" or not run.session_id or _MANAGER is None:
             updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
-        info = _MANAGER.get(run.session_id)
-        if info is None:
-            updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
-            continue
-        if not info.finished:
-            stdout_text = info.stdout or ""
-            last_crystal_chars = int(run.extras.get("last_crystal_chars", 0) or 0)
-            crystal_excerpt = ""
-            if len(stdout_text) - last_crystal_chars >= _RUN_PROGRESS_CRYSTAL_CHARS:
-                crystal_excerpt = stdout_text[last_crystal_chars:][-400:].strip()
-                await task_store.update_run(
-                    run.id,
-                    status="running",
-                    output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
-                    log_text=stdout_text[-4000:],
-                    session_id=run.session_id,
-                    progress=crystal_excerpt[:2000],
-                    extras={"last_crystal_chars": len(stdout_text)},
-                )
-                if run.task_id and crystal_excerpt:
-                    await task_store.set_fact(
-                        f"task:{run.task_id}:progress",
-                        crystal_excerpt[:800],
-                        scope="task",
-                    )
-            updates.append({
-                "run_id": run.id,
-                "task_id": run.task_id,
-                "status": "running",
-                "session_id": run.session_id,
-                "crystal": crystal_excerpt,
-            })
-            continue
-
-        status = "succeeded" if (info.return_code in (0, None) and not info.timed_out and not info.error) else "failed"
-        output_json = dict(run.output_json)
-        output_json.update({
-            "session_id": run.session_id,
-            "return_code": info.return_code,
-            "timed_out": info.timed_out,
-            "stdout": info.stdout[-4000:],
-            "stderr": info.stderr[-2000:],
-            "error": info.error,
-        })
-        await task_store.update_run(
-            run.id,
-            status=status,
-            output_json=output_json,
-            log_text=info.stdout[-4000:],
-            error_text=info.error or ("timed_out" if info.timed_out else (f"exit_code={info.return_code}" if status == "failed" else "")),
-            session_id=run.session_id,
-            progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
-            extras={
-                "return_code": info.return_code,
-                "timed_out": info.timed_out,
-                "background": info.background,
-            },
-        )
-        if run.task_id:
-            await task_store.update_task_result(
-                run.task_id,
-                {
-                    "last_run_id": run.id,
-                    "last_run_status": status,
-                    "worker_type": run.worker_type,
-                    "tool_name": run.tool_name,
-                    "session_id": run.session_id,
-                    "summary": output_json.get("stdout", "")[:200] or f"process {status}",
-                    "error": output_json.get("error"),
-                },
-            )
-        if status in {"succeeded", "failed", "cancelled"}:
-            _record_refreshed_run_outcome(
-                episodic,
-                semantic,
-                run=run,
-                status=status,
-                progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
-                summary=output_json.get("stdout", "")[:200] or f"process {status}",
-                error=str(output_json.get("error") or ""),
-            )
-        updates.append({"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": run.session_id})
+        updates.append(await _refresh_run_via_process_monitor(task_store, run, {"kind": "process", "session_id": run.session_id}, manager=_MANAGER, episodic=episodic, semantic=semantic))
     return updates
 
 
@@ -831,6 +1141,7 @@ class CognitionLoop:
         running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()
         await _ingest_actionable_meta_reflections(self._task_store, self._wm)
+        active_task = await _consume_task_runtime_hints(self._task_store, active_task, self._wm)
         if running_updates:
             running_count = sum(1 for item in running_updates if item.get("status") == "running")
             finished_count = sum(1 for item in running_updates if item.get("status") in {"succeeded", "failed", "cancelled"})
@@ -1210,6 +1521,7 @@ class CognitionLoop:
             await self._soul.refresh_identity(self._judgment)
 
         # tick 间状态更新（下轮感知用）
+        _previous_task_next_step = (active_task.next_step or "") if active_task else ""
         _prev_sig = self._last_action_sig
         _prev_fp = self._last_result_fp
         _cur_sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}" if action.decision == "act" else ""
@@ -1220,6 +1532,13 @@ class CognitionLoop:
         self._last_act_progressful = _action_made_progress(action, result, prev_sig=_prev_sig, prev_fp=_prev_fp)
         self._last_action_sig = _cur_sig
         self._last_result_fp = _cur_fp
+        active_task = await _sync_task_progress_state(
+            self._task_store,
+            active_task,
+            previous_next_step=_previous_task_next_step,
+            action=action,
+            progressful=self._last_act_progressful,
+        )
 
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")

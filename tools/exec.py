@@ -725,6 +725,11 @@ async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not info:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")
     duration = time.time() - info.started_at
+    interaction_available = bool(
+        not info.finished and not info.handle_lost and (
+            (info.pty and info.master_fd is not None) or (info.proc is not None)
+        )
+    )
     status = {
         "session_id": info.session_id,
         "command": info.command[:200],
@@ -738,6 +743,7 @@ async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "timed_out": info.timed_out,
         "restored": info.restored,
         "handle_lost": info.handle_lost,
+        "interaction_available": interaction_available,
         "meta_path": info.meta_path,
         "log_path": info.log_path,
     }
@@ -800,12 +806,14 @@ async def process_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if info.finished:
         return ToolResult(summary=f"进程 {session_id} 已结束，不能再写入", error="ProcessFinished", skipped=True)
     if info.handle_lost or info.proc is None and info.pid and info.restored:
+        _log.info("[process.write] session=%s handle lost after restore; write unavailable", session_id)
         return ToolResult(
             summary=f"进程 {session_id} 来自重启前的持久状态，当前无法恢复 stdin/PTY 写入句柄；可继续 poll/log/kill。",
             error="ProcessHandleLost",
             skipped=True,
             resource_key=session_id,
             artifact_paths=[p for p in [info.meta_path, info.log_path] if p],
+            metadata={"handle_lost": True, "restored": info.restored},
         )
 
     try:

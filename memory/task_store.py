@@ -665,7 +665,9 @@ class TaskStore:
         if next_step:
             task.next_step = next_step
         if result_json is not None:
-            task.result_json = result_json
+            merged = dict(task.result_json or {})
+            merged.update(result_json)
+            task.result_json = merged
         await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (task.status, task.to_data_json(), task_id),
@@ -688,7 +690,29 @@ class TaskStore:
         task = await self.get_task_by_id(task_id)
         if not task:
             return
-        task.result_json = result_json or {}
+        merged = dict(task.result_json or {})
+        merged.update(result_json or {})
+        task.result_json = merged
+        await self._db.execute(
+            "UPDATE tasks SET data=? WHERE id=?",
+            (task.to_data_json(), task_id),
+        )
+        await self._db.commit()
+
+    async def sync_task_progress(
+        self,
+        task_id: int,
+        *,
+        current_step: str | None = None,
+        next_step: str | None = None,
+    ) -> None:
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return
+        if current_step is not None:
+            task.current_step = current_step
+        if next_step is not None:
+            task.next_step = next_step
         await self._db.execute(
             "UPDATE tasks SET data=? WHERE id=?",
             (task.to_data_json(), task_id),

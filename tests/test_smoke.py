@@ -53,7 +53,7 @@ def _tool_ctx(
 ):
     from tools.registry import ToolContext
 
-    return ToolContext(
+    return cast(Any, ToolContext)(
         config=cast(
             Any,
             _test_config(
@@ -482,6 +482,55 @@ async def _refresh_running_runs_updates_finished_exec_runs():
         await store.close()
 
 
+def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
+    asyncio.run(_refresh_running_runs_updates_process_monitored_non_exec_runs())
+
+
+async def _refresh_running_runs_updates_process_monitored_non_exec_runs():
+    import os
+    import time
+
+    from core.loop import _refresh_running_runs
+    from memory.task_store import TaskStore
+    from tools.exec import ProcessInfo, _MANAGER
+
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
+        _MANAGER.clear()
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("统一监控任务", goal="通过 process monitor 刷新")
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="tool_chain",
+            worker_type="tool-chain-worker",
+            status="running",
+            tool_name="demo.process",
+            output_json={"metadata": {"run_monitor": {"kind": "process", "session_id": "proc-unified-1"}}},
+        )
+        info = ProcessInfo(
+            session_id="proc-unified-1",
+            command="echo unified",
+            started_at=time.time(),
+            finished=True,
+            return_code=0,
+            stdout="unified\n",
+            background=True,
+        )
+        _MANAGER.register(info)
+        _MANAGER.mark_finished("proc-unified-1", 0)
+
+        updates = await _refresh_running_runs(store)
+        assert updates
+        assert updates[0]["status"] == "succeeded"
+
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+        assert run.progress.strip() == "unified"
+        await store.close()
+
+
 def test_refresh_running_runs_crystallizes_progress():
     asyncio.run(_refresh_running_runs_crystallizes_progress())
 
@@ -616,6 +665,134 @@ async def _refresh_running_runs_updates_fact_monitored_non_exec_runs():
         node = semantic.get(f"run-result-{run_id}")
         assert node is not None
         assert node.kind == "run_result"
+
+        await store.close()
+
+
+def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
+    asyncio.run(_refresh_running_runs_failed_fact_monitored_run_records_learning())
+
+
+async def _refresh_running_runs_failed_fact_monitored_run_records_learning():
+    from core.loop import _refresh_running_runs
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
+        await store.open()
+        task_id = await store.add_task("推理失败任务", goal="等待外部状态失败")
+        await store.set_fact(
+            "run:llm-fail-1",
+            json.dumps({"status": "failed", "progress": "empty path", "error": "EmptyPath", "summary": "empty path"}, ensure_ascii=False),
+            scope="task",
+        )
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="llm",
+            worker_type="llm-worker",
+            status="running",
+            tool_name="file.read",
+            output_json={
+                "state_delta": {
+                    "run_monitor": {
+                        "kind": "fact",
+                        "key": "run:llm-fail-1",
+                        "status_field": "status",
+                        "progress_field": "progress",
+                        "success_values": ["succeeded"],
+                        "failed_values": ["failed"],
+                    }
+                }
+            },
+        )
+
+        updates = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        assert updates
+        assert updates[0]["status"] == "failed"
+
+        failures = await store.list_failures(limit=5)
+        assert failures
+        assert failures[0].kind == "file.read"
+
+        reflections = await store.list_meta_reflections(limit=5)
+        assert reflections
+        assert reflections[0].run_id == run_id
+        assert reflections[0].target_kind == "task_split"
+
+        double_loop = episodic.list_events("double_loop_reflection", limit=5)
+        assert double_loop and double_loop[-1]["run_id"] == run_id
+
+        meta_node = semantic.get(f"meta-reflection-{reflections[0].id}")
+        assert meta_node is not None
+        assert meta_node.kind == "meta_reflection"
+
+        await store.close()
+
+
+def test_refresh_running_runs_failed_exec_run_records_learning():
+    asyncio.run(_refresh_running_runs_failed_exec_run_records_learning())
+
+
+async def _refresh_running_runs_failed_exec_run_records_learning():
+    import time
+
+    from core.loop import _refresh_running_runs
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from tools.exec import ProcessInfo, _MANAGER
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
+        await store.open()
+        task_id = await store.add_task("exec 失败任务", goal="等待后台失败")
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="exec",
+            worker_type="exec-worker",
+            status="running",
+            tool_name="file.read",
+            session_id="exec-failed-1",
+        )
+
+        _MANAGER.clear()
+        info = ProcessInfo(
+            session_id="exec-failed-1",
+            command="cat missing",
+            started_at=time.time() - 3,
+            finished=True,
+            return_code=1,
+            stdout="",
+            stderr="EmptyPath",
+            error="EmptyPath",
+            background=True,
+        )
+        _MANAGER.register(info)
+
+        updates = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        assert updates
+        assert updates[0]["status"] == "failed"
+
+        failures = await store.list_failures(limit=5)
+        assert failures
+        assert failures[0].kind == "file.read"
+
+        reflections = await store.list_meta_reflections(limit=5)
+        assert reflections
+        assert reflections[0].run_id == run_id
+        assert reflections[0].target_kind == "task_split"
+
+        meta_node = semantic.get(f"meta-reflection-{reflections[0].id}")
+        assert meta_node is not None
+        assert meta_node.kind == "meta_reflection"
 
         await store.close()
 
@@ -994,6 +1171,44 @@ async def _execution_dispatch_records_run():
         await store.close()
 
 
+def test_execution_dispatch_routes_fact_monitored_action_to_llm_worker():
+    asyncio.run(_execution_dispatch_routes_fact_monitored_action_to_llm_worker())
+
+
+async def _execution_dispatch_routes_fact_monitored_action_to_llm_worker():
+    from tempfile import TemporaryDirectory
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        await store.add_task("llm worker 任务", goal="验证 llm worker 选路")
+        await store.set_fact("run:llm-route", json.dumps({"status": "running"}, ensure_ascii=False), scope="task")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = _judgment_output(
+            decision="act",
+            chosen_action_id="memory.get_fact",
+            params={"key": "run:llm-route", "monitor_fact_key": "run:llm-route"},
+            rationale="route to llm worker",
+        )
+
+        result = await layer.dispatch(action, ctx)
+        assert result.error is None
+        assert result.metadata["worker_type"] == "llm-worker"
+        assert result.metadata["run_monitor"]["kind"] == "fact"
+
+        runs = await store.list_runs(limit=5)
+        assert runs
+        assert runs[0].run_type == "llm"
+        assert runs[0].worker_type == "llm-worker"
+        await store.close()
+
+
 def test_execution_failure_creates_meta_reflection():
     asyncio.run(_execution_failure_creates_meta_reflection())
 
@@ -1247,6 +1462,215 @@ async def _meta_reflection_threshold_apply_changes_runtime_policy():
         policy_raw, found = await store.get_fact("control:durable_failure_policy")
         assert found
         assert json.loads(policy_raw) == {"threshold": 4, "ttl_sec": 3600}
+        await store.close()
+
+
+def test_consume_task_runtime_hints_updates_task_state_once():
+    asyncio.run(_consume_task_runtime_hints_updates_task_state_once())
+
+
+async def _consume_task_runtime_hints_updates_task_state_once():
+    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("重规划任务", goal="先复盘再继续", next_step="旧步骤")
+        await store.add_meta_reflection(
+            reflection_id="mr-routing-tasksplit",
+            target_kind="task_split",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="任务拆分不完整",
+            proposal="先定位资源，再读取文件",
+            verification_plan="确认不再出现 EmptyPath",
+            decision="apply",
+            task_id=task_id,
+            run_id=1,
+            tool_name="file.read",
+        )
+        await store.add_meta_reflection(
+            reflection_id="mr-routing-guard",
+            target_kind="routing",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="动作选择漂移",
+            proposal="切换到 repair tier 复核动作",
+            verification_plan="确认 chosen_action_id 合法",
+            decision="apply",
+            task_id=task_id,
+            run_id=2,
+            tool_name="file.read",
+        )
+
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
+        assert injected == ["mr-routing-tasksplit", "mr-routing-guard"]
+
+        task = await store.get_task_by_id(task_id)
+        task = await _consume_task_runtime_hints(store, task, wm)
+        assert task is not None
+        assert task.next_step == "先定位资源，再读取文件"
+        assert task.model_tier == "repair"
+        assert task.extras["last_replan_reflection_id"] == "mr-routing-tasksplit"
+        assert task.extras["last_routing_reflection_id"] == "mr-routing-guard"
+
+        top = wm.get_top()
+        assert any(item["kind"] == "task_replan" for item in top)
+        assert any(item["kind"] == "routing_guard" for item in top)
+
+        again = await _consume_task_runtime_hints(store, task, wm)
+        assert again is not None
+        assert again.next_step == "先定位资源，再读取文件"
+        assert again.model_tier == "repair"
+        await store.close()
+
+
+def test_meta_reflection_threshold_apply_uses_explicit_policy_hint():
+    asyncio.run(_meta_reflection_threshold_apply_uses_explicit_policy_hint())
+
+
+async def _meta_reflection_threshold_apply_uses_explicit_policy_hint():
+    from core.loop import _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.add_meta_reflection(
+            reflection_id="mr-threshold-explicit",
+            target_kind="threshold",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="静默窗口过早触发",
+            proposal="threshold=6 ttl=1800",
+            verification_plan="连续 5 次失败前不应静默",
+            decision="apply",
+            tool_name="file.read",
+        )
+
+        injected = await _ingest_actionable_meta_reflections(store, WorkingMemory(capacity=10))
+        assert injected == ["mr-threshold-explicit"]
+
+        raw, found = await store.get_fact("control:durable_failure_policy")
+        assert found
+        assert json.loads(raw) == {"threshold": 6, "ttl_sec": 1800}
+        await store.close()
+
+
+def test_consume_task_runtime_hints_uses_preferred_tier_hint():
+    asyncio.run(_consume_task_runtime_hints_uses_preferred_tier_hint())
+
+
+async def _consume_task_runtime_hints_uses_preferred_tier_hint():
+    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("路由护栏任务", goal="切换 tier")
+        await store.add_meta_reflection(
+            reflection_id="mr-routing-tier",
+            target_kind="routing",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="reader 过轻导致动作漂移",
+            proposal="切换到 reasoner tier 复核动作",
+            verification_plan="确认动作选择回到合法工具集",
+            decision="apply",
+            task_id=task_id,
+            run_id=3,
+            tool_name="file.read",
+        )
+
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
+        assert injected == ["mr-routing-tier"]
+
+        task = await store.get_task_by_id(task_id)
+        task = await _consume_task_runtime_hints(store, task, wm)
+        assert task is not None
+        assert task.model_tier == "reasoner"
+        await store.close()
+
+
+def test_consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
+    asyncio.run(_consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm())
+
+
+async def _consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
+    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("反思显化任务", goal="让 LLM 感知 task 级反思")
+        await store.add_meta_reflection(
+            reflection_id="mr-task-visible",
+            target_kind="routing",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="动作选择漂移",
+            proposal="切换到 repair tier 复核动作",
+            verification_plan="确认 chosen_action_id 合法",
+            decision="apply",
+            task_id=task_id,
+            run_id=8,
+            tool_name="file.read",
+        )
+
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
+        assert injected == ["mr-task-visible"]
+
+        task = await store.get_task_by_id(task_id)
+        task = await _consume_task_runtime_hints(store, task, wm)
+        assert task is not None
+        assert task.extras["last_task_meta_reflection_id"] == "mr-task-visible"
+        top = wm.get_top()
+        assert any(item["kind"] == "task_reflection" and "mr-task-visible" not in item["content"] for item in top)
+        await store.close()
+
+
+def test_ingest_actionable_meta_reflections_queues_generic_control_hint():
+    asyncio.run(_ingest_actionable_meta_reflections_queues_generic_control_hint())
+
+
+async def _ingest_actionable_meta_reflections_queues_generic_control_hint():
+    from core.loop import _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.add_meta_reflection(
+            reflection_id="mr-prompt-hint",
+            target_kind="prompt",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="提示词规则需要修订",
+            proposal="收紧 JSON schema 说明",
+            verification_plan="确认 parse failure 下降",
+            decision="apply",
+            tool_name="judgment",
+        )
+
+        injected = await _ingest_actionable_meta_reflections(store, WorkingMemory(capacity=10))
+        assert injected == ["mr-prompt-hint"]
+
+        raw, found = await store.get_fact("control:meta_reflection_hint:prompt")
+        assert found
+        payload = json.loads(raw)
+        assert payload["reflection_id"] == "mr-prompt-hint"
+        assert payload["proposal"] == "收紧 JSON schema 说明"
         await store.close()
 
 
@@ -1517,6 +1941,33 @@ async def _task_store_basic():
         assert t3.extras["score"] == 99
         assert t3.model_tier == "reader"
         assert t3.next_step == "步骤1"  # 原有字段未被覆盖
+
+        await store.sync_task_progress(tid, current_step="步骤1", next_step="步骤2")
+        t4 = await store.get_task_by_id(tid)
+        assert t4 is not None
+        assert t4.current_step == "步骤1"
+        assert t4.next_step == "步骤2"
+
+        await store.sync_task_progress(tid, next_step="")
+        t5 = await store.get_task_by_id(tid)
+        assert t5 is not None
+        assert t5.next_step == ""
+
+        await store.update_task_result(tid, {"summary": "first", "score": 1})
+        await store.update_task_result(tid, {"last_run_status": "succeeded"})
+        t6 = await store.get_task_by_id(tid)
+        assert t6 is not None
+        assert t6.result_json["summary"] == "first"
+        assert t6.result_json["score"] == 1
+        assert t6.result_json["last_run_status"] == "succeeded"
+
+        await store.mark_waiting(tid, wait_kind="process", wait_key="exec-1")
+        await store.resume_task(tid, result_json={"resumed_via": "task.resume"})
+        t7 = await store.get_task_by_id(tid)
+        assert t7 is not None
+        assert t7.result_json["summary"] == "first"
+        assert t7.result_json["last_run_status"] == "succeeded"
+        assert t7.result_json["resumed_via"] == "task.resume"
 
         # 失败记录
         await store.record_failure("tool_error", "报错", context="ctx", task_id=str(tid))
@@ -2104,6 +2555,22 @@ def test_action_made_progress_result_aware():
     fail_res = ToolResult(summary="文件不存在: /tmp/missing", error="FileNotFound")
     assert _action_made_progress(fail_action, fail_res) is False
 
+    unknown_action = _judgment_output(decision="act", chosen_action_id="custom.unknown", params={"id": "42"})
+    empty_unknown = ToolResult(summary="")
+    assert _action_made_progress(unknown_action, empty_unknown) is False
+
+    unknown_res = ToolResult(summary="no-op result")
+    assert _action_made_progress(unknown_action, unknown_res, prev_sig="", prev_fp="") is True
+    assert _action_made_progress(
+        unknown_action,
+        unknown_res,
+        prev_sig="custom.unknown|42",
+        prev_fp=_result_fingerprint(unknown_res.summary),
+    ) is False
+
+    unknown_with_delta = ToolResult(summary="", state_delta={"updated": True})
+    assert _action_made_progress(unknown_action, unknown_with_delta) is True
+
 
 def test_should_continue_within_tick_for_autonomous_act():
     from core.judgment import JudgmentOutput
@@ -2111,6 +2578,68 @@ def test_should_continue_within_tick_for_autonomous_act():
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="wait")) is False
+
+
+def test_sync_task_progress_state_promotes_previous_next_step():
+    asyncio.run(_sync_task_progress_state_promotes_previous_next_step())
+
+
+async def _sync_task_progress_state_promotes_previous_next_step():
+    from core.loop import _sync_task_progress_state
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("推进任务", goal="验证 current_step/next_step 同步", next_step="先读文件")
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+
+        updated = await _sync_task_progress_state(
+            store,
+            task,
+            previous_next_step="先读文件",
+            action=_judgment_output(decision="act", chosen_action_id="file.read", next_step="再总结结论"),
+            progressful=True,
+        )
+        assert updated is not None
+        assert updated.current_step == "先读文件"
+        assert updated.next_step == "再总结结论"
+
+        updated2 = await _sync_task_progress_state(
+            store,
+            updated,
+            previous_next_step="再总结结论",
+            action=_judgment_output(decision="act", chosen_action_id="file.read", next_step=""),
+            progressful=True,
+        )
+        assert updated2 is not None
+        assert updated2.current_step == "再总结结论"
+        assert updated2.next_step == ""
+        await store.close()
+
+
+def test_fmt_task_exposes_runtime_state_to_llm():
+    from core.judgment import _fmt_task
+    from memory.task_store import Task
+
+    task = Task(
+        id=7,
+        title="测试任务",
+        status="active",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="验证状态可见性",
+        next_step="继续修复",
+        current_step="检查 run monitor",
+        model_tier="repair",
+        result_json={"last_run_status": "failed"},
+    )
+    section = _fmt_task(task)
+    assert "状态: active" in section
+    assert "模型层级: repair" in section
+    assert "当前步骤: 检查 run monitor" in section
+    assert "最近运行状态: failed" in section
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2313,6 +2842,41 @@ async def _process_write_to_finished():
     w = await process_write({"session_id": sid, "data": "hello"}, ctx)
     assert w.skipped is True
     assert w.error == "ProcessFinished"
+
+
+def test_process_poll_exposes_handle_lost_interaction_state():
+    asyncio.run(_process_poll_exposes_handle_lost_interaction_state())
+
+
+async def _process_poll_exposes_handle_lost_interaction_state():
+    import json
+    import os
+    import time
+
+    from tools.exec import ProcessInfo, process_poll, process_write, _MANAGER
+
+    _MANAGER.clear()
+    info = ProcessInfo(
+        session_id="restored-1",
+        command="python -i",
+        pid=os.getpid(),
+        started_at=time.time() - 5,
+        background=True,
+        restored=True,
+        handle_lost=True,
+    )
+    _MANAGER.register(info)
+
+    ctx = _tool_ctx()
+    poll = await process_poll({"session_id": "restored-1"}, ctx)
+    status = json.loads(poll.summary)
+    assert status["restored"] is True
+    assert status["handle_lost"] is True
+    assert status["interaction_available"] is False
+
+    write = await process_write({"session_id": "restored-1", "data": "hello"}, ctx)
+    assert write.error == "ProcessHandleLost"
+    assert write.metadata["handle_lost"] is True
 
 
 def test_file_edit_json_string_edits():

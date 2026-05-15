@@ -990,13 +990,20 @@ def _fmt_task(task: "Task | None") -> str:
                 age_str = f"（已进行 {d}d {rem // 3600}h）"
         except Exception:
             pass
-    return (
-        f"ID: {task.id}\n"
-        f"标题: {task.title}{age_str}\n"
-        f"目标: {task.goal or '（未指定）'}\n"
-        f"优先级: {task.priority}\n"
-        f"下一步: {task.next_step or '（未指定）'}"
-    )
+    last_run_status = str((task.result_json or {}).get("last_run_status") or "").strip()
+    lines = [
+        f"ID: {task.id}",
+        f"标题: {task.title}{age_str}",
+        f"状态: {task.status}",
+        f"目标: {task.goal or '（未指定）'}",
+        f"优先级: {task.priority}",
+        f"模型层级: {task.model_tier or '（未指定）'}",
+        f"当前步骤: {task.current_step or '（未指定）'}",
+        f"下一步: {task.next_step or '（未指定）'}",
+    ]
+    if last_run_status:
+        lines.append(f"最近运行状态: {last_run_status}")
+    return "\n".join(lines)
 
 
 def _fmt_current_time() -> str:
