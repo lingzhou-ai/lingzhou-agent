@@ -40,10 +40,6 @@ COPILOT_EDITOR_PLUGIN_VERSION = "copilot-chat/0.35.0"
 COPILOT_GITHUB_API_VERSION = "2025-04-01"
 DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilot.com"
 
-# 仅对 o-series 自动注入 max_completion_tokens。
-# gpt-5.* 在 Copilot chat/completions 上兼容性不稳定，
-# 自动塞大额上限（如 65536）反而更容易触发 400。
-_MAX_COMPLETION_TOKENS_MODELS = ("o1", "o3", "o4")
 _MAX_COMPLETION_TOKENS_DEFAULT = 16384
 
 
@@ -254,7 +250,7 @@ class OpenAICompatProvider:
     def _inject_thinking(self, payload: dict[str, Any], level_override: str | None = None) -> None:
         """按 provider.mode 和 cfg.thinking 向 payload 注入对应的 thinking 参数。"""
         level = level_override if level_override is not None else self._thinking_level
-        spec = lookup_model(self._model)  # 可能为 None（目录未收录）
+        spec = self._model_spec()
 
         if self._provider_mode == "openai":
             thinking_spec = spec.get("thinking") if spec else None
@@ -272,8 +268,10 @@ class OpenAICompatProvider:
             if is_reasoning and level != "off":
                 # "minimal" → "low"（copilot 不支持 minimal 档）
                 effort = "low" if level == "minimal" else level
-                payload["reasoning_effort"] = effort
-                payload["temperature"] = 1  # OpenAI reasoning 模型要求 temperature=1
+                if self._model_api() == "chat_completions":
+                    payload["reasoning_effort"] = effort
+                    if "temperature" not in self._unsupported_request_params():
+                        payload["temperature"] = 1
 
     @staticmethod
     def _compute_budget(thinking_spec: dict[str, Any], level: str) -> int:
@@ -283,19 +281,44 @@ class OpenAICompatProvider:
         budget_min = thinking_spec.get("budget_min", 1024)
         return max(int(budget_max * frac), budget_min)
 
+    def _model_spec(self) -> dict[str, Any]:
+        spec = lookup_model(self._model)
+        return spec if isinstance(spec, dict) else {}
+
+    def _model_api(self) -> str:
+        api = self._model_spec().get("api")
+        return str(api) if isinstance(api, str) and api else "chat_completions"
+
+    def _request_params_spec(self) -> dict[str, Any]:
+        params = self._model_spec().get("request_params")
+        return params if isinstance(params, dict) else {}
+
+    def _unsupported_request_params(self) -> set[str]:
+        raw = self._request_params_spec().get("unsupported")
+        if not isinstance(raw, list):
+            return set()
+        return {str(item) for item in raw if isinstance(item, str) and item}
+
+    def _completion_limit_param(self) -> str | None:
+        raw = self._request_params_spec().get("completion_limit_param")
+        if isinstance(raw, str) and raw:
+            return raw
+        return None
+
     def _inject_completion_limits(self, payload: dict[str, Any]) -> None:
         if self._provider_mode != "copilot":
             return
         if "max_completion_tokens" in payload or "max_tokens" in payload:
             return
-        if self._model.startswith(_MAX_COMPLETION_TOKENS_MODELS):
-            # 优先使用 models.json 中模型的 max_tokens；回退到硬编码默认值
-            spec = lookup_model(self._model)
-            limit = int(spec["max_tokens"]) if spec and spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
-            payload["max_completion_tokens"] = limit
+        param_name = self._completion_limit_param()
+        if not param_name:
+            return
+        spec = self._model_spec()
+        limit = int(spec["max_tokens"]) if spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
+        payload[param_name] = limit
 
     def _uses_responses_api(self) -> bool:
-        return self._provider_mode == "copilot" and self._model.startswith("gpt-5")
+        return self._provider_mode == "copilot" and self._model_api() == "responses"
 
     def _build_responses_payload(
         self,
@@ -305,6 +328,7 @@ class OpenAICompatProvider:
         thinking_override: str | None = None,
     ) -> dict[str, Any]:
         level = thinking_override if thinking_override is not None else self._thinking_level
+        unsupported = self._unsupported_request_params()
         instructions_parts: list[str] = []
         input_items: list[dict[str, Any]] = []
 
@@ -318,12 +342,14 @@ class OpenAICompatProvider:
         payload: dict[str, Any] = {
             "model": self._model,
             "input": input_items or [{"role": "user", "content": ""}],
-            "temperature": temperature if temperature is not None else self._temperature,
         }
+        resolved_temperature = temperature if temperature is not None else self._temperature
+        if "temperature" not in unsupported:
+            payload["temperature"] = resolved_temperature
         if instructions_parts:
             payload["instructions"] = "\n\n".join(instructions_parts)
 
-        spec = lookup_model(self._model)
+        spec = self._model_spec()
         is_reasoning = bool(spec and spec.get("reasoning")) if spec else False
         if is_reasoning and level != "off":
             payload["reasoning"] = {"effort": _copilot_reasoning_effort(level)}
@@ -364,8 +390,9 @@ class OpenAICompatProvider:
         if "reasoning_effort" in fallback:
             fallback.pop("reasoning_effort", None)
             changed = True
-        if "max_completion_tokens" in fallback:
-            fallback.pop("max_completion_tokens", None)
+        completion_limit_param = self._completion_limit_param()
+        if completion_limit_param and completion_limit_param in fallback:
+            fallback.pop(completion_limit_param, None)
             changed = True
 
         base_temp = base_payload.get("temperature")

@@ -40,6 +40,14 @@ class ProviderDefinition(BaseModel):
         default="",
         description="GitHub OAuth App Client ID（仅显式使用 --method device 时作为兼容回退）",
     )
+    models: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "可选模型元数据覆盖/补充列表。每项至少包含 id；"
+            "同 id 条目会覆盖 provider/models.json 的内置字段，"
+            "未出现的 id 则作为新增模型追加到运行时 models.json。"
+        ),
+    )
 
     @property
     def api_key(self) -> str:

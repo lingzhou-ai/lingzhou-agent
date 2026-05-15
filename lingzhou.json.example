@@ -4,7 +4,8 @@
   "_doc_providers": [
     "providers 定义各 LLM 接入点（连接配置，与模型无关）。",
     "支持同时定义多个 provider，通过顶层 model 字段的 'provider-name/model-id' 格式切换。",
-    "api_key 从环境变量/credentials/auth-profile 读取，绝不写入配置文件。"
+    "api_key 从环境变量/credentials/auth-profile 读取，绝不写入配置文件。",
+    "如需补 transport / 输入模态 / 思考能力 / 参数兼容性，可在 providers.<name>.models 中覆盖或追加模型元数据。"
   ],
   "providers": {
     "bailian": {
@@ -25,11 +26,32 @@
         "推荐先执行：lingzhou auth login-copilot。",
         "主链路：GitHub token → Copilot token exchange → Copilot API。",
         "oauth_client_id 仅作显式 --method device 时的兼容回退。",
-        "mode=copilot: thinking 由顶层 thinking 字段自动注入 reasoning_effort。"
+        "mode=copilot: thinking 由顶层 thinking 字段自动注入 reasoning_effort。",
+        "models 可覆盖/追加运行时模型目录；常用字段：api、input、capabilities、reasoning、request_params。"
       ],
       "base_url": "https://api.individual.githubcopilot.com",
       "api_key_env": "GITHUB_TOKEN",
-      "oauth_client_id": ""
+      "oauth_client_id": "",
+      "models": [
+        {
+          "id": "gpt-5.4",
+          "api": "responses",
+          "input": ["text", "image"],
+          "capabilities": ["text_generation", "thinking", "vision"],
+          "request_params": {
+            "unsupported": ["temperature"]
+          }
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "api": "responses",
+          "input": ["text", "image"],
+          "capabilities": ["text_generation", "thinking", "vision"],
+          "request_params": {
+            "unsupported": ["temperature"]
+          }
+        }
+      ]
     }
   },
 

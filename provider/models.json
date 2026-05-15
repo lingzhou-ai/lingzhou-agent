@@ -1,5 +1,5 @@
 {
-  "_doc": "内置模型目录。context_window 用于推导 judgment 输入预算；max_tokens 是输出上限（provider 侧约束，代码不发送 max_tokens 参数）。用户可通过 lingzhou.json 的 context_window_tokens 字段覆盖此处的值。",
+  "_doc": "内置模型目录。context_window 用于推导 judgment 输入预算；max_tokens 是输出上限（provider 侧约束，代码不发送 max_tokens 参数）。用户可通过 lingzhou.json 的 context_window_tokens 字段覆盖此处的值。api/input/request_params/capabilities 属于模型能力元数据，会一并进入运行时 catalog。",
 
   "bailian": {
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -9,37 +9,43 @@
         "id": "qwen3.6-plus",
         "context_window": 1000000,
         "max_tokens": 65536,
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
         "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
       },
       {
         "id": "qwen3.5-plus",
         "context_window": 131072,
         "max_tokens": 8192,
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
         "thinking": { "supported": true, "budget_min": 1024, "budget_max": 4096 }
       },
       {
         "id": "qwen3-max",
         "context_window": 262144,
         "max_tokens": 65536,
+        "capabilities": ["text_generation", "thinking"],
         "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
       },
       {
         "id": "qwen3-max-2026-01-23",
         "context_window": 262144,
         "max_tokens": 65536,
+        "capabilities": ["text_generation", "thinking"],
         "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
       },
       {
         "id": "qwen3-coder-plus",
         "context_window": 1000000,
         "max_tokens": 65536,
-        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+        "capabilities": ["text_generation"]
       },
       {
         "id": "qwen3-coder-next",
         "context_window": 262144,
         "max_tokens": 65536,
-        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 38912 }
+        "capabilities": ["text_generation"]
       },
       {
         "id": "qwen-plus",
@@ -60,23 +66,28 @@
         "id": "glm-5",
         "context_window": 131072,
         "max_tokens": 16384,
+        "capabilities": ["text_generation", "thinking"],
         "thinking": { "supported": true }
       },
       {
         "id": "glm-4.7",
         "context_window": 202752,
         "max_tokens": 16384,
+        "capabilities": ["text_generation", "thinking"],
         "thinking": { "supported": true }
       },
       {
         "id": "kimi-k2.5",
         "context_window": 262144,
-        "max_tokens": 65536
+        "max_tokens": 65536,
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"]
       },
       {
         "id": "MiniMax-M2.5",
         "context_window": 1000000,
-        "max_tokens": 65536
+        "max_tokens": 65536,
+        "capabilities": ["text_generation", "thinking"]
       }
     ]
   },
@@ -87,6 +98,10 @@
       "copilot 模型的 thinking 通过 reasoning_effort 字符串控制（low/medium/high），",
       "不使用 Qwen 的 enable_thinking/budget_tokens 体系。",
       "代码层面会把顶层 thinking 自动映射到 reasoning_effort，无需在 extra_body 手填。",
+      "api 用于声明聊天 transport（chat_completions / responses）。",
+      "input 用于声明输入模态（遵循 OpenClaw 风格，如 [\"text\", \"image\"]）。",
+      "capabilities 用于声明高层能力标签，如 text_generation / thinking / vision。",
+      "request_params 用于声明参数能力，如 completion_limit_param / unsupported。",
       "reasoning=true 仅作元数据标记（展示/路由用），不影响 payload 构造。"
     ],
     "models": [
@@ -94,35 +109,63 @@
         "id": "gpt-5.4",
         "context_window": 400000,
         "max_tokens": 65536,
-        "reasoning": true
+        "reasoning": true,
+        "api": "responses",
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
+        "request_params": {
+          "unsupported": ["temperature"]
+        }
       },
       {
         "id": "gpt-5.4-mini",
         "context_window": 400000,
         "max_tokens": 65536,
-        "reasoning": true
+        "reasoning": true,
+        "api": "responses",
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
+        "request_params": {
+          "unsupported": ["temperature"]
+        }
       },
       {
         "id": "gpt-4.5",
         "context_window": 131072,
-        "max_tokens": 16384
+        "max_tokens": 16384,
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "vision"]
       },
       {
         "id": "claude-sonnet-4.5",
         "context_window": 200000,
-        "max_tokens": 16384
+        "max_tokens": 16384,
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "vision"]
       },
       {
         "id": "o3",
         "context_window": 200000,
         "max_tokens": 100000,
-        "reasoning": true
+        "reasoning": true,
+        "api": "chat_completions",
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
+        "request_params": {
+          "completion_limit_param": "max_completion_tokens"
+        }
       },
       {
         "id": "o4-mini",
         "context_window": 200000,
         "max_tokens": 100000,
-        "reasoning": true
+        "reasoning": true,
+        "api": "chat_completions",
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
+        "request_params": {
+          "completion_limit_param": "max_completion_tokens"
+        }
       }
     ]
   }

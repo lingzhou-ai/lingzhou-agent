@@ -39,8 +39,17 @@ _log = logging.getLogger("lingzhou.models_gen")
 # 内存指纹缓存：str(workspace_models_path) → fingerprint
 _READY_CACHE: dict[str, str] = {}
 
-# 从 ProviderDefinition 中写入 models.json 的字段（过滤掉敏感字段如 api_key）
+# 从 ProviderDefinition 中写入 models.json 的连接字段（过滤掉敏感字段如 api_key）
 _PROVIDER_CATALOG_FIELDS = ("base_url", "mode", "type", "api_key_env")
+
+
+def _deep_merge_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
+    """将 patch 递归合并进 target，标量与数组直接覆盖。"""
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            _deep_merge_dict(cast(dict[str, Any], target[key]), value)
+            continue
+        target[key] = value
 
 
 def _stable_json(value: Any) -> str:
@@ -100,12 +109,25 @@ def _merge(providers_cfg: dict[str, Any], builtin: dict[str, Any]) -> dict[str, 
             if field in pcfg:
                 entry[field] = pcfg[field]
 
-        # 追加用户自定义模型（不覆盖内置已有条目）
+        # 合并用户模型元数据：同 id 覆盖内置字段；新 id 追加。
         if "models" in pcfg:
-            existing_ids: set[str] = {m.get("id", "") for m in entry.get("models", [])}
+            existing_by_id: dict[str, dict[str, Any]] = {
+                str(m.get("id", "")): m
+                for m in entry.get("models", [])
+                if isinstance(m, dict) and m.get("id")
+            }
             for custom in pcfg["models"]:
-                if custom.get("id") not in existing_ids:
-                    entry.setdefault("models", []).append(dict(custom))
+                if not isinstance(custom, dict):
+                    continue
+                model_id = str(custom.get("id", "")).strip()
+                if not model_id:
+                    continue
+                if model_id in existing_by_id:
+                    _deep_merge_dict(existing_by_id[model_id], dict(custom))
+                    continue
+                new_entry = dict(custom)
+                entry.setdefault("models", []).append(new_entry)
+                existing_by_id[model_id] = new_entry
 
     return out
 
@@ -137,10 +159,12 @@ async def ensure_models_json(cfg: "Config") -> EnsureResult:
     builtin: dict[str, Any] = json.loads(builtin_bytes)
 
     # 构造用于指纹计算的 providers 视图（只含 catalog-relevant 字段）
-    providers_view: dict[str, Any] = {
-        pname: {f: v for f, v in pdef.model_dump().items() if f in _PROVIDER_CATALOG_FIELDS}
-        for pname, pdef in cfg.providers.items()
-    }
+    providers_view: dict[str, Any] = {}
+    for pname, pdef in cfg.providers.items():
+        provider_view = {f: v for f, v in pdef.model_dump().items() if f in _PROVIDER_CATALOG_FIELDS}
+        if pdef.models:
+            provider_view["models"] = pdef.models
+        providers_view[pname] = provider_view
     fp = _compute_fingerprint(providers_view, builtin_bytes)
     cache_key = str(target)
 

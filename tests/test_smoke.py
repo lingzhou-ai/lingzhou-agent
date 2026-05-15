@@ -876,6 +876,25 @@ def test_catalog_resolve_context_window():
     assert resolve_context_window("unknown-model-xyz", None) is None
 
 
+def test_bailian_catalog_capabilities_are_curated():
+    from provider.catalog import lookup_model
+
+    qwen36 = lookup_model("qwen3.6-plus")
+    assert qwen36 is not None
+    assert qwen36["input"] == ["text", "image"]
+    assert qwen36["capabilities"] == ["text_generation", "thinking", "vision"]
+
+    coder_next = lookup_model("qwen3-coder-next")
+    assert coder_next is not None
+    assert coder_next["capabilities"] == ["text_generation"]
+    assert "thinking" not in coder_next
+
+    kimi = lookup_model("kimi-k2.5")
+    assert kimi is not None
+    assert kimi["input"] == ["text", "image"]
+    assert kimi["capabilities"] == ["text_generation", "thinking", "vision"]
+
+
 def test_catalog_budget_auto_lookup():
     """Config 不填 context_window_tokens 时，目录自动推断预算。"""
     from core.config import Config
@@ -2686,6 +2705,104 @@ def test_copilot_o_series_uses_max_completion_tokens():
     assert payload["max_completion_tokens"] == 100000
 
 
+def test_copilot_transport_selection_and_limits_are_metadata_driven(monkeypatch):
+    import provider.openai_compat as mod
+
+    provider = mod.OpenAICompatProvider.__new__(mod.OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "future-reasoner"
+    provider._temperature = 0.7
+    provider._thinking_level = "high"
+    provider._extra_body = {}
+
+    monkeypatch.setattr(mod, "lookup_model", lambda model_id: {
+        "api": "responses",
+        "reasoning": True,
+        "max_tokens": 1234,
+        "request_params": {
+            "unsupported": ["temperature"],
+            "completion_limit_param": "max_completion_tokens",
+        },
+    } if model_id == "future-reasoner" else None)
+
+    payload = provider._build_responses_payload(
+        [mod.Message(role="system", content="sys"), mod.Message(role="user", content="u")],
+        temperature=0.0,
+    )
+    limits_payload: dict[str, Any] = {}
+    provider._inject_completion_limits(limits_payload)
+
+    assert provider._uses_responses_api() is True
+    assert payload["reasoning"] == {"effort": "high"}
+    assert "temperature" not in payload
+    assert limits_payload["max_completion_tokens"] == 1234
+
+
+def test_models_gen_merges_provider_model_overrides_modalities_and_capabilities(tmp_path):
+    import json as _json
+
+    from core.config import Config
+    from provider import catalog as catalog_mod
+    from provider.models_gen import ensure_models_json
+
+    cfg_path = tmp_path / "lingzhou.json"
+    cfg_path.write_text(
+        _json.dumps(
+            {
+                "providers": {
+                    "copilot": {
+                        "type": "openai_compat",
+                        "mode": "copilot",
+                        "base_url": "https://api.individual.githubcopilot.com",
+                        "api_key_env": "GITHUB_TOKEN",
+                        "models": [
+                            {
+                                "id": "gpt-5.4",
+                                "input": ["text"],
+                                "capabilities": ["text_generation", "thinking"],
+                                "request_params": {
+                                    "unsupported": ["temperature", "top_p"]
+                                },
+                            },
+                            {
+                                "id": "future-vision",
+                                "api": "responses",
+                                "input": ["text", "image"],
+                                "capabilities": ["text_generation", "vision"],
+                                "context_window": 123456,
+                                "max_tokens": 4096,
+                            },
+                        ],
+                    }
+                },
+                "model": "copilot/gpt-5.4",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config.load(cfg_path)
+    cfg.loop.workspace_dir = str(tmp_path / "workspace")
+
+    try:
+        asyncio.run(ensure_models_json(cfg))
+
+        runtime_catalog = _json.loads((tmp_path / "workspace" / "models.json").read_text(encoding="utf-8"))
+        copilot_models = {m["id"]: m for m in runtime_catalog["copilot"]["models"]}
+
+        assert copilot_models["gpt-5.4"]["api"] == "responses"
+        assert copilot_models["gpt-5.4"]["max_tokens"] == 65536
+        assert copilot_models["gpt-5.4"]["input"] == ["text"]
+        assert copilot_models["gpt-5.4"]["capabilities"] == ["text_generation", "thinking"]
+        assert copilot_models["gpt-5.4"]["request_params"]["unsupported"] == ["temperature", "top_p"]
+        assert copilot_models["future-vision"]["input"] == ["text", "image"]
+        assert copilot_models["future-vision"]["capabilities"] == ["text_generation", "vision"]
+        assert copilot_models["future-vision"]["api"] == "responses"
+    finally:
+        catalog_mod.set_runtime_path(catalog_mod.BUILTIN_CATALOG_PATH)
+
+
 def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
     import httpx
     from provider.base import Message
@@ -2808,7 +2925,31 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     assert call["payload"]["instructions"] == "sys"
     assert call["payload"]["input"] == [{"role": "user", "content": "u"}]
     assert call["payload"]["reasoning"] == {"effort": "high"}
+    assert "temperature" not in call["payload"]
     assert "messages" not in call["payload"]
+
+
+def test_copilot_gpt5_responses_payload_omits_temperature():
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "gpt-5.4-mini"
+    provider._temperature = 0.7
+    provider._thinking_level = "high"
+    provider._extra_body = {}
+
+    payload = provider._build_responses_payload(
+        [Message(role="system", content="sys"), Message(role="user", content="u")],
+        temperature=0.0,
+    )
+
+    assert payload["model"] == "gpt-5.4-mini"
+    assert payload["instructions"] == "sys"
+    assert payload["input"] == [{"role": "user", "content": "u"}]
+    assert payload["reasoning"] == {"effort": "high"}
+    assert "temperature" not in payload
 
 
 def test_copilot_gpt5_responses_400_surfaces_error_body():
