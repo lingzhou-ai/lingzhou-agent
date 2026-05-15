@@ -2655,6 +2655,69 @@ def test_next_thinking_override_is_one_shot_and_strict():
     assert _next_thinking_override(None) is None
 
 
+def test_resolve_thinking_override_uses_mode_defaults_and_strategy():
+    from core.loop import _resolve_thinking_override
+
+    cfg = cast(Any, SimpleNamespace(
+        thinking="off",
+        loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="medium"),
+    ))
+
+    assert _resolve_thinking_override(cfg, user_message="hi") == "low"
+    assert _resolve_thinking_override(cfg, user_message="") == "medium"
+    assert _resolve_thinking_override(cfg, user_message="", pending_override="high") == "high"
+    assert _resolve_thinking_override(cfg, user_message="", model_strategy={"thinking_override": "minimal"}) == "minimal"
+
+
+def test_decide_continue_uses_passed_thinking_override():
+    asyncio.run(_decide_continue_uses_passed_thinking_override())
+
+
+async def _decide_continue_uses_passed_thinking_override():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.last_thinking_override: str | None = None
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.last_thinking_override = thinking_override
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    layer = JudgmentLayer(provider, ToolRegistry(), cfg)
+    layer._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "file.list", "params": {"path": "/tmp"}, "result": "ok"}],
+        user_message="继续",
+        prefer_tier="reasoner",
+        thinking_override="low",
+    )
+
+    assert out.decision == "wait"
+    assert provider.last_thinking_override == "low"
+    assert layer.last_call_meta["thinking"] == "low"
+
+
 def test_action_made_progress_result_aware():
     from core.judgment import JudgmentOutput
     from core.loop import _action_made_progress, _result_fingerprint

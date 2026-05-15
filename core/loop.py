@@ -109,6 +109,23 @@ def _next_thinking_override(model_strategy: dict[str, Any] | None) -> str | None
     return None
 
 
+def _resolve_thinking_override(
+    cfg: Config,
+    *,
+    user_message: str,
+    pending_override: str | None = None,
+    model_strategy: dict[str, Any] | None = None,
+) -> str | None:
+    if pending_override is not None:
+        return pending_override
+    next_override = _next_thinking_override(model_strategy)
+    if next_override is not None:
+        return next_override
+    if user_message:
+        return cfg.loop.chat_thinking if cfg.loop.chat_thinking != cfg.thinking else None
+    return cfg.loop.autonomous_thinking if cfg.loop.autonomous_thinking != cfg.thinking else None
+
+
 def _action_key_param(params: dict[str, Any] | None) -> str:
     """提取动作的主键参数，用于行为追踪与 WM 前缀。"""
     p = params or {}
@@ -1354,16 +1371,11 @@ class CognitionLoop:
             #   自主循环   → autonomous_thinking（默认 medium，~10-20s，平衡质量与速度）
             #   两者均与顶层 thinking 相同时不传 override（保持原有行为）
             #   LLM 通过 model_strategy.thinking_override 可在此基础上进一步覆盖
-            _thinking_override: str | None = None
-            if user_message:
-                if cfg.loop.chat_thinking != cfg.thinking:
-                    _thinking_override = cfg.loop.chat_thinking
-            else:
-                if cfg.loop.autonomous_thinking != cfg.thinking:
-                    _thinking_override = cfg.loop.autonomous_thinking
-            # LLM 上轮表达的 thinking_override 优先级最高（覆盖自动策略）
-            if self._pending_thinking_override is not None:
-                _thinking_override = self._pending_thinking_override
+            _thinking_override = _resolve_thinking_override(
+                cfg,
+                user_message=user_message,
+                pending_override=self._pending_thinking_override,
+            )
             action = await self._judgment.decide(
                 percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,
                 user_message=user_message,
@@ -1448,10 +1460,16 @@ class CognitionLoop:
             _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
             for _inner in range(cfg.loop.max_tool_rounds - 1):
                 _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+                _continue_thinking = _resolve_thinking_override(
+                    cfg,
+                    user_message=user_message,
+                    model_strategy=action.model_strategy,
+                )
                 _cont = await self._judgment.decide_continue(
                     _tool_history,
                     user_message=user_message,
                     prefer_tier=_next_tier or None,
+                    thinking_override=_continue_thinking,
                     routing_overrides=self._pending_routing_overrides,
                 )
 

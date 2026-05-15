@@ -663,6 +663,7 @@ class JudgmentLayer:
         tool_history: list[dict],
         user_message: str = "",
         prefer_tier: str | None = None,
+        thinking_override: str | None = None,
         routing_overrides: "dict[str, str] | None" = None,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
@@ -719,20 +720,22 @@ class JudgmentLayer:
             current_action=current_action,
             tool_history=tool_history,
             prefer_tier=prefer_tier,
+            thinking_override=thinking_override,
             routing_overrides=routing_overrides,
         )
-        # chat 模式 reasoner 阶段用 "low" 加快内层链推理；其余情况跟随配置
-        thinking_override = "low" if (selection.tier == "reasoner" and user_message) else "off"
+        resolved_thinking = thinking_override
+        if resolved_thinking is None and selection.tier == "reasoner" and user_message:
+            resolved_thinking = "low"
         self._last_call_meta = {
             "phase": selection.phase,
             "tier": selection.tier,
             "model_ref": selection.model_ref,
-            "thinking": thinking_override,
+            "thinking": resolved_thinking or selection.thinking,
         }
         raw: str | None = None
         for _attempt in range(2):
             try:
-                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
+                raw = await selected_provider.chat(messages, thinking_override=resolved_thinking)
                 self._mark_model_success(selection.model_ref)
                 break
             except Exception as exc:
@@ -746,7 +749,7 @@ class JudgmentLayer:
                         current_action=current_action,
                         tool_history=tool_history,
                         prefer_tier=_fallback_tier,
-                        thinking_override=thinking_override,
+                        thinking_override=resolved_thinking,
                     )
                     if fb_selection.model_ref != selection.model_ref:
                         _log.warning(
