@@ -30,13 +30,15 @@ def _resolve_read_path(path: Path) -> Path:
     cwd = Path.cwd()
     home = Path.home()
 
-    bases: list[Path] = [cwd, *cwd.parents, home, home / ".openclaw"]
+    # lingzhou 本地化：读取路径只在当前工作树、用户目录与 lingzhou 自身目录内解析，
+    # 不再对 OpenClaw 目录做运行时 fallback。
+    bases: list[Path] = [cwd, *cwd.parents, home, home / ".lingzhou"]
     rels: list[Path] = []
 
     if not path.is_absolute():
         rels.append(path)
 
-    for anchor in ("workspace", "lingzhou", ".openclaw"):
+    for anchor in ("workspace", "lingzhou", ".lingzhou"):
         rel = _tail_after_anchor(path, anchor)
         if rel is not None:
             rels.append(rel)

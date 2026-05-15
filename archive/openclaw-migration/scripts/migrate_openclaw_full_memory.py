@@ -20,8 +20,10 @@ DST_BASE = Path('/root/.lingzhou')
 DST_WORKSPACE = DST_BASE / 'workspace'
 DST_MEMORY = DST_BASE / 'memory'
 DST_DB = DST_BASE / 'state' / 'runtime.db'
-IMPORT_DIR = DST_WORKSPACE / 'memory-import'
-ARCHIVE_ROOT = IMPORT_DIR / 'openclaw-source'
+# 本地化收尾：迁移导入/归档产物不再放在 workspace 下，而是进入独立 imports 区。
+DST_IMPORTS = DST_BASE / 'imports' / 'openclaw'
+IMPORT_DIR = DST_IMPORTS
+ARCHIVE_ROOT = IMPORT_DIR / 'source-archive'
 
 
 @dataclass
@@ -37,7 +39,7 @@ def now_iso() -> str:
 
 
 def ensure_dirs() -> None:
-    for p in [DST_WORKSPACE, DST_MEMORY, IMPORT_DIR, ARCHIVE_ROOT]:
+    for p in [DST_WORKSPACE, DST_MEMORY, DST_IMPORTS, IMPORT_DIR, ARCHIVE_ROOT]:
         p.mkdir(parents=True, exist_ok=True)
 
 
@@ -381,7 +383,7 @@ def write_manifest(stats: ImportStats, backup_dir: Path) -> None:
 
     1. 灵魂真相源以 runtime facts 为准，`SOUL.md` 只保留镜像角色。
     2. `BOOTSTRAP.md / IDENTITY.md / USER.md / TOOLS.md / HEARTBEAT.md / MEMORY.md / DREAMS.md` 负责运行时可消费的人类可读窗口。
-    3. OpenClaw 的全部记忆源先原样归档到 `memory-import/openclaw-source/`，避免“全量迁移”只剩下摘要。
+    3. OpenClaw 的全部记忆源先原样归档到 `~/.lingzhou/imports/openclaw/source-archive/`，避免“全量迁移”只剩下摘要。
     4. 结构化下沉分两层：
        - 精炼锚点 → facts + learned_insight
        - 大体量源文本 → semantic memory source nodes
