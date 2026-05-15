@@ -173,19 +173,19 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not task:
         return ToolResult(summary="无活跃任务", skipped=True)
     status = params.get("status") or task.status
-    next_step = params.get("next_step") or task.next_step
-    current_step = (params.get("current_step") or "").strip()
-    model_tier = (params.get("model_tier") or "").strip()
-    if current_step:
+    next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
+    current_step = str(params.get("current_step") or "").strip() if "current_step" in params else task.current_step
+    model_tier = str(params.get("model_tier") or "").strip() if "model_tier" in params else task.model_tier
+    if "current_step" in params:
         await ctx.task_store.update_task_data(task.id, {"current_step": current_step})
-    if model_tier:
+    if "model_tier" in params:
         await ctx.task_store.update_task_data(task.id, {"model_tier": model_tier})
     await ctx.task_store.update_status(task.id, status, next_step)
     return ToolResult(
         summary=f"任务 [{task.id}] 已更新: status={status}",
         evidence=f"task_id={task.id} next_step={next_step[:80]}",
         resource_key=str(task.id),
-        state_delta={"task_status": status, "next_step": next_step, "current_step": current_step or task.current_step, "model_tier": model_tier or task.model_tier},
+        state_delta={"task_status": status, "next_step": next_step, "current_step": current_step, "model_tier": model_tier},
         metadata={"task_id": task.id, "chain_id": task.chain_id},
     )
 
@@ -238,8 +238,8 @@ async def task_wait(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not wait_kind:
         return ToolResult(summary="wait_kind 不能为空", skipped=True)
     wait_key = (params.get("wait_key") or "").strip()
-    current_step = (params.get("current_step") or "").strip()
-    next_step = (params.get("next_step") or task.next_step or "").strip()
+    current_step = str(params.get("current_step") or "").strip() if "current_step" in params else None
+    next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
     await ctx.task_store.mark_waiting(
         task.id,
         wait_kind=wait_kind,
@@ -271,8 +271,8 @@ async def task_resume(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not task:
         return ToolResult(summary="找不到要恢复的任务", skipped=True)
     status = (params.get("status") or "resumed").strip()
-    current_step = (params.get("current_step") or "").strip()
-    next_step = (params.get("next_step") or task.next_step or "").strip()
+    current_step = str(params.get("current_step") or "").strip() if "current_step" in params else None
+    next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
     await ctx.task_store.resume_task(
         task.id,
         status=status,
@@ -283,6 +283,6 @@ async def task_resume(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     return ToolResult(
         summary=f"任务 [{task.id}] 已恢复: status={status}",
         resource_key=str(task.id),
-        state_delta={"task_status": status, "current_step": current_step, "next_step": next_step},
+        state_delta={"task_status": status, "current_step": current_step if current_step is not None else task.current_step, "next_step": next_step if next_step is not None else task.next_step},
         metadata={"task_id": task.id, "chain_id": task.chain_id, "status": status},
     )

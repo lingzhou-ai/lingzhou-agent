@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 _DURABLE_FAILURE_TTL_SEC = 7200
 _DURABLE_FAILURE_THRESHOLD = 3
+_LOG_TEXT_CHARS = 240
 
 _EXEC_RUN_TOOLS = frozenset({"exec", "process.write", "process.poll", "process.log", "process.kill", "process.list"})
 _MULTIMODAL_RUN_TOOLS = frozenset({"image.analyze"})
@@ -98,6 +99,25 @@ def _classify_durable_failure(result: ToolResult) -> str | None:
         if any(n in text for n in needles):
             return code
     return None
+
+
+def _clip_log_text(value: Any, limit: int = _LOG_TEXT_CHARS) -> str:
+    text = str(value or "").replace("\n", "\\n").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _tool_result_log_fields(result: ToolResult) -> tuple[str, str, str]:
+    summary = _clip_log_text(result.summary)
+    error = _clip_log_text(result.error or "")
+    state = ""
+    if isinstance(result.state_delta, dict) and result.state_delta:
+        try:
+            state = _clip_log_text(json.dumps(result.state_delta, ensure_ascii=False, sort_keys=True))
+        except Exception:
+            state = _clip_log_text(result.state_delta)
+    return summary, error, state
 
 
 def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -477,6 +497,17 @@ class ExecutionLayer:
                 error=str(exc),
                 kind="execute_result",
             )
+
+        _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _log.info(
+            "[tool-result] tool=%s worker=%s skipped=%s error=%s summary=%s state=%s",
+            action.chosen_action_id,
+            worker_type,
+            result.skipped,
+            _error_log or "-",
+            _summary_log or "-",
+            _state_log or "-",
+        )
 
         # 失败时写入 failures 表，绑定当前任务（P2-B 任务边界原则）
         if result.error and not result.skipped and ctx.task_store is not None:

@@ -20,6 +20,22 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+_TASK_CORE_DATA_KEYS = frozenset({
+    "goal",
+    "source",
+    "next_step",
+    "chain_id",
+    "parent_task_id",
+    "current_step",
+    "wait_kind",
+    "wait_key",
+    "state_json",
+    "wait_json",
+    "result_json",
+    "async_job_id",
+    "model_tier",
+})
+
 # ── 永久稳定 DDL ────────────────────────────────────────────────────────────
 _CREATE_TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -217,7 +233,7 @@ class Task:
             "async_job_id": self.async_job_id,
             "model_tier": self.model_tier,
         }
-        d.update(self.extras)
+        d.update({k: v for k, v in self.extras.items() if k not in _TASK_CORE_DATA_KEYS})
         return json.dumps(d, ensure_ascii=False)
 
 
@@ -602,14 +618,14 @@ class TaskStore:
         return [Task.from_row(r) for r in rows]
 
     async def update_status(
-        self, task_id: int, status: str, next_step: str = ""
+        self, task_id: int, status: str, next_step: str | None = None
     ) -> None:
-        """更新 status；同时将 next_step 写入 data JSON（最小化写入，不覆盖其他 data 字段）。"""
+        """更新 status；next_step=None 表示保持原值。"""
         task = await self.get_task_by_id(task_id)
         if not task:
             return
         task.status = status
-        if next_step:
+        if next_step is not None:
             task.next_step = next_step
         await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
@@ -624,8 +640,8 @@ class TaskStore:
         wait_kind: str,
         wait_key: str = "",
         wait_json: dict[str, Any] | None = None,
-        current_step: str = "",
-        next_step: str = "",
+        current_step: str | None = None,
+        next_step: str | None = None,
     ) -> None:
         task = await self.get_task_by_id(task_id)
         if not task:
@@ -634,9 +650,9 @@ class TaskStore:
         task.wait_kind = wait_kind
         task.wait_key = wait_key
         task.wait_json = wait_json or {}
-        if current_step:
+        if current_step is not None:
             task.current_step = current_step
-        if next_step:
+        if next_step is not None:
             task.next_step = next_step
         await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
@@ -649,8 +665,8 @@ class TaskStore:
         task_id: int,
         *,
         status: str = "resumed",
-        current_step: str = "",
-        next_step: str = "",
+        current_step: str | None = None,
+        next_step: str | None = None,
         result_json: dict[str, Any] | None = None,
     ) -> None:
         task = await self.get_task_by_id(task_id)
@@ -660,9 +676,9 @@ class TaskStore:
         task.wait_kind = ""
         task.wait_key = ""
         task.wait_json = {}
-        if current_step:
+        if current_step is not None:
             task.current_step = current_step
-        if next_step:
+        if next_step is not None:
             task.next_step = next_step
         if result_json is not None:
             merged = dict(task.result_json or {})
@@ -679,7 +695,21 @@ class TaskStore:
         task = await self.get_task_by_id(task_id)
         if not task:
             return
-        task.extras.update(extra_dict)
+        protected_keys = {"goal", "source", "next_step", "result_json"}
+        ignored = [k for k in extra_dict.keys() if k in protected_keys]
+        if ignored:
+            logger.debug("update_task_data ignored protected task fields: %s", ",".join(sorted(ignored)))
+
+        if "current_step" in extra_dict:
+            task.current_step = str(extra_dict.get("current_step") or "")
+        if "model_tier" in extra_dict:
+            task.model_tier = str(extra_dict.get("model_tier") or "")
+
+        task.extras.update({
+            k: v
+            for k, v in extra_dict.items()
+            if k not in protected_keys and k not in {"current_step", "model_tier"}
+        })
         await self._db.execute(
             "UPDATE tasks SET data=? WHERE id=?",
             (task.to_data_json(), task_id),

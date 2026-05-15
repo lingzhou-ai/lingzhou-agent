@@ -1935,11 +1935,15 @@ async def _task_store_basic():
         assert t2.next_step == "步骤1"
 
         # 扩展字段（无需 ALTER TABLE）
-        await store.update_task_data(tid, {"tags": ["ai"], "score": 99, "model_tier": "reader"})
+        await store.update_task_data(
+            tid,
+            {"tags": ["ai"], "score": 99, "model_tier": "reader", "current_step": "检查任务状态", "next_step": "不应覆盖"},
+        )
         t3 = await store.get_task_by_id(tid)
         assert t3 is not None
         assert t3.extras["score"] == 99
         assert t3.model_tier == "reader"
+        assert t3.current_step == "检查任务状态"
         assert t3.next_step == "步骤1"  # 原有字段未被覆盖
 
         await store.sync_task_progress(tid, current_step="步骤1", next_step="步骤2")
@@ -2037,6 +2041,105 @@ async def _task_store_run_lifecycle():
 
         runs = await store.list_runs(task_id=task_id)
         assert len(runs) == 1
+
+        await store.close()
+
+
+def test_task_update_can_clear_runtime_fields():
+    asyncio.run(_task_update_can_clear_runtime_fields())
+
+
+async def _task_update_can_clear_runtime_fields():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_update
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "tasks.db")
+        await store.open()
+        task_id = await store.add_task(
+            "清理任务状态",
+            goal="验证 task.update 可以清空运行提示字段",
+            next_step="旧下一步",
+            current_step="旧当前步骤",
+            model_tier="reader",
+        )
+
+        ctx = _tool_ctx(task_store=store)
+        res = await task_update(
+            {
+                "task_id": task_id,
+                "status": "in_progress",
+                "next_step": "",
+                "current_step": "",
+                "model_tier": "",
+            },
+            ctx,
+        )
+
+        assert res.error is None
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "in_progress"
+        assert task.next_step == ""
+        assert task.current_step == ""
+        assert task.model_tier == ""
+
+        await store.close()
+
+
+def test_task_wait_resume_can_clear_runtime_fields():
+    asyncio.run(_task_wait_resume_can_clear_runtime_fields())
+
+
+async def _task_wait_resume_can_clear_runtime_fields():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_resume, task_wait
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "wait-resume.db")
+        await store.open()
+        task_id = await store.add_task(
+            "等待恢复任务",
+            goal="验证 waiting/resume 可以显式清空步骤字段",
+            next_step="旧下一步",
+            current_step="旧当前步骤",
+        )
+
+        ctx = _tool_ctx(task_store=store)
+        wait_res = await task_wait(
+            {
+                "task_id": task_id,
+                "wait_kind": "process",
+                "wait_key": "exec-1",
+                "current_step": "",
+                "next_step": "",
+            },
+            ctx,
+        )
+        assert wait_res.error is None
+
+        waited = await store.get_task_by_id(task_id)
+        assert waited is not None
+        assert waited.status == "waiting"
+        assert waited.current_step == ""
+        assert waited.next_step == ""
+
+        resume_res = await task_resume(
+            {
+                "task_id": task_id,
+                "status": "ready",
+                "current_step": "",
+                "next_step": "",
+            },
+            ctx,
+        )
+        assert resume_res.error is None
+
+        resumed = await store.get_task_by_id(task_id)
+        assert resumed is not None
+        assert resumed.status == "ready"
+        assert resumed.current_step == ""
+        assert resumed.next_step == ""
 
         await store.close()
 
@@ -2640,6 +2743,29 @@ def test_fmt_task_exposes_runtime_state_to_llm():
     assert "模型层级: repair" in section
     assert "当前步骤: 检查 run monitor" in section
     assert "最近运行状态: failed" in section
+
+
+def test_tool_result_log_fields_include_state_delta():
+    from core.execution import _tool_result_log_fields
+    from tools.registry import ToolResult
+
+    summary, error, state = _tool_result_log_fields(ToolResult(
+        summary="工具完成\n含多行",
+        error="",
+        state_delta={"task_status": "waiting", "wait_key": "exec-1"},
+    ))
+
+    assert summary == "工具完成\\n含多行"
+    assert error == ""
+    assert '"task_status": "waiting"' in state
+    assert '"wait_key": "exec-1"' in state
+
+
+def test_clip_reply_for_log_strips_memory_context():
+    from core.loop import _clip_reply_for_log
+
+    clipped = _clip_reply_for_log("<memory-context>hidden</memory-context>\n用户可见回复")
+    assert clipped == "用户可见回复"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

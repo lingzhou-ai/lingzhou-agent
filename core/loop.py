@@ -52,6 +52,7 @@ console = Console()
 
 # 上下文截断具名常量（语义记忆 & 日志截断阈值；调整后重启即生效，不影响已存数据）
 _LOG_RATIONALE_CHARS  = 120   # log 行 rationale 截断
+_LOG_REPLY_CHARS      = 240   # log 行 reply 截断
 _SEM_TITLE_CHARS      = 60    # 语义/事件节点 title 截断
 _SEM_TAG_TASK_CHARS   = 20    # 语义节点 task tag 截断
 _EVENT_TITLE_CHARS    = 40    # 事件结晶节点 title（任务名部分）截断
@@ -91,6 +92,13 @@ def _strip_memory_context(text: str) -> str:
     import re as _re
     cleaned = _re.sub(r"<memory-context>.*?</memory-context>", "", text, flags=_re.DOTALL)
     return cleaned.strip() or text.strip()
+
+
+def _clip_reply_for_log(text: str, limit: int = _LOG_REPLY_CHARS) -> str:
+    cleaned = _strip_memory_context(text).replace("\n", "\\n").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit] + "..."
 
 
 def _action_key_param(params: dict[str, Any] | None) -> str:
@@ -1491,6 +1499,14 @@ class CognitionLoop:
             # chat/interact 模式下，内层循环结束仍无回复时给用户兜底 ACK
             if user_message and not action.reply_to_user:
                 action.reply_to_user = "（已执行完工具链，任务正在后台继续处理）"
+
+            if action.reply_to_user:
+                _log.info(
+                    "[task-reply] task=%s decision=%s reply=%s",
+                    active_task.id if active_task else 0,
+                    action.decision,
+                    _clip_reply_for_log(action.reply_to_user),
+                )
 
         # 执行后记忆整合（结晶、WM 注入、情节记录、语义结晶、情绪反写）
         await self._post_tick_memory(action, result, active_task, cycle, user_message)
