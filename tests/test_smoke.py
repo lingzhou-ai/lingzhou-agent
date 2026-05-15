@@ -2148,6 +2148,71 @@ def test_chat_messages_are_sanitized_on_write():
     asyncio.run(_chat_messages_are_sanitized_on_write())
 
 
+def test_task_wait_requires_explicit_resume_key_for_external_waits():
+    asyncio.run(_task_wait_requires_explicit_resume_key_for_external_waits())
+
+
+async def _task_wait_requires_explicit_resume_key_for_external_waits():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_wait
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "wait-guard.db")
+        await store.open()
+        task_id = await store.add_task("等待外部路径", goal="验证 task.wait 不会无条件挂起任务")
+
+        ctx = _tool_ctx(task_store=store)
+        wait_res = await task_wait(
+            {
+                "task_id": task_id,
+                "wait_kind": "external",
+            },
+            ctx,
+        )
+
+        assert wait_res.skipped is True
+        assert "需要明确的 wait_key" in wait_res.summary
+
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "pending"
+
+        await store.close()
+
+
+def test_task_wait_rejects_unknown_wait_kind():
+    asyncio.run(_task_wait_rejects_unknown_wait_kind())
+
+
+async def _task_wait_rejects_unknown_wait_kind():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_wait
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "wait-kind.db")
+        await store.open()
+        task_id = await store.add_task("非法等待类型", goal="验证 task.wait 只接受受支持的等待类型")
+
+        ctx = _tool_ctx(task_store=store)
+        wait_res = await task_wait(
+            {
+                "task_id": task_id,
+                "wait_kind": "missing-evidence",
+                "wait_key": "source-path",
+            },
+            ctx,
+        )
+
+        assert wait_res.skipped is True
+        assert "不支持的 wait_kind" in wait_res.summary
+
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "pending"
+
+        await store.close()
+
+
 async def _chat_messages_are_sanitized_on_write():
     from memory.task_store import TaskStore
 

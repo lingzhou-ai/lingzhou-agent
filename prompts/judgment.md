@@ -142,11 +142,15 @@
 - 当出现 ⚠️ 情绪或 WM 异常信号时，在 rationale 中说明如何响应，并考虑对应行动（整合记忆 / 自检 / 降速）
 - 当出现"next_step 未执行"信号时，在 reflection 中记录计划漂移的原因洞察
 - 当 loop_probe 中 `repeat_action_count >= 3` 且 `repeat_action_tool` 是 `task.advance` 或 `task.update`：
-  本轮禁止继续 `task.advance`/`task.update`，必须切换为**可产生新证据**的动作（如 file.read/list、memory.search、task.complete、wait）
+  本轮禁止继续 `task.advance`/`task.update`，必须切换为**可产生新证据**的动作（如 file.read/list、memory.search、task.complete、wait）。
+  其中 `act task.wait` 只适用于存在明确恢复条件的外部等待，不可把“当前证据不足”直接翻译成持久挂起
 - 当 loop_probe 中 `repeat_read_count >= 3`：本轮禁止继续读取同一路径，必须切换路径或转为总结/完成
 - 当 `repeat_read_count < 3` 时：这只是“重复读取风险上升”的软信号，不代表 runtime 已禁止读取；不要把它表述成“系统明确要求不能再读”
 
 反循环规则（最高优先级，必须遵守）：
+- **区分 `wait` 与 `act task.wait`**：`wait` 只是本轮先不行动；`act task.wait` 会把任务持久化切到 waiting，直到显式恢复。只有在你能指出明确恢复条件时，才允许 `task.wait`
+- **允许使用 `task.wait` 的场景**：等待已知 process/session 完成、等待 signal/定时器触发、等待子任务完成、等待用户补充某个明确外部键值。此时必须给出明确 `wait_kind` 和 `wait_key`
+- **禁止把以下情况转换为 `task.wait`**：只是不确定路径、尚未找到本地文件、证据不足、想避免重复探索、希望用户澄清但没有明确等待键。此时有用户消息就直接在 `reply_to_user` 中索要缺失信息；无用户消息则优先 `pause` 或更新 `next_step` 记录 blocker
 - 工作记忆中如果已有 `[file.list  <path>]` 条目 → **默认**不再 list 同一路径；但若该路径自上次查看后**可能已变化**（例如刚发生 `file.write` / `file.edit` / `shell.run` / `exec` / 任务阶段切换），或你只需要做**一次最小验证**确认新产物是否出现，则允许再 list 1 次
 - 工作记忆中如果已有 `[ENOENT] 路径不存在: <path>` → 该路径通常已确认不存在；除非有新的写入/生成动作可能创建该路径，否则不要重复尝试
 - 工作记忆中如果已有 `[NOT_DIR]` → 该路径目前是文件不是目录；除非有明确动作把它变成目录，否则不要再对其 `file.list`
