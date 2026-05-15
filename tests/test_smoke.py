@@ -2565,6 +2565,32 @@ def test_dev_model_switch_syncs_routing_entries_following_primary_model():
     assert cfg_data["routing"]["repair"] == "copilot/gpt-5.4-mini"
 
 
+def test_dev_model_switch_repairs_stale_same_provider_reasoner_routes_when_reselecting_same_model():
+    from cli.dev import _sync_routing_models_on_primary_switch
+
+    cfg_data = {
+        "model": "copilot/gpt-5.4-mini",
+        "routing": {
+            "reader": "bailian/qwen3.6-plus",
+            "reasoner": "copilot/gpt-5.4",
+            "complex": "copilot/o3",
+            "repair": "bailian/qwen3.6-plus",
+        },
+    }
+
+    changed = _sync_routing_models_on_primary_switch(
+        cfg_data,
+        old_model="copilot/gpt-5.4-mini",
+        new_model="copilot/gpt-5.4-mini",
+    )
+
+    assert changed == ["reasoner", "complex"]
+    assert cfg_data["routing"]["reader"] == "bailian/qwen3.6-plus"
+    assert cfg_data["routing"]["reasoner"] == "copilot/gpt-5.4-mini"
+    assert cfg_data["routing"]["complex"] == "copilot/gpt-5.4-mini"
+    assert cfg_data["routing"]["repair"] == "bailian/qwen3.6-plus"
+
+
 def test_dev_model_prefers_current_or_reasoning_model():
     from cli.dev import _preferred_model_index
 

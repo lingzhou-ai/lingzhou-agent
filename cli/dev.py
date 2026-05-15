@@ -32,14 +32,23 @@ def _sync_routing_models_on_primary_switch(
     若 routing.reasoner/reader 仍精确指向旧主模型，运行时会继续命中旧路由，
     造成“顶层 model 已切，但真实判断仍像没切”的错觉。
     """
-    if not old_model or not new_model or old_model == new_model:
+    if not old_model or not new_model:
         return []
     routing = cfg_data.get("routing")
     if not isinstance(routing, dict):
         return []
+    new_provider, _, _ = str(new_model).partition("/")
     changed: list[str] = []
     for tier, model_ref in routing.items():
-        if model_ref == old_model:
+        should_follow_old = model_ref == old_model
+        stale_reasoning_route = (
+            old_model == new_model
+            and str(tier) in {"reasoner", "repair", "complex"}
+            and isinstance(model_ref, str)
+            and model_ref != new_model
+            and model_ref.partition("/")[0] == new_provider
+        )
+        if should_follow_old or stale_reasoning_route:
             routing[tier] = new_model
             changed.append(str(tier))
     return changed
