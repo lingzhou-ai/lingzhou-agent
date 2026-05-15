@@ -47,6 +47,10 @@ _MAX_COMPLETION_TOKENS_MODELS = ("o1", "o3", "o4")
 _MAX_COMPLETION_TOKENS_DEFAULT = 16384
 
 
+def _copilot_reasoning_effort(level: str) -> str:
+    return "low" if level == "minimal" else level
+
+
 def _build_copilot_ide_headers(*, include_api_version: bool = False) -> dict[str, str]:
     headers = {
         "Editor-Version": COPILOT_EDITOR_VERSION,
@@ -276,6 +280,61 @@ class OpenAICompatProvider:
             limit = int(spec["max_tokens"]) if spec and spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
             payload["max_completion_tokens"] = limit
 
+    def _uses_responses_api(self) -> bool:
+        return self._provider_mode == "copilot" and self._model.startswith("gpt-5")
+
+    def _build_responses_payload(
+        self,
+        messages: list[Message],
+        *,
+        temperature: float | None = None,
+        thinking_override: str | None = None,
+    ) -> dict[str, Any]:
+        level = thinking_override if thinking_override is not None else self._thinking_level
+        instructions_parts: list[str] = []
+        input_items: list[dict[str, Any]] = []
+
+        for m in messages:
+            if m.role == "system":
+                if isinstance(m.content, str) and m.content.strip():
+                    instructions_parts.append(m.content)
+                continue
+            input_items.append({"role": m.role, "content": m.content})
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "input": input_items or [{"role": "user", "content": ""}],
+            "temperature": temperature if temperature is not None else self._temperature,
+        }
+        if instructions_parts:
+            payload["instructions"] = "\n\n".join(instructions_parts)
+
+        spec = lookup_model(self._model)
+        is_reasoning = bool(spec and spec.get("reasoning")) if spec else False
+        if is_reasoning and level != "off":
+            payload["reasoning"] = {"effort": _copilot_reasoning_effort(level)}
+
+        if self._extra_body:
+            payload.update(self._extra_body)
+        return payload
+
+    @staticmethod
+    def _extract_responses_text(data: dict[str, Any]) -> str:
+        if isinstance(data.get("output_text"), str) and data.get("output_text"):
+            return str(data["output_text"])
+
+        output = data.get("output") or []
+        text_parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for content in item.get("content") or []:
+                if isinstance(content, dict) and content.get("type") == "output_text":
+                    text = content.get("text")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+        return "\n".join(text_parts).strip()
+
     def _copilot_compat_fallback_payload(
         self,
         *,
@@ -314,6 +373,50 @@ class OpenAICompatProvider:
         temperature: float | None = None,
         thinking_override: str | None = None,
     ) -> str:
+        if self._uses_responses_api():
+            payload = self._build_responses_payload(
+                messages,
+                temperature=temperature,
+                thinking_override=thinking_override,
+            )
+            req_headers: dict[str, str] = {}
+            if self._provider_mode == "copilot":
+                token = await self._ensure_copilot_token()
+                req_headers = self._copilot_request_headers(token)
+
+            _active_level = thinking_override if thinking_override is not None else self._thinking_level
+            _req_timeout = (
+                max(float(self._client.timeout.read or self._client.timeout.connect or 60.0), 300.0)
+                if _active_level not in (None, "off")
+                else None
+            )
+            target_url = self._copilot_url("/responses") if self._provider_mode == "copilot" else "/responses"
+
+            resp = await self._client.post(
+                target_url,
+                content=json.dumps(payload),
+                headers=req_headers if req_headers else None,
+                timeout=_req_timeout,
+            )
+            if self._provider_mode == "copilot" and resp.status_code in (400, 401, 403):
+                body = resp.text
+                if "Personal Access Tokens are not supported for this endpoint" in body:
+                    raise RuntimeError(
+                        "当前 GitHub token 没有成功走完 Copilot token exchange，或换到的 token 不可用。\n"
+                        "请重新执行 `lingzhou auth login-copilot`，并提供可访问 copilot_internal 的 GitHub token。"
+                    )
+                refreshed = await self._ensure_copilot_token(force_refresh=True)
+                retry_headers = self._copilot_request_headers(refreshed)
+                resp = await self._client.post(
+                    target_url,
+                    content=json.dumps(payload),
+                    headers=retry_headers,
+                    timeout=_req_timeout,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            return self._extract_responses_text(data)
+
         base_payload: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
