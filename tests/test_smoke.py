@@ -2148,18 +2148,18 @@ def test_chat_messages_are_sanitized_on_write():
     asyncio.run(_chat_messages_are_sanitized_on_write())
 
 
-def test_task_wait_requires_explicit_resume_key_for_external_waits():
-    asyncio.run(_task_wait_requires_explicit_resume_key_for_external_waits())
+def test_task_wait_allows_external_wait_without_wait_key():
+    asyncio.run(_task_wait_allows_external_wait_without_wait_key())
 
 
-async def _task_wait_requires_explicit_resume_key_for_external_waits():
+async def _task_wait_allows_external_wait_without_wait_key():
     from memory.task_store import TaskStore
     from tools.task_ops import task_wait
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "wait-guard.db")
         await store.open()
-        task_id = await store.add_task("等待外部路径", goal="验证 task.wait 不会无条件挂起任务")
+        task_id = await store.add_task("等待外部路径", goal="验证 task.wait 不会强制要求 wait_key")
 
         ctx = _tool_ctx(task_store=store)
         wait_res = await task_wait(
@@ -2170,12 +2170,14 @@ async def _task_wait_requires_explicit_resume_key_for_external_waits():
             ctx,
         )
 
-        assert wait_res.skipped is True
-        assert "需要明确的 wait_key" in wait_res.summary
+        assert wait_res.skipped is False
+        assert wait_res.error is None
 
         task = await store.get_task_by_id(task_id)
         assert task is not None
-        assert task.status == "pending"
+        assert task.status == "waiting"
+        assert task.wait_kind == "external"
+        assert task.wait_key == ""
 
         await store.close()
 

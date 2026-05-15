@@ -241,11 +241,6 @@ async def task_wait(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     valid_wait_kinds = {"process", "task", "signal", "time", "external"}
     if wait_kind not in valid_wait_kinds:
         return ToolResult(summary=f"不支持的 wait_kind: {wait_kind}", skipped=True)
-    if not wait_key:
-        return ToolResult(
-            summary=f"wait_kind={wait_kind} 需要明确的 wait_key，避免任务被无条件挂起",
-            skipped=True,
-        )
     current_step = str(params.get("current_step") or "").strip() if "current_step" in params else None
     next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
     await ctx.task_store.mark_waiting(
