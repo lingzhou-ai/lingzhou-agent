@@ -241,9 +241,13 @@ meta = json.loads(node.meta or '{}')
 decay_factor = meta.get('decay_factor', 1.0)
 ```
 
-### 策略 B：`_reconcile_columns()` 自动补列（Hermes 模式）
+### 策略 B：幂等补列（局部使用）
 
-对于**已知类型**的新列（如 `task.context`），在 `_migrate()` 中自动检测并 ADD COLUMN，  
-只需在 schema 字符串里声明，不需要写单独迁移脚本。
+对于**稳定、低频变化**的表（例如语义记忆节点表），仍可在 `_migrate()` 中自动检测并 `ADD COLUMN`。  
+但对任务主状态表，当前推荐的是 **JSON-first**，把动态字段放入 `data` JSON，而不是频繁补列。
 
-`_migrate()` 已实现此模式。详见 `schema-evolution.md`。
+也就是说：
+- `semantic / nodes` 这类稳定结构可补列
+- `tasks / failures` 这类高演化结构优先 JSON-first
+
+详见 `schema-evolution.md`。

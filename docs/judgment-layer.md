@@ -1,198 +1,193 @@
-# 判断层
+# 判断层（Judgment Layer）
 
-> 判断层（Judgment）是 lingzhou 的决策核心，将所有认知信号整合为一个行动。
+**更新日期：** 2026-05-15
+
+> 判断层是 lingzhou 的**认知控制核心**。它负责整合信息、决定下一步、并把复杂执行交给执行面。
 
 ---
 
 ## 1. 职责
 
-```
-感知层  →  情绪层  →  Ethos层  →  【判断层】  →  执行层
-```
+当前判断层做三件事：
 
-判断层做三件事：
-1. **组装判断束（bundle）**：从所有内存层收集上下文
-2. **调用 LLM**：填充 `prompts/judgment.md` 模板，发送请求
-3. **解析输出**：将 LLM 回复解析为 `JudgmentOutput`，驱动执行层
+1. **组装判断上下文（bundle）**
+2. **选择模型 tier / provider 并调用 LLM**
+3. **输出 `JudgmentOutput` 驱动后续执行**
 
----
+长期目标上，它还应承担：
 
-## 2. 判断束（Context Bundle）
-
-`_assemble_context()` 收集以下字段：
-
-### 全部已实现（注入模板）
-| 字段 | 来源 | 含义 |
-|---|---|---|
-| `task_section` | `task_store.get_active()` | 当前任务状态 |
-| `emotion_valence` | `emotion.valence` | 效价（[0,1]）|
-| `emotion_arousal` | `emotion.arousal` | 唤醒度（[0,1]）|
-| `emotion_dominant` | `emotion.dominant` | 主导情绪标签 |
-| `emotion_regulation` | `emotion.regulation.strategy` | 调节策略（down-regulate / up-regulate / maintain）|
-| `perception_section` | `percept` 感知结果 | 原始感知 |
-| `perception_replay_section` | `build_perception_replay()` | 感知趋势摘要 |
-| `wm_section` | `wm.snapshot()` | 工作记忆快照 |
-| `failures_section` | `task_store.list_failures_for_task()` | 失败记录 |
-| `episodic_section` | `episodic.load_for_context(task_id)` | 情节记忆叙事 |
-| `memories_section` | `semantic.retrieve_multi_anchor(anchors)` | 语义记忆节点 |
-| `soul_section` | `facts["soul:*"]` | 价值基线 |
-| `hard_boundaries_section` | `facts["soul:hard_axioms"]` | 不可违反的公理 |
-| `ethos_section` | `derive_ethos_state()` + `_fmt_ethos()` | 当前价值观状态与行为倾向 |
-| `signals_section` | `compute_judgment_signals()` | 确定性判断预信号 |
-| `skills_section` | `skill_registry.match_for_context()` | 激活的认知护栏 |
-| `cognitive_signals_section` | `CognitiveSignals.to_text()` | 循环探针 + WM/情绪警报 |
-| `entity_section` | `semantic.retrieve_multi_anchor()` | 实体记忆 |
-| `current_time_section` | `datetime.now()` | 当前时间 |
-| `tools_section` | `tool_registry.list_manifest()` | 可用工具清单 |
-| `user_message` | 用户输入（或 None） | 用户指令 |
+4. **决定是否创建 run**（而不是所有动作都由主环直接执行）
+5. **决定问题属于单环还是双环**（交给 MetaReflection）
 
 ---
 
-## 3. JudgmentOutput 结构
+## 2. 当前输入
+
+`_assemble_context()` 当前已经整合：
+
+- active task
+- percept / perception replay
+- emotion
+- ethos
+- judgment signals
+- hard boundaries
+- working memory
+- episodic memory
+- semantic memory
+- failures
+- skills
+- tools
+- user_message
+- current time
+
+这使 Judgment 已经具备很强的“认知控制面”基础。
+
+---
+
+## 3. 当前输出
 
 ```python
 @dataclass
 class JudgmentOutput:
-    decision: str           # 决策摘要
-    chosen_action_id: str   # 工具 ID，如 "file.read"
-    params: dict            # 工具参数
-    rationale: str          # 推理过程
-    reply_to_user: str      # 对用户的回复（可为空）
-    next_step: str          # 下一步计划
-    reflection: str          # 本轮洞察 → 由 loop.py 写入 semantic memory
+    decision: str              # act | pause | wait
+    chosen_action_id: str      # 工具名
+    params: dict[str, Any]
+    rationale: str
+    reflection: str
+    reply_to_user: str
+    next_step: str
+    model_strategy: dict[str, Any]
 ```
 
-`reflection` 字段：当 LLM 输出包含 reflection 时，loop.py 将其写入 `semantic.store_reflection()`。
+### `model_strategy` 当前已支持
+
+- `next_phase_tier`
+- `next_idle_gap_secs`
+- `routing_overrides`
+- `thinking_override`
+
+这是现有判断层很强的一点：
+
+> LLM 不只是“选工具”，还可以跨 tick 调整自己的推理姿态。
 
 ---
 
-## 4. prompts/judgment.md 模板结构
+## 4. 当前 tier 路由机制
 
-```markdown
-# 判断束
+目前采用：
 
-## 当前任务
-{task_section}
+- `reader`：低成本读取/枚举类工具
+- `reasoner`：写入/复杂推理/高风险动作
+- `repair`：修复层
 
-## 感知状态
-{perception_section}
+### 当前做法
 
-### 感知趋势
-{perception_replay_section}
-
-## 情绪状态
-- 效价：{emotion_valence}
-- 唤醒：{emotion_arousal}
-- 主导情绪：{emotion_dominant}
-- 调节策略：{emotion_regulation}
-
-## 价值观状态（Ethos）
-{ethos_section}
-
-## 判断建议信号
-{signals_section}
-
-## 绝对边界（不可违反）
-{hard_boundaries_section}
-
-## 认知信号
-{cognitive_signals_section}
-
-## 工作记忆
-{wm_section}
-
-## 最近失败
-{failures_section}
-
-## 情节记忆
-{episodic_section}
-
-## 语义记忆
-{memories_section}
-
-## Soul（价值基线）
-{soul_section}
-
-## 当前激活的认知防线
-{skills_section}
-
-## 可用工具
-{tools_section}
-
-## 用户消息
-{user_message}
-```
-
----
-
-## 5. 安全兜底（_simulate_safe_output）
-
-当 LLM 调用失败或输出无法解析时，降级到确定性兜底：
+当前 tier 主要按**工具类型**推断：
 
 ```python
-def _simulate_safe_output(
-    posture: str,       # "act" | "pause" | "narrow"
-    hard_boundaries: list,
-    failures: list,
-) -> JudgmentOutput:
-
-    # 优先级：hard_boundary 触发 → posture == "pause" → 默认 wait
-    if _boundary_violated(hard_boundaries):
-        return JudgmentOutput(chosen_action_id="system.refuse", ...)
-    if posture == "pause":
-        return JudgmentOutput(chosen_action_id="system.wait", ...)
-    if posture == "narrow":
-        return JudgmentOutput(chosen_action_id="memory.get_fact", ...)  # 最安全的读操作
-    return JudgmentOutput(chosen_action_id="system.wait", ...)
+if current_action in _REASONER_TOOLS:
+    return "reasoner"
+if current_action in _READER_TOOLS:
+    return "reader"
 ```
 
-**设计原则**：宁可停下，不可错误行动。
+### 当前问题
+
+这在“单步工具调用”上有效，但在“长任务”上会出现问题：
+
+- 同一个 task 内不同步骤频繁切换模型
+- reasoning 风格不稳定
+- 上下文连续性被打断
+
+### 正确方向
+
+> **从 tool-level routing 升级到 task-level routing。**
+
+即：
+- task 默认有一个 `model_tier`
+- 某些 step 再做 override
+- 不再每一步都从工具类型重新猜一次
 
 ---
 
-## 6. 判断层调用流程
+## 5. 最佳目标：Judgment 负责创建 Run，而不是亲自背所有执行
 
-```python
-# core/loop.py — 每 tick
-action = await judgment.decide(
-    percept=percept,
-    wm=wm,
-    task_store=task_store,
-    episodic=episodic,
-    semantic=semantic,
-    emotion=emotion,
-    ethos_state=ethos_state,
-    judgment_signals=signals,
-    hard_boundaries=hard_axioms,
-    perception_replay=perception_replay_summary,
-    cognitive_signals=cognitive_signals,
-)
+当前流程更像：
+
+```
+JudgmentOutput → ExecutionLayer.dispatch() → 工具直接执行
 ```
 
-内部流程：
-1. `_assemble_context()` → `ctx` 字典
-2. `prompt = judgment_md.format(**ctx)` → 填充模板
-3. `provider.chat([{"role": "user", "content": prompt}])` → LLM 调用
-4. `_parse_output(response)` → `JudgmentOutput`
-5. 若解析失败 → `_simulate_safe_output()`
+更好的目标应该是：
+
+```
+JudgmentOutput
+  ├─ 简单只读动作 → 直接执行
+  ├─ 快速回复 → 直接生成 reply
+  └─ 复杂执行 → 创建 Run 交给 Worker
+```
+
+### 也就是说，Judgment 未来要多一个决策分叉：
+
+- **direct action**
+- **spawn run**
+- **meta reflection trigger**
 
 ---
 
-## 7. 已知问题与修复路线
+## 6. 与双环学习的关系
 
-| 问题 | 状态 | 修复 |
-|---|---|---|
-| 6 个字段未注入模板 | ✅ 已修复 | 已在 `_assemble_context()` 中全部注入 |
-| `reflection` 字段缺失 | ✅ 已实现 | `JudgmentOutput` 已有此字段，loop 写回 semantic |
-| `skills_section` 未注入 | ✅ 已实现 | `skill_registry.match_for_context()` 接入 `_assemble_context` |
-| BOOTSTRAP.md/IDENTITY.md 未注入 | ✅ 已实现 | `soul.bootstrap()` 读取文件 → WM `kind="bootstrap_identity"` + `judgment.set_identity_prefix()` |
+当前 Judgment 只是“做决定”。
+
+但长期上，Judgment 不应该独自承担“质疑自己”的工作。  
+真正的双环应该拆出去给 `MetaReflection`：
+
+### Ring 1（单环）
+- 这次工具为什么失败？
+- 参数/超时/路径要怎么改？
+
+### Ring 2（双环）
+- 为什么这个问题总被分到 reader？
+- 为什么这个 task 总被拆坏？
+- 为什么这条 skill 总在误导判断？
+- 为什么这个阈值会把任务过早推入 wait？
+
+因此：
+
+> Judgment 负责“决策”，MetaReflection 负责“反思决策框架”。
 
 ---
 
-## 8. 设计原则
+## 7. 当前状态评估
 
-1. **判断层是整合器，不是执行者**——它只产生 `JudgmentOutput`，不直接调用工具
-2. **所有认知信号必须进入 bundle**——任何计算但未注入的字段都是信息损失
-3. **兜底必须保守**——LLM 不可达时，选择最小影响操作（wait / 只读）
-4. **reflection 是学习闭环**——每次判断结束应有机会写入新的语义记忆节点
-5. **hard_axioms 必须在 bundle 里明确出现**——不能靠 LLM 自觉，要写进模板
+| 维度 | 评价 |
+|------|------|
+| 上下文整合能力 | 很强 |
+| tier 路由能力 | 可用但粒度不对 |
+| 跨 tick 姿态调控 | 强 |
+| 直接决策能力 | 正常 |
+| run 调度能力 | 尚未形成 |
+| 双环质疑能力 | 尚未形成 |
+
+---
+
+## 8. 后续演进方向
+
+### 近期（P0/P1）
+1. 引入 task-level routing
+2. Judgment 能选择“创建 run”而不是只选工具
+3. 增加 multimodal run 的判断能力
+
+### 中期（P1/P2）
+4. Judgment 输出可触发 MetaReflection
+5. 区分 direct action / run creation / meta reflection
+6. 与运行结果回流打通
+
+---
+
+## 9. 设计原则
+
+1. **Judgment 是控制面，不是执行器**
+2. **task-level routing 优先于 tool-level routing**
+3. **复杂执行要走 run，而不是永远在主环内串行推进**
+4. **双环学习不应混在 Judgment 里偷做，而应单独建模**

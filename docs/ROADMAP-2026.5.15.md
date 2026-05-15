@@ -1,232 +1,179 @@
-# lingzhou 架构路线图
+# lingzhou 路线图（v2026.5.15 之后）
 
-**创建时间：** 2026-05-15 09:41
-**基线版本：** v2026.5.15
-**状态：** 设计阶段，待实施
-
----
-
-## 一、当前状态（v2026.5.15 已完成）
-
-### 已实现能力
-
-| 能力 | 状态 | 代码位置 |
-|------|------|---------|
-| 认知循环（Perceive→Emotion→Ethos→Judgment→Execute→Memory→Evolve） | ✅ | `core/loop.py` |
-| 情绪系统（OCC评价+Core Affect+离散情感+调节策略） | ✅ | `core/perception.py` |
-| 价值观系统（5维度EMA+hard_axioms） | ✅ | `core/soul.py` |
-| 判断层 + 模型路由（reader/reasoner/repair） | ✅ | `core/judgment.py` |
-| 任务管理（8种状态+chain_id+parent_task_id+wait_kind） | ✅ | `tools/task_ops.py` + `memory/task_store.py` |
-| 调度系统（一次性/重复信号+自动ack） | ✅ | `tools/schedule.py` |
-| 进程管理（exec后台/PTY/超时+process管理） | ✅ | `tools/exec.py` |
-| 文件操作（read/write/edit精确替换+list） | ✅ | `tools/file.py` |
-| 自进化（importlib.reload热替换） | ✅ | `core/evolution.py` |
-| 记忆系统（working/episodic/semantic三层） | ✅ | `memory/` |
-| 事件驱动唤醒 | ✅ | `loop.py::_wait_for_event` |
-| 跨重启连续性 | ✅ | `loop.py::_restore_state_from_db` |
+**创建时间：** 2026-05-15  
+**基线版本：** v2026.5.15  
+**定位：** 去历史包袱，只做最对的事情
 
 ---
 
-## 二、双环系统体检报告
+## 1. 当前判断
 
-### 当前三层循环
+lingzhou 当前的关键问题已经不是“缺几个基础工具”，而是：
 
-| 层级 | 代码位置 | 作用 | 论文映射 | 状态 |
-|------|---------|------|---------|------|
-| 外环（认知环） | `loop.py::_tick()` | Perceive→Execute→Memory | Zimmerman SRL | ✅ 正常 |
-| 内环（工具环） | `loop.py::_tick()` inner for | 连续工具调用直到回复 | ReAct | ⚠️ 仅chat模式 |
-| 进化环 | `evolution.py::run()` | 失败→修改代码 | Argyris单环 | ⚠️ 只有单环 |
+1. **认知控制面和执行面还没有真正分离**
+2. **复杂任务无法异步运行并回流结果**
+3. **进化机制还只是单环纠错，不是真正双环学习**
+4. **感知层缺视觉/多模态，导致输入世界残缺**
 
-### 欠缺清单
+因此，下一阶段不应再以“多入口、多通道、多花样能力”为主线，
+而应围绕一个更干净的主线推进：
 
-| 欠缺 | 严重度 | 说明 |
-|------|--------|------|
-| 缺少双环学习（Double-Loop） | 🔴 P0 | 进化环只改代码，不质疑前提假设 |
-| 内环仅chat模式 | 🔴 P0 | 自主循环无连续工具调用能力，多步任务效率低 |
-| 缺少任务级模型路由 | 🟡 P1 | tier基于单个工具推断，非任务级别锁定 |
-| 进化无效果验证 | 🟡 P1 | 改了之后是否变好，没有验证 |
-| 进化无回滚机制 | 🟡 P1 | 改得更糟时无法自动恢复 |
-| 缺少三环学习（Triple-Loop） | 🟢 P2 | 价值观/身份层面的反思机制 |
+> **Task 负责目标，Run 负责执行，Worker 负责干活，MetaReflection 负责学习。**
 
 ---
 
-## 三、目标架构：三层双环 + 异步委派
+## 2. 最佳方案（收束版）
 
-### 整体架构
+### 2.1 核心实体
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                  LAYER 1: 认知循环（Supervisor）                  │
-│                                                                  │
-│  职责：理解意图 → 制定计划 → 委派执行 → 监控结果 → 反思学习      │
-│                                                                  │
-│  内环（ReAct）：读→判断→再读→写，连续N轮                          │
-│  外环（全认知）：感知→情绪→判断→执行→记忆→进化                    │
-│                                                                  │
-│  输出：DelegationSpec（委派规格）                                │
-└────────────────────┬────────────────────────────────────────────┘
-                     │ spawn delegation
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  LAYER 2: 委派执行层（Worker）                    │
-│                                                                  │
-│  • exec-worker    : 执行 shell 命令（后台/PTY/超时）              │
-│  • llm-worker     : 独立 LLM 调用（可指定不同模型/tier）          │
-│  • tool-chain     : 连续工具链（read→write→verify）              │
-│  • file-worker    : 文件操作（读/写/edit）                        │
-│                                                                  │
-│  特性：隔离 + 并行 + 可观测 + 可取消                              │
-└────────────────────┬────────────────────────────────────────────┘
-                     │ status change / completion event
-                     ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  LAYER 3: 双环学习层（Meta-Learning）             │
-│                                                                  │
-│  Ring 1 - 单环：怎么做得更好（改代码/改prompt/改阈值）            │
-│  Ring 2 - 双环：前提假设对吗（质疑tier分类/judgment/阈值/技能）   │
-│  Ring 3 - 三环：学习目标对吗（ethos/身份/价值观冲突）            │
-│                                                                  │
-│  进化验证 + 自动回滚                                             │
-└─────────────────────────────────────────────────────────────────┘
-```
+| 实体 | 职责 | 当前状态 |
+|------|------|----------|
+| **Task** | 目标单元：要完成什么 | ✅ 已有 |
+| **Run** | 执行单元：这次具体怎么执行 | ❌ 待引入 |
+| **Worker** | 执行器：谁来执行 | ❌ 待引入 |
+| **MetaReflection** | 学习单元：问题属于单环还是双环 | ❌ 待引入 |
 
-### 核心数据流
+### 2.2 设计原则
+
+1. **不再引入 delegate 作为独立主概念**
+   - 任务（Task）和执行（Run）分离就够了
+2. **先做 Run，不先做 session 子代理系统**
+   - 当前最需要的是异步执行，不是复杂 agent 社交结构
+3. **双环学习先独立建模，再驱动 evolution**
+   - evolution 负责改；MetaReflection 负责判断“改哪一层”
+4. **多模态优先于多通道**
+   - 视觉能力属于感知层补全，多通道只是入口扩张
+5. **沙箱后置**
+   - 当前阶段先把执行闭环做通，再考虑更强隔离
+
+---
+
+## 3. 目标架构
 
 ```
-用户消息 / 调度信号 / 心跳
-         │
-         ▼
-┌─────────────────┐
-│   认知环判断     │ ← 问：这个任务需要什么？
-└────────┬────────┘
-         ├─── 简单任务 ──→ 直接在环内执行
-         └─── 复杂任务 ──→ 创建 Delegation
-                           │
-                           ▼
-                    ┌─────────────────┐
-                    │  DelegationSpec  │
-                    └────────┬────────┘
-                             │
-               ┌─────────────┼─────────────┐
-               ▼             ▼             ▼
-         ┌─────────┐  ┌─────────┐  ┌─────────┐
-         │ exec    │  │ llm     │  │tool-chain│
-         │ worker  │  │ worker  │  │ worker   │
-         └────┬────┘  └────┬────┘  └────┬────┘
-              └─────────────┼───────────┘
-                            │ 事件驱动
-                            ▼
-                    ┌─────────────────┐
-                    │   主循环唤醒     │ ← 问：结果如何？需要调整吗？
-                    │   整合结果       │
-                    └────────┬────────┘
-                             │
-                    ┌────────┼────────┐
-                    ▼        ▼        ▼
-                  成功     失败     进行中
-                    │        │        │
-                    ▼        ▼        ▼
-                结晶     双环分析    继续监控
-                记忆     前提质疑    等待事件
+Cognitive Control Plane
+  ├─ 感知/情绪/Ethos
+  ├─ 判断与计划
+  ├─ Task 调整
+  ├─ Run 创建与监控
+  └─ 结果整合
+
+Execution Plane
+  ├─ exec-worker
+  ├─ tool-chain-worker
+  ├─ llm-worker
+  └─ multimodal-worker
+
+Meta-Learning Plane
+  ├─ Single-loop: 修工具/修prompt/修参数
+  └─ Double-loop: 修规则/修tier/修task拆分/修阈值
 ```
 
 ---
 
-## 四、DelegationSpec 设计
+## 4. 当前双环系统体检（精简结论）
 
-```python
-@dataclass
-class DelegationSpec:
-    """委派规格——主循环创建的"工作订单"。"""
-    
-    id: str                          # UUID
-    task_id: int                     # 所属 task
-    worker_type: str                 # exec/llm/tool_chain/file
-    description: str                 # 人类可读的描述
-    
-    # 执行配置
-    model_tier: str = "reasoner"     # 使用的模型 tier
-    tool_chain: list[str] = field(default_factory=list)  # 工具链
-    command: str = ""                # exec 命令
-    timeout_seconds: float = 300.0   # 超时
-    max_retries: int = 2             # 最大重试
-    
-    # 上下文
-    environment: dict = field(default_factory=dict)
-    workdir: str = ""
-    input_data: dict = field(default_factory=dict)
-    
-    # 状态
-    status: str = "pending"
-    progress: float = 0.0
-    result: str = ""
-    error: str = ""
-    started_at: str = ""
-    completed_at: str = ""
-    logs: list[str] = field(default_factory=list)
-    
-    # 双环分析字段
-    failure_analysis: str = ""
-    root_cause: str = ""
-```
+| 环 | 当前状态 | 问题 |
+|----|----------|------|
+| 认知主环 | ✅ 正常 | 无 |
+| 工具内环 | ⚠️ 只在 chat 模式 | 自主任务效率低 |
+| 进化环 | ⚠️ 只有单环纠错 | 不质疑前提假设 |
+
+结论：
+
+> lingzhou 目前不是“真正的双环系统”，而是“单环认知循环 + 单环进化补丁系统”。
 
 ---
 
-## 五、双环触发矩阵
+## 5. 优先级列表（新的最终排序）
 
-```
-失败类型                触发环      行动
-─────────────────────────────────────────────────
-工具执行失败（命令报错）  单环    修复工具代码/修改prompt
-策略失败（方向错了）      双环    质疑判断逻辑/tier分类/阈值
-任务失败（目标未达成）    双环    质疑任务分解/工具选择
-价值观冲突               三环    质疑ethos基线/hard_axioms
-```
+### P0：必须先做
 
----
+| ID | 任务 | 目标 | 验证方式 |
+|----|------|------|----------|
+| **P0-1** | 视觉/多模态能力 | 补全感知层 | `image.analyze` 能稳定分析单图/多图 |
+| **P0-2** | 自主循环内环 | 自主任务不再一跳一停 | 无用户消息时可连续工具调用 |
+| **P0-3** | Task-level model routing | 同一 task 的推理风格稳定 | task 级 tier 锁定 + step override 可用 |
 
-## 六、实施路线图
+### P1：核心结构升级
 
-### Phase 1（当前可做，1-2天）
+| ID | 任务 | 目标 | 验证方式 |
+|----|------|------|----------|
+| **P1-1** | 引入 Run 抽象 | 目标与执行分离 | 新增 runs 表 / run 生命周期跑通 |
+| **P1-2** | Worker 执行器 | 复杂动作异步执行 | exec/tool-chain/llm worker 至少 2 类跑通 |
+| **P1-3** | Run 状态回流 Task | 主环知道谁在跑、跑到哪、跑完了吗 | task 可根据 run 结果自动调整 |
+| **P1-4** | MetaReflection（双环学习器） | 区分单环 vs 双环问题 | 能输出 tool/prompt/rule/threshold/task_split 诊断 |
 
-| 任务 | 优先级 | 预估时间 | 依赖 |
-|------|--------|---------|------|
-| P1-1: 多模态/视觉（image.analyze 工具） | P0 | 0.5天 | 无 |
-| P1-2: 自主循环内环（无用户消息时连续工具调用） | P0 | 1天 | 无 |
-| P1-3: 进化效果验证（改了之后对比成功率） | P1 | 1天 | 无 |
-| P1-4: 进化回滚机制（改坏自动恢复） | P1 | 0.5天 | P1-3 |
+### P2：闭环质量提升
 
-### Phase 2（本周可做）
+| ID | 任务 | 目标 | 验证方式 |
+|----|------|------|----------|
+| **P2-1** | 进化效果验证 | 改了之后知道是否更好 | success rate / error rate before-after 对比 |
+| **P2-2** | 自动回滚 | 改坏了能恢复 | 进化后恶化自动 rollback |
+| **P2-3** | 多 run 并行 | 提升吞吐 | 主环可同时监控多个 running run |
+| **P2-4** | 运行中结晶 | 不必等 task 完成才沉淀记忆 | 长任务中间有 progress crystal |
 
-| 任务 | 优先级 | 预估时间 | 依赖 |
-|------|--------|---------|------|
-| P2-1: Task-Level Model Routing（task.data增加model_tier） | P1 | 1天 | 无 |
-| P2-2: Delegation 概念引入（task增加delegate字段） | P1 | 1天 | 无 |
-| P2-3: 主循环委派判断（_should_delegate + _spawn_delegate） | P1 | 1天 | P2-2 |
-| P2-4: 双环学习层（Double-Loop judgment质疑） | P1 | 2天 | 无 |
+### P3：后置事项
 
-### Phase 3（下周可做）
-
-| 任务 | 优先级 | 预估时间 | 依赖 |
-|------|--------|---------|------|
-| P3-1: Worker 执行器（subprocess + LLM call） | P1 | 2天 | P2-2, P2-3 |
-| P3-2: 事件驱动唤醒（delegate完成唤醒主循环） | P1 | 1天 | P2-3 |
-| P3-3: 多delegate并行（asyncio.gather） | P2 | 1天 | P3-1 |
-| P3-4: 三环学习（ethos/身份反思） | P2 | 2天 | P2-4 |
+| ID | 任务 | 说明 |
+|----|------|------|
+| **P3-1** | 多通道 | 不是当前核心矛盾 |
+| **P3-2** | 复杂沙箱 | 安全重要，但当前后置 |
+| **P3-3** | 重型插件生态 | 等控制面/执行面稳定后再做 |
+| **P3-4** | 三环学习 | 价值观/身份层学习，当前不急 |
 
 ---
 
-## 七、权威论文参考
+## 6. 推荐实施顺序
 
-| 论文 | 年份 | 映射 |
-|------|------|------|
-| Argyris, C. "Single-Loop and Double-Loop Models in Research on Decision Making" | 1976 | Ring 1/Ring 2 学习理论 |
-| Wu et al. "Agent Workflow: A Survey" | 2024 | Supervisor-Worker 架构 |
-| Meta "Multi-Agent Systems: A Survey" | 2025 | Delegation 模式 |
-| Wang et al. "Plan-and-Solve Prompting" | 2023 | 规划→执行→检查闭环 |
-| Shinn et al. "Reflexion: Language Agents with Verbal Reinforcement Learning" | 2023 | 双环纠偏原则 |
-| Zimmerman, B. J. "Self-Regulated Learning" | 2000 | Forethought→Performance→Self-Reflection |
+### 第 1 组（先把最核心的问题打穿）
+1. P0-1 视觉/多模态
+2. P0-2 自主循环内环
+3. P0-3 Task-level model routing
+
+### 第 2 组（把控制面和执行面分离）
+4. P1-1 Run 抽象
+5. P1-2 Worker 执行器
+6. P1-3 Run 状态回流 Task
+
+### 第 3 组（把“会改”升级成“会学”）
+7. P1-4 MetaReflection（双环学习器）
+8. P2-1 进化效果验证
+9. P2-2 自动回滚
+
+### 第 4 组（提速与完善）
+10. P2-3 多 run 并行
+11. P2-4 运行中结晶
 
 ---
 
-*本文档在 v2026.5.15 tag 基础上创建，随实施进展更新。*
+## 7. 成功标准
+
+完成这一轮升级后，lingzhou 应该达到：
+
+1. **复杂任务不阻塞主认知环**
+2. **任务和执行被清晰分离（Task / Run）**
+3. **主环能感知 run 的状态变化并据此调整 task**
+4. **学习系统能区分“修工具”与“修前提”**
+5. **感知层不再只有文本，具备多模态入口**
+
+---
+
+## 8. 不应该优先做的事
+
+- 为了未来扩展先做重型 session 子代理系统
+- 为了完美安全先做复杂沙箱
+- 为了看起来完整先铺多通道
+- 为了概念漂亮引入过多中间抽象
+
+这些都不是当前最对的事情。
+
+---
+
+## 9. 对应文档
+
+- `blueprint.md`：总蓝图
+- `chat-and-task.md`：Task / Run / Chat 分工
+- `judgment-layer.md`：判断层现状与升级方向
+- `memory-architecture.md`：记忆层如何承接 Run 和 MetaReflection
+- `schema-evolution.md`：如何无痛加 runs / meta_reflections 表

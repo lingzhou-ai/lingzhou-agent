@@ -1,161 +1,225 @@
 # Schema 演化策略
 
-> lingzhou 的数据库结构随系统成长而演化，不需要手动 migration。
+**更新日期：** 2026-05-15
+
+> lingzhou 当前采用 **JSON-first + 启动时自动迁移**。目标不是“设计完美 schema”，而是：**能稳、能演进、能少改历史数据。**
 
 ---
 
-## 1. 核心原则
+## 1. 当前核心原则
 
-**永不手动迁移，永不破坏旧数据。**
-
-lingzhou 采用**启动时自动对齐**策略：每次进程启动，`_migrate()` 检查当前 schema 与期望 schema 的差异，自动 `ALTER TABLE ADD COLUMN`。
-
----
-
-## 2. 两种演化策略
-
-### 策略 A：`ALTER TABLE ADD COLUMN`（新增可选字段）
-
-适用于：字段类型已知、只会新增、永不 DROP 的功能扩展。
-
-```python
-# memory/semantic.py — SemanticMemory._migrate()（Hermes _reconcile_columns 模式）
-def _migrate(self) -> None:
-    existing = {row[1] for row in self._conn.execute("PRAGMA table_info(nodes)")}
-    if "embedding" not in existing:
-        self._conn.execute("ALTER TABLE nodes ADD COLUMN embedding TEXT")
-        self._conn.commit()
-```
-
-**来源**：Hermes 的 `_reconcile_columns` 模式。  
-**lingzhou 已实现**：`memory/semantic.py._migrate()` 中使用此模式向 `nodes` 表追加 `embedding` 列（向量混合检索扩展）。
+1. **启动时自动迁移**
+2. **优先 JSON-first，不频繁 ALTER**
+3. **只做向前兼容，不做破坏性迁移**
+4. **SQLite WAL 是基础设施默认值**
 
 ---
 
-### 策略 B：JSON-first `data` 列（动态扩展主存储）
-
-适用于：任务/事件等主体字段随系统演化动态增减，不希望频繁迁移 schema。
-
-```sql
--- tasks 表以 data TEXT JSON 作为主存储，取代多列方案
-CREATE TABLE tasks (
-    id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL DEFAULT '',
-    status     TEXT NOT NULL DEFAULT 'pending',
-    priority   REAL NOT NULL DEFAULT 0.5,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    data       TEXT NOT NULL DEFAULT '{}'   -- ← JSON blob，存所有动态字段
-);
-```
-
-`task_store._migrate()` 在启动时检测旧版列式 schema（无 `data` 列）→ 执行 DROP+REBUILD+backfill，一次性迁移到 JSON-first 方案，之后再无需 schema 变更。
-
-**适用场景**：
-- 任务附属字段（`next_step`, `source`, `task_id`, `context` 等）
-- 失败记录（`error`, `tool_id`, `task_id`）
-- 实验性字段（正式化后仍保留在 JSON 内，无需 ALTER TABLE）
-
----
-
-## 3. 当前表结构
+## 2. 当前真实表结构
 
 ### tasks
+
 ```sql
-CREATE TABLE tasks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    title       TEXT NOT NULL,
-    goal        TEXT DEFAULT '',
-    priority    INTEGER DEFAULT 5,
-    status      TEXT DEFAULT 'pending',
-    source      TEXT DEFAULT 'loop',      -- _reconcile_columns 自动添加
-    next_step   TEXT DEFAULT '',          -- _reconcile_columns 自动添加
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS tasks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    priority   TEXT    NOT NULL DEFAULT 'normal',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    data       TEXT    NOT NULL DEFAULT '{}'
 );
 ```
 
+`data` 中承载：
+- goal
+- source
+- next_step
+- chain_id
+- parent_task_id
+- current_step
+- wait_kind / wait_key
+- state_json / wait_json / result_json
+- async_job_id
+- extras...
+
 ### failures
+
 ```sql
-CREATE TABLE failures (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind        TEXT NOT NULL,
-    summary     TEXT DEFAULT '',
-    context     TEXT DEFAULT '',
-    task_id     TEXT,                     -- _reconcile_columns 自动添加
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS failures (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT    NOT NULL,
+    dismissed  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    data       TEXT    NOT NULL DEFAULT '{}'
 );
 ```
 
 ### facts
+
 ```sql
-CREATE TABLE facts (
-    key         TEXT PRIMARY KEY,
-    value       TEXT DEFAULT '',
-    scope       TEXT DEFAULT 'global',
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS facts (
+    key        TEXT PRIMARY KEY,
+    value      TEXT    NOT NULL DEFAULT '',
+    scope      TEXT    NOT NULL DEFAULT 'general',
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### signals
+
+```sql
+CREATE TABLE IF NOT EXISTS signals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT    NOT NULL,
+    run_at      TEXT    NOT NULL,
+    repeat_secs INTEGER NOT NULL DEFAULT 0,
+    status      TEXT    NOT NULL DEFAULT 'pending',
+    payload     TEXT    NOT NULL DEFAULT '{}',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### chat_messages
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    role       TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    session_id TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 ```
 
 ---
 
-## 4. 演化流程示意
+## 3. 当前迁移策略
 
-```
-v0.1 初始建表：tasks(id, title, status)
-  ↓
-v0.2 加 goal 字段：_migrate() 检测到缺失 → ALTER TABLE ADD COLUMN goal TEXT DEFAULT ''
-  ↓
-v0.3 加 source/next_step：同上，自动添加
-  ↓
-v1.0 加 meta blob：一次性 ALTER TABLE，之后所有动态扩展用 meta
-```
+### 3.1 旧列式 schema → JSON-first
 
-每次启动，`_migrate()` 都会运行，幂等，无副作用（字段已存在就跳过）。
+`task_store._migrate()` 当前已经支持：
+- 读取旧 tasks/failures 列式数据
+- DROP 旧表
+- 按 JSON-first 重建
+- 回填旧数据
+
+这意味着：
+
+> lingzhou 的主状态表已经从“频繁补列”转向“稳定主列 + data JSON 扩展”。
+
+### 3.2 仍然保留幂等索引补齐
+
+当前会自动补齐索引：
+- `idx_tasks_status`
+- `idx_tasks_title`
+- `idx_failures_active`
+- `idx_failures_kind`
+- `idx_signals_pending`
+- `idx_chat_pending`
 
 ---
 
-## 5. 不该做的事
+## 4. 为什么当前方案是对的
 
-| 做法 | 为什么不对 |
-|---|---|
-| 手动写 `migration_v2.sql` | 文件多了就会漏跑，顺序难维护 |
-| 删表重建 | 破坏历史数据 |
-| 在进程中途修改 schema | 并发问题，WAL 模式下危险 |
-| 在 facts 里存大量结构化数据 | facts 是 KV，复杂结构应建独立表 |
+对于 lingzhou 这种快速演化系统，频繁 `ALTER TABLE ADD COLUMN` 不是最优解。  
+因为：
+- task 附属字段会不停变化
+- run/meta reflection 等结构还在探索
+- 过早固化列会制造未来迁移负担
+
+所以当前对 `tasks/failures` 采用 JSON-first 是正确的。
 
 ---
 
-## 6. WAL 模式
+## 5. 最佳下一步（无历史包袱）
 
-lingzhou 使用 SQLite 的 WAL（Write-Ahead Logging）模式：
+在当前 schema 上，最应该新增的不是更多 task 列，而是**新表**：
+
+### 5.1 runs 表（执行单元）
+
+```sql
+CREATE TABLE runs (
+    id           TEXT PRIMARY KEY,
+    task_id      INTEGER NOT NULL,
+    run_type     TEXT NOT NULL,
+    worker_type  TEXT NOT NULL,
+    model_tier   TEXT NOT NULL DEFAULT 'reasoner',
+    status       TEXT NOT NULL DEFAULT 'pending',
+    progress     REAL NOT NULL DEFAULT 0,
+    input_json   TEXT NOT NULL DEFAULT '{}',
+    output_json  TEXT NOT NULL DEFAULT '{}',
+    log_text     TEXT NOT NULL DEFAULT '',
+    error_text   TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_runs_task_status ON runs(task_id, status);
+```
+
+### 5.2 meta_reflections 表（双环学习记录）
+
+```sql
+CREATE TABLE meta_reflections (
+    id                 TEXT PRIMARY KEY,
+    target_kind        TEXT NOT NULL,
+    trigger            TEXT NOT NULL,
+    loop_level         TEXT NOT NULL,
+    diagnosis          TEXT NOT NULL,
+    proposal           TEXT NOT NULL,
+    verification_plan  TEXT NOT NULL DEFAULT '',
+    decision           TEXT NOT NULL DEFAULT 'defer',
+    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_meta_reflections_loop ON meta_reflections(loop_level, created_at);
+```
+
+---
+
+## 6. 为什么是“新表”而不是继续塞进 tasks.data
+
+因为：
+
+- **Task 是目标单元**
+- **Run 是执行单元**
+- **MetaReflection 是学习单元**
+
+它们不是同一层语义。
+
+如果全部塞进 `tasks.data`：
+- 查询复杂
+- 状态机混乱
+- 并行 run 很难表达
+- 学习记录不独立
+
+所以：
+
+> `tasks` 继续 JSON-first，`runs` 和 `meta_reflections` 作为新表单独落地，是当前最优解。
+
+---
+
+## 7. WAL 与并发
+
+当前已经启用：
 
 ```python
-await db.execute("PRAGMA journal_mode=WAL")
+PRAGMA journal_mode=WAL
+PRAGMA foreign_keys=ON
 ```
 
-**好处**：
-- 读写并发：loop 和 interact 可以同时访问 DB（一写多读）
-- 崩溃恢复：WAL 日志确保未提交事务可回滚
-- 性能：写操作不阻塞读
+这为未来的：
+- 主循环
+- worker 执行器
+- chat 交互
+- run 状态轮询
 
-**注意**：WAL 会产生 `-wal` 和 `-shm` 附属文件，这是正常的，不要删除。
-
----
-
-## 7. 未来演化预留
-
-| 待新增字段/表 | 建议方式 | 原因 |
-|---|---|---|
-| `tasks.meta` TEXT | 一次性 ALTER + 策略 B | 扩展性需求 |
-| `sessions` 表 | 新建表 + `_migrate()` 添加 | 未来 interact 历史 |
-| `nodes` 表（语义记忆 SQLite 化） | 新建表 | 当前 nodes/*.json 的 SQL 迁移 |
-| `events` 表（events.jsonl 替代） | 新建表 + FTS5 虚拟表 | 解决 O(n) 扫描问题 |
+提供了基本并发读写能力。
 
 ---
 
 ## 8. 设计原则
 
-1. **启动时自动对齐**——不要依赖用户手动运行迁移脚本
-2. **幂等**——`_migrate()` 可以安全地重复运行 N 次
-3. **向后兼容**——ADD COLUMN 只加，不改，不删
-4. **meta blob 是逃生舱**——字段不确定时先用 meta，确定后再提升为独立列
-5. **WAL 是标配**——多进程访问必须开 WAL
+1. **状态主表继续 JSON-first**
+2. **新语义层级用新表，不把所有东西塞进 tasks.data**
+3. **迁移必须自动、幂等、可重复运行**
+4. **先增加 runs / meta_reflections，再讨论更复杂 schema**

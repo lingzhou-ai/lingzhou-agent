@@ -148,7 +148,7 @@ if len(failures_same_kind) >= cfg.evolution.failure_threshold:  # 默认 3
 
 1. **语法检查**：`compile()` 失败 → 拒绝写入，保留原版
 2. **备份机制**：写入前先 `.bak`，人工可回滚
-3. **沙箱限制**（待实现）：生成代码的危险调用白名单
+3. **轻量安全门**（后置实现）：当前优先级低于 run/worker/double-loop；后续先做命令/路径级 guard，而不是一上来做重型沙箱
 4. **禁忌守卫**：evolution 提示词中明确注明不得生成修改 `facts["soul:hard_axioms"]` 的代码
 
 ---

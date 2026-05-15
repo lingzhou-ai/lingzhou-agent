@@ -1,138 +1,188 @@
-# Chat 与 Task 的职责分工
+# Chat、Task、Run 的职责分工
 
-> 核心设计原则：**chat 是门，也是房间。task 是所有工作的原子单位。**
+**更新日期：** 2026-05-15
+
+> 当前原则：**chat 是入口，task 是目标，run 是执行。**
 
 ---
 
 ## 1. 简明结论
 
-`chat` 是 lingzhou 与外部世界的唯一对话通道。它同时承担两个角色：
+如果不背历史包袱，lingzhou 应该这样理解：
 
-- **门**：`lingzhou chat --name alice` 启动一条对话通道，loop 可以感知到有人在说话
-- **房间**：loop 为这条通道创建一个长期存活的 chat task（`source="chat:alice"`），对话历史就是任务叙事，跨重启可续接
+- **chat**：外部输入入口（谁在说、说了什么）
+- **task**：持久目标单元（要完成什么）
+- **run**：一次具体执行尝试（这次怎么执行）
 
-门和房间不再分离。启动一个 chat = 建立一个持久的对话任务。
+所以：
+
+> **chat 不是任务本身，task 也不是执行本身。**
+
+chat 可以触发 task，task 可以生成 run，run 的结果再反向更新 task。
 
 ---
 
-## 2. Chat 的完整生命周期
+## 2. 三者的正确边界
+
+| 概念 | 回答的问题 | 生命周期 | 当前状态 |
+|------|-----------|----------|----------|
+| **chat** | 谁在输入？当前要回复什么？ | 会话级 | ✅ 已有 |
+| **task** | 要达成什么目标？ | 目标级 | ✅ 已有 |
+| **run** | 这一次具体怎么执行？ | 执行级 | ❌ 目标新增 |
+
+### chat
+承担：
+- 接收用户输入
+- 提供回复出口
+- 形成对话上下文
+
+### task
+承担：
+- 目标表达
+- 状态推进
+- next_step 管理
+- chain / parent-child 关系
+
+### run
+承担：
+- 执行动作
+- 状态（pending/running/succeeded/failed/cancelled）
+- 进度
+- 日志
+- 结果
+- 错误
+
+---
+
+## 3. 为什么 task 不应该继续兼任执行单元
+
+当前 lingzhou 的 task 已经承担了很多职责：
+- title / goal / priority
+- status / next_step
+- chain_id / parent_task_id
+- wait_kind / wait_key
+- state_json / result_json
+
+这已经足够表达“目标推进”。
+
+如果再把以下东西也塞进 task：
+- 执行命令
+- 进程 pid
+- 模型 tier
+- 重试次数
+- 执行日志
+- worker 类型
+
+那么 task 会膨胀成“万能状态袋”，导致：
+- 目标层与执行层耦合
+- 状态机难维护
+- 并行执行难表达
+- 一个 task 多次执行尝试不好建模
+
+因此最合理的方式是：
+
+> **task 管目标，run 管执行。**
+
+---
+
+## 4. 最佳工作流
 
 ```
-lingzhou chat --name alice
-  │
-  ├── 首次启动: 在 tasks 表创建 chat task
-  │     title  = "chat:alice"
-  │     goal   = "持续响应 alice 的对话需求"
-  │     source = "chat:alice"
-  │     status = in_progress  ← 不会自动完成，直到用户关闭
-  │
-  ├── 用户输入 "帮我看一下这段代码"
-  │     → 追加到 task-N.md: [user] 帮我看一下这段代码
-  │     → 唤醒 loop（更新 chat task next_step）
-  │
-  ├── loop 下一个 tick 拾取该 chat task
-  │     → load_for_context("N") 读取完整对话历史
-  │     → LLM 生成回复
-  │     → 追加到 task-N.md: [assistant] 这段代码...
-  │     → 写入 chat_replies WHERE chat_id="alice"
-  │
-  ├── chat 进程轮询 chat_replies，打印回复，标记 consumed
-  │
-  └── 用户 Ctrl+C 退出 chat 进程
-        → task 保持 in_progress（下次 chat --name alice 续接）
-        → 若用户运行 lingzhou chat --name alice --close，才标记 done
+用户输入 / 调度信号 / 心跳
+        │
+        ▼
+      chat
+        │
+        ▼
+  认知主环判断
+        │
+        ├── 直接回复用户
+        ├── 创建/推进 task
+        └── 为 task 创建 run
+                │
+                ▼
+             worker 执行
+                │
+                ▼
+           run 结果回流
+                │
+                ▼
+        task 状态更新 / 用户回复 / 记忆结晶
 ```
 
 ---
 
-## 3. 多 chat 并行
+## 5. chat 的正确定位
 
-loop 是全局认知主体，不做 chat 间的上下文隔离——这是设计意图，不是缺陷：
+chat 依然应该保留“持续会话上下文”的能力，但它不该再被描述为“所有工作的原子单位”。
 
-| 场景 | 行为 |
-|---|---|
-| alice 和 小张同时发消息 | 两个 chat task 竞争 loop，按优先级/时间排队 |
-| loop 处理 alice 的消息时 | LLM 上下文以 alice 的 chat task 叙事为主轴，其他 chat 不干扰 |
-| 回复路由 | `chat_replies` 按 `chat_id` 过滤，各自只收到自己的回复 |
-| 信息量暴增 | `load_for_context` 的 `max_chars` 末尾截取自动控量，与普通 task 完全一致 |
+更准确地说：
 
----
+- chat 是**外部互动通道**
+- chat 可以绑定一个长期 task（例如 `source="chat:alice"`）
+- 但 chat 本身不替代 task，更不替代 run
 
-## 4. Chat Task vs 普通 Task
+也就是说：
 
-| 属性 | 普通 task | chat task |
-|---|---|---|
-| 生命周期 | 有限，完成后 done | 长期，用户关闭才 done |
-| goal | 具体目标 | "持续响应 X 的对话需求" |
-| source | `external` / `gateway:webhook` 等 | `chat:<name>` |
-| 叙事内容 | 推进记录 + 工具结果 | `[user]` / `[assistant]` 对话流 |
-| 优先级 | 任意 | 默认 `high`，有消息时 bump |
+### chat task 依然成立，但它只是 task 的一种来源（source）
+例如：
+- `source="chat:alice"`
+- `source="scheduler"`
+- `source="curiosity"`
+- `source="external"`
+
+这比“chat 就是 task 本体”更清楚。
 
 ---
 
-## 5. 上下文压缩机制（输入侧）
-
-lingzhou 的压缩重点不是"限制最终回复长度"，而是"控制哪些内容进入输入上下文"。
-
-对比其他系统：
-- Hermes：以进程为边界，把 SOUL / HERMES / workspace 约定注入启动上下文，chat 历史全量存 messages 表
-- OpenClaw：以 AGENTS / MEMORY / chat transcript 做分层注入，靠 startup 压缩与重注入维持局部上下文
-- lingzhou：以 DB facts / task / episodic / semantic 分层注入，靠任务叙事和记忆摘要维持跨 chat 连续性
-
-当前 lingzhou 的输入侧按"层级 + 预算"来理解：
-
-| 层级 | 进入位置 | 作用 |
-|---|---|---|
-| 启动引导 | `BOOTSTRAP.md` / `IDENTITY.md` | 冷启动协议、身份锚点 |
-| 永久在线索引 | `facts["soul:*"]` | Soul 真相源、hard axioms |
-| 任务上下文 | `task_section` / `next_step` | 任务主轴 |
-| 叙事上下文 | `episodic_section` | 当前 chat/task 叙事流 |
-| 语义记忆 | `memories_section` | 相关长期记忆召回 |
-| 工作记忆 | `wm_section` | 当前轮高优先级结果 |
-| 技能/护栏 | `skills_section` / `signals_section` | 认知防线与姿态 |
-
----
-
-## 6. 实现映射
+## 6. run 应该长什么样
 
 ```python
-# chat 启动时——创建或恢复 chat task
-task = await task_store.get_chat_task("alice")
-if task is None:
-    task = await task_store.add_task(
-        title="chat:alice",
-        goal="持续响应 alice 的对话需求",
-        priority="high",
-        source="chat:alice",
-    )
-
-# 用户发消息——追加到 chat task 叙事
-episodic.record(role="user", content=user_input, task_id=str(task.id))
-
-# loop 处理 chat task——读取完整对话历史作为上下文
-narrative = episodic.load_for_context(task_id=str(task.id), max_chars=4000)
-
-# loop 生成回复——写入 chat_replies
-if task.source.startswith("chat:"):
-    chat_id = task.source[5:]  # "chat:alice" → "alice"
-    await store.add_chat_reply(chat_id, task.id, reply_content)
-
-# loop 追加 assistant 回复到叙事（保持对话历史完整）
-episodic.record(role="assistant", content=reply_content, task_id=str(task.id))
+Run:
+  id
+  task_id
+  run_type         # exec / tool_chain / llm / multimodal
+  worker_type      # exec-worker / llm-worker / ...
+  model_tier       # reader / reasoner / repair
+  status           # pending / running / succeeded / failed / cancelled
+  progress
+  input_json
+  output_json
+  log_text
+  error_text
+  started_at
+  completed_at
 ```
 
-### 叙事连续性（Ricoeur 1984）
+### 设计收益
 
-```
-chat alice 第 1 次启动
-  └→ task-42.md: [user]      帮我看一下这段代码
-  └→ task-42.md: [assistant] 这段代码第 3 行有个边界问题...
+1. 一个 task 可以有多个 run（重试 / 并行子执行）
+2. 主环可以监控 run 而不阻塞
+3. task 保持干净，仍专注目标推进
+4. 后续加 worker 并行不需要再重构 task 语义
 
-chat alice 退出（进程退出），loop 继续运行
+---
 
-chat alice 第 2 次启动（次日）
-  └→ get_chat_task("alice") → 恢复 task 42
-  └→ load_for_context("42") → 读取完整 task-42.md，包含上次对话
-  └→ [user]      昨天那个问题你有新想法吗？
-  └→ [assistant] 有，我在昨晚的认知循环里又考虑了一遍...
-```
+## 7. 当前实现与目标差距
+
+### 当前已有
+- chat 消息队列：`chat_messages`
+- task 持久化：`tasks`
+- signals：`signals`
+- task.wait / task.resume / async_job_id 预留位
+
+### 当前缺少
+- runs 表
+- run 生命周期管理
+- worker 执行器
+- run 结果事件回流
+
+---
+
+## 8. 最终原则
+
+1. **chat 是入口，不是万能对象**
+2. **task 是目标，不是执行器**
+3. **run 是执行，不是目标**
+4. **worker 是执行器，不是人格化子代理**
+5. **主环负责判断和调度，不负责背所有执行细节**
