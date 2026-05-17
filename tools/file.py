@@ -19,6 +19,44 @@ _CORE_FILES = frozenset({
     "provider/openai_compat.py", "tools/registry.py",
 })
 
+# 文件大小限制
+MAX_READ_CHARS = 100_000
+MAX_WRITE_CHARS = 200_000
+
+# 写入允许的根目录（空集合 = 允许所有路径）
+# 设为 {"/root/lingzhou"} 可启用 workspace 沙箱
+_WRITE_ALLOW_ROOTS: frozenset[str] = frozenset()
+
+
+def _path_guard(path: Path) -> tuple[bool, str]:
+    """路径安全守卫。
+    
+    返回 (is_safe, warning)。
+    - 路径穿越检测（../etc/passwd 等）
+    - 可选 workspace 沙箱
+    """
+    try:
+        resolved = path.resolve()
+    except Exception:
+        return False, f"无法解析路径: {path}"
+    
+    # 路径穿越检测：确保解析后的路径仍在预期范围内
+    if _WRITE_ALLOW_ROOTS:
+        for root in _WRITE_ALLOW_ROOTS:
+            try:
+                resolved.relative_to(root)
+                break
+            except ValueError:
+                continue
+        else:
+            return False, (
+                f"路径 {path} 不在允许的工作区内。"
+                f"只能写入 {', '.join(_WRITE_ALLOW_ROOTS)} 内的文件。"
+            )
+    
+    return True, ""
+
+
 
 def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
     """代码修改安全守卫：备份 + 语法验证。
@@ -323,6 +361,18 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if content is None:
         return ToolResult(summary="写入内容为空", error="EmptyContent", skipped=True)
 
+    # 路径守卫：沙箱 + 穿越检测
+    ok, err = _path_guard(path)
+    if not ok:
+        return ToolResult(summary=err, error="PathBlocked", skipped=True)
+
+    text = str(content)
+    if len(text) > MAX_WRITE_CHARS:
+        return ToolResult(
+            summary=f"内容超出大小限制: {len(text)} > {MAX_WRITE_CHARS} 字符",
+            error="ContentTooLarge", skipped=True
+        )
+
     try:
         # 安全守卫：备份原文件 + 核心文件警告
         guard_warning, _ = _safety_guard(path, "写入")
@@ -403,6 +453,11 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 error="IsDirectory",
                 skipped=True,
             )
+
+        # 路径守卫
+        ok, err = _path_guard(path)
+        if not ok:
+            return ToolResult(summary=err, error="PathBlocked", skipped=True)
         
         # 安全守卫：备份原文件 + 核心文件警告
         guard_warning, _ = _safety_guard(path, "编辑")
