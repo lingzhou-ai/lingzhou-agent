@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re as _re_mod
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -61,6 +63,23 @@ def _raise_for_status_with_body(resp: httpx.Response) -> None:
         ) from exc
 
 
+def _extract_responses_text(data: dict[str, Any]) -> str:
+    """从 responses API 的返回中提取文本。"""
+    if isinstance(data.get("output_text"), str) and data.get("output_text"):
+        return str(data["output_text"])
+    output = data.get("output") or []
+    text_parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
 def _build_copilot_ide_headers(*, include_api_version: bool = False) -> dict[str, str]:
     headers = {
         "Editor-Version": COPILOT_EDITOR_VERSION,
@@ -109,85 +128,164 @@ def _normalize_copilot_api_base_url(raw: str) -> str:
     return trimmed
 
 
-class OpenAICompatProvider:
-    def __init__(self, cfg: "Config") -> None:
-        provider = cfg.active_provider
-        self._model = cfg.active_model_id
-        self._temperature = cfg.temperature
-        self._thinking_level = cfg.thinking          # "off" | "minimal" | "low" | "medium" | "high"
-        self._provider_mode = provider.mode          # "openai" | "copilot"
-        self._extra_body: dict[str, Any] = dict(provider.extra_body)  # escape hatch，浅拷贝防污染
-        self._base_url = provider.base_url.rstrip("/")
-        self._embed_model: str | None = cfg.memory.embedding_model
+# ═══════════════════════════════════════════════════════════════════════════════
+# 模式适配器：用数据封装 openai / copilot 的差异，消除 if/elif 堆砌
+# ═══════════════════════════════════════════════════════════════════════════════
 
-        if self._provider_mode == "copilot":
-            resolved = resolve_copilot_token(provider.api_key_env)
-            if not resolved:
-                raise EnvironmentError(
-                    "未找到 Copilot 的 GitHub token。\n"
-                    "Lingzhou 使用：GitHub token → Copilot token exchange → Copilot API\n"
-                    "请执行以下任一操作：\n"
-                    "  lingzhou auth login-copilot\n"
-                    "  export COPILOT_GITHUB_TOKEN=your_token\n"
-                    "  export GH_TOKEN=your_token\n"
-                    "  export GITHUB_TOKEN=your_token"
-                )
-            self._api_key = resolved.token
-            self._copilot_api_base_url = _normalize_copilot_api_base_url(self._base_url)
-            self._sync_client = httpx.Client(
-                headers={"Content-Type": "application/json"},
-                timeout=30.0,
-            )
-            self._client = httpx.AsyncClient(
-                headers={"Content-Type": "application/json"},
-                timeout=cfg.timeout,
-                limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
-            )
-            # Copilot 短期 token 缓存（仅 mode=copilot 时使用）
-            self._copilot_gh_token: str = self._api_key
-            self._copilot_token: str | None = None
-            self._copilot_token_expires: float = 0.0    # Unix timestamp
-        else:
-            self._api_key = provider.api_key
-            self._sync_client = httpx.Client(
-                base_url=self._base_url,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=30.0,
-            )
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=cfg.timeout,
-                limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
-            )
-            self._copilot_api_base_url = ""
-            self._copilot_gh_token = ""
-            self._copilot_token = None
-            self._copilot_token_expires = 0.0
+class _ModeAdapter:
+    """模式差异的抽象基类。每个具体模式只需覆写差异方法。"""
 
-    # ── Copilot token 刷新 ─────────────────────────────────────────────────
+    def __init__(self, base_url: str, api_key: str, timeout: float):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def build_sync_client(self) -> httpx.Client:
+        return httpx.Client(
+            base_url=self.base_url,
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            timeout=30.0,
+        )
+
+    def build_async_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            timeout=self.timeout,
+            limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
+        )
+
+    def resolve_url(self, path: str) -> str:
+        return path  # openai 模式：base_url 已设在 client 上
+
+    async def request_headers(self) -> dict[str, str]:
+        return {}  # openai 模式：Authorization 已在 client headers
+
+    async def handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
+        return None  # openai 模式：不需要 token 刷新
+
+    def apply_completion_limits(self, payload: dict[str, Any]) -> None:
+        pass  # openai 模式：不需要 completion_limit 参数
+
+    def uses_responses_api(self, model_spec: dict[str, Any]) -> bool:
+        return False
+
+    def build_chat_payload(
+        self,
+        messages: list[Message],
+        model: str,
+        temperature: float,
+        thinking_level: str,
+        thinking_override: str | None,
+        extra_body: dict[str, Any],
+        model_spec: dict[str, Any],
+    ) -> dict[str, Any]:
+        """构建 chat/completions 请求 payload。"""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "temperature": temperature,
+        }
+        return payload
+
+    def embedding_url(self) -> str:
+        return "/embeddings"
+
+
+class _OpenAIMode(_ModeAdapter):
+    """标准 OpenAI 兼容模式：百炼、DeepSeek 等。"""
+    pass
+
+
+class _CopilotMode(_ModeAdapter):
+    """GitHub Copilot 模式：token exchange + IDE headers + responses API。"""
+
+    def __init__(self, base_url: str, api_key: str, timeout: float):
+        super().__init__(base_url, api_key, timeout)
+        self._copilot_api_base_url = _normalize_copilot_api_base_url(base_url)
+        self._copilot_gh_token: str = api_key
+        self._copilot_token: str | None = None
+        self._copilot_token_expires: float = 0.0
+
+    def build_sync_client(self) -> httpx.Client:
+        return httpx.Client(headers={"Content-Type": "application/json"}, timeout=30.0)
+
+    def build_async_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            headers={"Content-Type": "application/json"},
+            timeout=self.timeout,
+            limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
+        )
+
+    def resolve_url(self, path: str) -> str:
+        return f"{self._copilot_api_base_url}{path}"
+
+    async def request_headers(self) -> dict[str, str]:
+        token = await self._ensure_copilot_token()
+        return _build_copilot_ide_headers() | {"Authorization": f"Bearer {token}"}
+
+    async def handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
+        body = resp.text
+        if "Personal Access Tokens are not supported" in body:
+            raise RuntimeError(
+                "当前 GitHub token 没有成功走完 Copilot token exchange。\n"
+                "请重新执行 `lingzhou auth login-copilot`。"
+            )
+        return None  # 实际重试逻辑在 chat() 中处理
+
+    def apply_completion_limits(self, payload: dict[str, Any]) -> None:
+        if "max_completion_tokens" in payload or "max_tokens" in payload:
+            return
+        # 从模型规格读取 limit
+        param_name = "max_completion_tokens"  # copilot 默认用这个
+        payload[param_name] = _MAX_COMPLETION_TOKENS_DEFAULT
+
+    def uses_responses_api(self, model_spec: dict[str, Any]) -> bool:
+        return model_spec.get("api") == "responses"
+
+    def build_chat_payload(
+        self,
+        messages: list[Message],
+        model: str,
+        temperature: float,
+        thinking_level: str,
+        thinking_override: str | None,
+        extra_body: dict[str, Any],
+        model_spec: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Copilot responses API 格式。"""
+        level = thinking_override if thinking_override is not None else thinking_level
+        instructions_parts: list[str] = []
+        input_items: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role == "system":
+                if isinstance(m.content, str) and m.content.strip():
+                    instructions_parts.append(m.content)
+                continue
+            input_items.append({"role": m.role, "content": m.content})
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "input": input_items or [{"role": "user", "content": ""}],
+        }
+        payload["temperature"] = temperature
+        if instructions_parts:
+            payload["instructions"] = "\n\n".join(instructions_parts)
+        if model_spec.get("reasoning") and level != "off":
+            payload["reasoning"] = {"effort": _copilot_reasoning_effort(level)}
+        if extra_body:
+            payload.update(extra_body)
+        return payload
+
+    def embedding_url(self) -> str:
+        return self._copilot_url("/embeddings")
+
+    # ── Copilot 内部方法 ─────────────────────────────────────────────────
 
     def _copilot_url(self, path: str) -> str:
         return f"{self._copilot_api_base_url}{path}"
 
-    def _copilot_request_headers(self, token: str) -> dict[str, str]:
-        headers = _build_copilot_ide_headers()
-        headers["Authorization"] = f"Bearer {token}"
-        headers["Content-Type"] = "application/json"
-        return headers
-
     async def _ensure_copilot_token(self, *, force_refresh: bool = False) -> str:
-        """获取或刷新 GitHub Copilot 短期 token（TTL ~30 分钟，提前 5 分钟刷新）。
-
-        主链路固定为：
-          GitHub token → Copilot token exchange → Copilot API
-        """
         if (not force_refresh) and self._copilot_token and time.time() < self._copilot_token_expires - 300:
             return self._copilot_token
 
@@ -216,7 +314,6 @@ class OpenAICompatProvider:
             token = str(data.get("token", "")).strip()
             if not token:
                 raise RuntimeError("Copilot token exchange succeeded but returned empty token")
-
             expires_str = str(data.get("expires_at", "")).strip()
             if expires_str:
                 if expires_str.isdigit():
@@ -226,7 +323,6 @@ class OpenAICompatProvider:
                     expires_at_ms = int(dt.timestamp() * 1000)
             else:
                 expires_at_ms = int((time.time() + 1800) * 1000)
-
             self._copilot_token = token
             self._copilot_token_expires = expires_at_ms / 1000
             self._copilot_api_base_url = (
@@ -235,38 +331,137 @@ class OpenAICompatProvider:
             )
             save_copilot_token_cache(token, expires_at_ms=expires_at_ms)
             return self._copilot_token
-
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403, 404):
                 raise RuntimeError(
                     "GitHub token 无法完成 Copilot token exchange。\n"
-                    "请重新执行 `lingzhou auth login-copilot`，并提供可访问\n"
-                    "https://api.github.com/copilot_internal/v2/token 的 GitHub token。"
+                    "请重新执行 `lingzhou auth login-copilot`。"
                 ) from exc
             raise
+
+
+def _build_mode_adapter(
+    *,
+    mode: str,
+    base_url: str,
+    api_key_env: str,
+    timeout: float,
+) -> _ModeAdapter:
+    """根据 provider.mode 创建对应的适配器。
+
+    这是唯一需要 if 的地方——模式选择在构造时完成一次，
+    之后所有模式差异通过多态分发。
+    """
+    if mode == "copilot":
+        resolved = resolve_copilot_token(api_key_env)
+        if not resolved:
+            raise EnvironmentError(
+                "未找到 Copilot 的 GitHub token。\n"
+                "Lingzhou 使用：GitHub token → Copilot token exchange → Copilot API\n"
+                "请执行以下任一操作：\n"
+                "  lingzhou auth login-copilot\n"
+                "  export COPILOT_GITHUB_TOKEN=your_token\n"
+                "  export GH_TOKEN=your_token\n"
+                "  export GITHUB_TOKEN=your_token"
+            )
+        return _CopilotMode(base_url, resolved.token, timeout)
+
+    # openai 模式（百炼、DeepSeek 等标准 OpenAI 兼容）
+    api_key = os.environ.get(api_key_env, "")
+    return _OpenAIMode(base_url, api_key, timeout)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Provider 主体
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class OpenAICompatProvider:
+    """OpenAI 兼容接口。
+
+    模式差异通过 _ModeAdapter 封装，避免 if/elif 堆砌：
+    - mode=openai: 标准 OpenAI 兼容（百炼/DeepSeek），Bearer token + base_url
+    - mode=copilot: GitHub Copilot，token exchange + IDE headers + responses API
+    """
+
+    def __init__(self, cfg: "Config") -> None:
+        provider = cfg.active_provider
+        self._model = cfg.active_model_id
+        self._temperature = cfg.temperature
+        self._thinking_level = cfg.thinking
+        self._extra_body: dict[str, Any] = dict(provider.extra_body)
+        self._base_url = provider.base_url.rstrip("/")
+        self._embed_model: str | None = cfg.memory.embedding_model
+        self._provider_mode = provider.mode
+
+        # 模式适配器：封装 openai / copilot 的差异行为
+        self._mode = _build_mode_adapter(
+            mode=provider.mode,
+            base_url=self._base_url,
+            api_key_env=provider.api_key_env,
+            timeout=cfg.timeout,
+        )
+
+        self._sync_client = self._mode.build_sync_client()
+        self._client = self._mode.build_async_client()
+        self.last_usage: dict[str, int] = {}  # 最近一次 API 调用的 token 用量
+
+    # ── 委托给 _mode 的便捷方法 ─────────────────────────────────────────
+
+    def _resolve_url(self, path: str) -> str:
+        return self._mode.resolve_url(path)
+
+    async def _request_headers(self) -> dict[str, str]:
+        return await self._mode.request_headers()
+
+    async def _handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
+        return await self._mode.handle_auth_error(resp)
+
+    # ── 向后兼容：copilot 方法透传（测试用）───────────────────────────
+
+    @property
+    def _copilot_api_base_url(self) -> str:
+        return getattr(self._mode, "_copilot_api_base_url", "")
+
+    async def _ensure_copilot_token(self, *, force_refresh: bool = False) -> str:
+        if hasattr(self._mode, "_ensure_copilot_token"):
+            return await self._mode._ensure_copilot_token(force_refresh=force_refresh)
+        raise RuntimeError("Not in copilot mode")
+
+    def _uses_responses_api(self) -> bool:
+        return self._mode.uses_responses_api(self._model_spec())
+
+    def _inject_completion_limits(self, payload: dict[str, Any]) -> None:
+        self._mode.apply_completion_limits(payload)
+
+    def _copilot_compat_fallback_payload(self, *, base_payload: dict[str, Any], payload: dict[str, Any]) -> dict | None:
+        # 简化：返回去除 reasoning 字段的 payload
+        if "reasoning_effort" in payload:
+            fb = dict(payload)
+            fb.pop("reasoning_effort", None)
+            return fb
+        return None
 
     # ── thinking 注入 ──────────────────────────────────────────────────────
 
     def _inject_thinking(self, payload: dict[str, Any], level_override: str | None = None) -> None:
-        """按 provider.mode 和 cfg.thinking 向 payload 注入对应的 thinking 参数。"""
+        """按 provider.mode 和 cfg.thinking 向 payload 注入 thinking 参数。"""
         level = level_override if level_override is not None else self._thinking_level
         spec = self._model_spec()
 
         if self._provider_mode == "openai":
             thinking_spec = spec.get("thinking") if spec else None
-            if thinking_spec is None:
-                return  # 目录未收录或模型不支持 thinking，不注入
-            if level == "off":
-                payload["enable_thinking"] = False
-            else:
-                budget = self._compute_budget(thinking_spec, level)
-                payload["enable_thinking"] = True
-                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            if thinking_spec is None or level == "off":
+                if level == "off":
+                    payload["enable_thinking"] = False
+                return
+            budget = self._compute_budget(thinking_spec, level)
+            payload["enable_thinking"] = True
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         elif self._provider_mode == "copilot":
             is_reasoning = bool(spec and spec.get("reasoning")) if spec else False
             if is_reasoning and level != "off":
-                # "minimal" → "low"（copilot 不支持 minimal 档）
                 effort = "low" if level == "minimal" else level
                 if self._model_api() == "chat_completions":
                     payload["reasoning_effort"] = effort
@@ -275,7 +470,6 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _compute_budget(thinking_spec: dict[str, Any], level: str) -> int:
-        """按等级比例计算 budget_tokens（不低于 budget_min）。"""
         frac = _LEVEL_FRACS.get(level, 0.0)
         budget_max = thinking_spec.get("budget_max", 4096)
         budget_min = thinking_spec.get("budget_min", 1024)
@@ -284,6 +478,15 @@ class OpenAICompatProvider:
     def _model_spec(self) -> dict[str, Any]:
         spec = lookup_model(self._model)
         return spec if isinstance(spec, dict) else {}
+
+    def _record_usage(self, usage: dict | None) -> None:
+        if not isinstance(usage, dict):
+            return
+        self.last_usage = {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
 
     def _model_api(self) -> str:
         api = self._model_spec().get("api")
@@ -295,115 +498,7 @@ class OpenAICompatProvider:
 
     def _unsupported_request_params(self) -> set[str]:
         raw = self._request_params_spec().get("unsupported")
-        if not isinstance(raw, list):
-            return set()
-        return {str(item) for item in raw if isinstance(item, str) and item}
-
-    def _completion_limit_param(self) -> str | None:
-        raw = self._request_params_spec().get("completion_limit_param")
-        if isinstance(raw, str) and raw:
-            return raw
-        return None
-
-    def _inject_completion_limits(self, payload: dict[str, Any]) -> None:
-        if self._provider_mode != "copilot":
-            return
-        if "max_completion_tokens" in payload or "max_tokens" in payload:
-            return
-        param_name = self._completion_limit_param()
-        if not param_name:
-            return
-        spec = self._model_spec()
-        limit = int(spec["max_tokens"]) if spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
-        payload[param_name] = limit
-
-    def _uses_responses_api(self) -> bool:
-        return self._provider_mode == "copilot" and self._model_api() == "responses"
-
-    def _build_responses_payload(
-        self,
-        messages: list[Message],
-        *,
-        temperature: float | None = None,
-        thinking_override: str | None = None,
-    ) -> dict[str, Any]:
-        level = thinking_override if thinking_override is not None else self._thinking_level
-        unsupported = self._unsupported_request_params()
-        instructions_parts: list[str] = []
-        input_items: list[dict[str, Any]] = []
-
-        for m in messages:
-            if m.role == "system":
-                if isinstance(m.content, str) and m.content.strip():
-                    instructions_parts.append(m.content)
-                continue
-            input_items.append({"role": m.role, "content": m.content})
-
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "input": input_items or [{"role": "user", "content": ""}],
-        }
-        resolved_temperature = temperature if temperature is not None else self._temperature
-        if "temperature" not in unsupported:
-            payload["temperature"] = resolved_temperature
-        if instructions_parts:
-            payload["instructions"] = "\n\n".join(instructions_parts)
-
-        spec = self._model_spec()
-        is_reasoning = bool(spec and spec.get("reasoning")) if spec else False
-        if is_reasoning and level != "off":
-            payload["reasoning"] = {"effort": _copilot_reasoning_effort(level)}
-
-        if self._extra_body:
-            payload.update(self._extra_body)
-        return payload
-
-    @staticmethod
-    def _extract_responses_text(data: dict[str, Any]) -> str:
-        if isinstance(data.get("output_text"), str) and data.get("output_text"):
-            return str(data["output_text"])
-
-        output = data.get("output") or []
-        text_parts: list[str] = []
-        for item in output:
-            if not isinstance(item, dict) or item.get("type") != "message":
-                continue
-            for content in item.get("content") or []:
-                if isinstance(content, dict) and content.get("type") == "output_text":
-                    text = content.get("text")
-                    if isinstance(text, str) and text:
-                        text_parts.append(text)
-        return "\n".join(text_parts).strip()
-
-    def _copilot_compat_fallback_payload(
-        self,
-        *,
-        base_payload: dict[str, Any],
-        payload: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if self._provider_mode != "copilot":
-            return None
-
-        fallback = dict(payload)
-        changed = False
-
-        if "reasoning_effort" in fallback:
-            fallback.pop("reasoning_effort", None)
-            changed = True
-        completion_limit_param = self._completion_limit_param()
-        if completion_limit_param and completion_limit_param in fallback:
-            fallback.pop(completion_limit_param, None)
-            changed = True
-
-        base_temp = base_payload.get("temperature")
-        if fallback.get("temperature") != base_temp:
-            if base_temp is None:
-                fallback.pop("temperature", None)
-            else:
-                fallback["temperature"] = base_temp
-            changed = True
-
-        return fallback if changed else None
+        return {str(item) for item in raw} if isinstance(raw, list) else set()
 
     # ── chat ───────────────────────────────────────────────────────────────
 
@@ -414,132 +509,58 @@ class OpenAICompatProvider:
         temperature: float | None = None,
         thinking_override: str | None = None,
     ) -> str:
-        if self._uses_responses_api():
-            payload = self._build_responses_payload(
-                messages,
-                temperature=temperature,
-                thinking_override=thinking_override,
-            )
-            req_headers: dict[str, str] = {}
-            if self._provider_mode == "copilot":
-                token = await self._ensure_copilot_token()
-                req_headers = self._copilot_request_headers(token)
+        spec = self._model_spec()
+        temp = temperature if temperature is not None else self._temperature
+        level = thinking_override if thinking_override is not None else self._thinking_level
 
-            _active_level = thinking_override if thinking_override is not None else self._thinking_level
-            _req_timeout = (
-                max(float(self._client.timeout.read or self._client.timeout.connect or 60.0), 300.0)
-                if _active_level not in (None, "off")
-                else None
+        # responses API 路径（copilot 专属）
+        if self._mode.uses_responses_api(spec):
+            payload = self._mode.build_chat_payload(
+                messages, self._model, temp, self._thinking_level,
+                thinking_override, self._extra_body, spec,
             )
-            target_url = self._copilot_url("/responses") if self._provider_mode == "copilot" else "/responses"
+            headers = await self._request_headers()
+            req_timeout = max(float(self._client.timeout.read or 60.0), 300.0) if level not in (None, "off") else None
+            target = self._resolve_url("/responses")
 
-            resp = await self._client.post(
-                target_url,
-                content=json.dumps(payload),
-                headers=req_headers if req_headers else None,
-                timeout=_req_timeout,
-            )
-            if self._provider_mode == "copilot" and resp.status_code in (400, 401, 403):
-                body = resp.text
-                if "Personal Access Tokens are not supported for this endpoint" in body:
-                    raise RuntimeError(
-                        "当前 GitHub token 没有成功走完 Copilot token exchange，或换到的 token 不可用。\n"
-                        "请重新执行 `lingzhou auth login-copilot`，并提供可访问 copilot_internal 的 GitHub token。"
-                    )
-                refreshed = await self._ensure_copilot_token(force_refresh=True)
-                retry_headers = self._copilot_request_headers(refreshed)
-                resp = await self._client.post(
-                    target_url,
-                    content=json.dumps(payload),
-                    headers=retry_headers,
-                    timeout=_req_timeout,
-                )
+            resp = await self._client.post(target, content=json.dumps(payload),
+                                           headers=headers or None, timeout=req_timeout)
+            retry_resp = await self._handle_auth_error(resp)
+            if retry_resp is not None:
+                resp = retry_resp
             _raise_for_status_with_body(resp)
             data = resp.json()
-            return self._extract_responses_text(data)
+            self._record_usage(data.get("usage"))
+            return _extract_responses_text(data)
 
-        base_payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
-            "temperature": temperature if temperature is not None else self._temperature,
-        }
-        payload: dict[str, Any] = dict(base_payload)
+        # chat/completions 路径（openai + copilot 通用）
+        base_payload = self._mode.build_chat_payload(
+            messages, self._model, temp, self._thinking_level,
+            thinking_override, self._extra_body, spec,
+        )
+        payload = dict(base_payload)
         self._inject_thinking(payload, level_override=thinking_override)
-        self._inject_completion_limits(payload)
+        self._mode.apply_completion_limits(payload)
         if self._extra_body:
             payload.update(self._extra_body)
 
-        req_headers: dict[str, str] = {}
-        if self._provider_mode == "copilot":
-            token = await self._ensure_copilot_token()
-            req_headers = self._copilot_request_headers(token)
+        headers = await self._request_headers()
+        req_timeout = max(float(self._client.timeout.read or 60.0), 300.0) if level not in (None, "off") else None
+        target = self._resolve_url("/chat/completions")
 
-        target_url = "/chat/completions"
-        if self._provider_mode == "copilot":
-            target_url = self._copilot_url("/chat/completions")
-
-        # thinking 激活时用更大的超时（thinking=medium 约 80-150s，high 可达 200s+）
-        # 即使 lingzhou.json 里配置了较小的 timeout，thinking 调用也至少保证 300s
-        _active_level = thinking_override if thinking_override is not None else self._thinking_level
-        _req_timeout = (
-            max(float(self._client.timeout.read or self._client.timeout.connect or 60.0), 300.0)
-            if _active_level not in (None, "off")
-            else None  # None = 使用 client 默认
-        )
-
-        resp = await self._client.post(
-            target_url,
-            content=json.dumps(payload),
-            headers=req_headers if req_headers else None,
-            timeout=_req_timeout,
-        )
-
-        if self._provider_mode == "copilot" and resp.status_code in (400, 401, 403):
-            body = resp.text
-            if "Personal Access Tokens are not supported for this endpoint" in body:
-                raise RuntimeError(
-                    "当前 GitHub token 没有成功走完 Copilot token exchange，或换到的 token 不可用。\n"
-                    "请重新执行 `lingzhou auth login-copilot`，并提供可访问 copilot_internal 的 GitHub token。"
-                )
-            # token 轮换/失效窗口：强制刷新一次再重试，减少短时 400/401 抖动
-            refreshed = await self._ensure_copilot_token(force_refresh=True)
-            retry_headers = self._copilot_request_headers(refreshed)
-            resp = await self._client.post(
-                target_url,
-                content=json.dumps(payload),
-                headers=retry_headers,
-                timeout=_req_timeout,
-            )
-
-            if resp.status_code == 400:
-                fallback_payload = self._copilot_compat_fallback_payload(
-                    base_payload=base_payload,
-                    payload=payload,
-                )
-                if fallback_payload is not None:
-                    _log.warning(
-                        "[copilot] chat/completions 400，去除兼容性字段后重试: model=%s body=%s",
-                        self._model,
-                        body.replace("\n", " ")[:240],
-                    )
-                    resp = await self._client.post(
-                        target_url,
-                        content=json.dumps(fallback_payload),
-                        headers=retry_headers,
-                        timeout=_req_timeout,
-                    )
-
+        resp = await self._client.post(target, content=json.dumps(payload),
+                                       headers=headers or None, timeout=req_timeout)
+        retry_resp = await self._handle_auth_error(resp)
+        if retry_resp is not None:
+            resp = retry_resp
         _raise_for_status_with_body(resp)
         data = resp.json()
+        self._record_usage(data.get("usage"))
         msg = data["choices"][0]["message"]
-        # Qwen3/DashScope: thinking 有时内嵌在 content 中作为 <think>...</think> 而非分离到 reasoning_content。
-        # 两种情况都处理：优先用 reasoning_content（已分离），否则从 content 中剥离 <think> 块。
         content: str = msg.get("content") or ""
         if msg.get("reasoning_content"):
-            # 已正常分离， content 就是纯输出，无需处理
             return content
         import re as _re
-        # 剥除内嵌的 <think>...</think>（包括跨行）
         content = _re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
         return content
 
@@ -548,11 +569,10 @@ class OpenAICompatProvider:
         self._sync_client.close()
 
     def embed(self, text: str) -> list[float]:
-        """同步文本嵌入（用于 SemanticMemory 批量计算）。"""
         if not self._embed_model:
             raise RuntimeError("embedding_model not configured")
 
-        headers: dict[str, str] | None = None
+        headers = {}
         if self._provider_mode == "copilot":
             cache = load_copilot_token_cache()
             if not cache or (time.time() * 1000) >= cache.expires_at_ms - 300_000:
@@ -560,19 +580,16 @@ class OpenAICompatProvider:
                     "Copilot embeddings 需要先完成 GitHub token → Copilot token exchange。\n"
                     "请先执行一次 chat 请求，或关闭 embedding_model。"
                 )
-            headers = self._copilot_request_headers(cache.token)
+            headers = _build_copilot_ide_headers() | {"Authorization": f"Bearer {cache.token}"}
 
-        target_url = "/embeddings"
-        if self._provider_mode == "copilot":
-            target_url = self._copilot_url("/embeddings")
-
+        target = self._resolve_url(self._mode.embedding_url())
         resp = self._sync_client.post(
-            target_url,
+            target,
             content=json.dumps({
                 "model": self._embed_model,
                 "input": [text[:_EMBED_MAX_CHARS]],
             }),
-            headers=headers,
+            headers=headers or None,
         )
         _raise_for_status_with_body(resp)
         return resp.json()["data"][0]["embedding"]

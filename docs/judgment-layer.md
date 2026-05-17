@@ -1,6 +1,6 @@
 # 判断层（Judgment Layer）
 
-**更新日期：** 2026-05-15
+**更新日期：** 2026-05-16
 
 > 判断层是 lingzhou 的**认知控制核心**。它负责整合信息、决定下一步、并把复杂执行交给执行面。
 
@@ -19,6 +19,22 @@
 4. **决定是否创建 run**（而不是所有动作都由主环直接执行）
 5. **决定问题属于单环还是双环**（交给 MetaReflection）
 
+## 2.5. 工具元数据
+
+工具通过 `ToolManifest` 自声明属性，减少硬编码：
+
+```python
+@tool(ToolManifest(
+    name="file.read",
+    progress_category="info",   # mutation | info
+    prefer_tier="reader",        # reader | reasoner
+))
+```
+
+- `progress_category`: 声明工具是变更类(mutation)还是信息类(info)，供进展判断使用
+- `prefer_tier`: 声明工具推荐在哪个 tier 执行，供路由决策使用
+新增工具只需加这两行声明，无需修改 loop.py / judgment.py
+
 ---
 
 ## 2. 当前输入
@@ -26,6 +42,8 @@
 `_assemble_context()` 当前已经整合：
 
 - active task
+- **self model** (uptime, token usage, cost estimate, billing mode)
+- **team view** (reader/reasoner/repair architecture with delegation guide)
 - percept / perception replay
 - emotion
 - ethos

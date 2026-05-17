@@ -388,6 +388,14 @@ class CognitiveSignals:
     repeat_read_path: str = ""
     repeat_list_count: int = 0
     repeat_list_path: str = ""
+    # 探索预算感知
+    explore_count: int = 0
+    explore_threshold: int = 0
+    loop_probe_version: int = 0
+    repeat_read_count: int = 0
+    repeat_read_path: str = ""
+    repeat_list_count: int = 0
+    repeat_list_path: str = ""
     loop_probe_version: int = 0
     last_action_tool: str = ""
     last_action_key: str = ""
@@ -396,6 +404,7 @@ class CognitiveSignals:
     last_action_error: str = ""
     last_action_state_delta: str = ""
     last_action_progressful: bool | None = None
+    last_action_progress_reason: str = ""
     recent_action_history: list[str] = field(default_factory=list[str])
 
     def to_text(self) -> str:
@@ -448,10 +457,16 @@ class CognitiveSignals:
                 f"⚠️ 最近目录枚举已连续命中相同结果 {self.repeat_list_count} 次：{self.repeat_list_path}。"
                 "请先判断是否需要切换到读取、写入或总结。"
             )
-        if self.last_action_tool and self.last_action_progressful is False and self.last_action_status in {"ok", "skipped"}:
+        if self.explore_count >= self.explore_threshold and self.explore_threshold > 0:
             lines.append(
-                f"⚠️ 上一轮动作 {self.last_action_tool} 没有推进 next_step。"
-                "请先基于参数、结果和错误重新评估，而不是默认重复。"
+                f"⚠️ 当前任务已探索 {self.explore_count} 次（阈值 {self.explore_threshold}），请评估是否已有足够信息推进"
+            )
+        if self.last_action_tool and self.last_action_progressful is False and self.last_action_status in {"ok", "skipped"}:
+            reason = f"（原因: {self.last_action_progress_reason}）" if self.last_action_progress_reason else ""
+            lines.append(
+                f"⚠️ 上一轮动作 {self.last_action_tool} 被系统判定为未推进。{reason}\n"
+                "这不一定意味着你做错了——系统判断基于工具类型和结果指纹。"
+                "如果你认为已有足够信息推进任务，可以在 rationale 中说明并继续。"
             )
         if self.emotion_alert:
             lines.append(

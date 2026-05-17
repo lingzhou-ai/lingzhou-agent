@@ -17,10 +17,31 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 from memory.semantic import MemoryNode
 
 
+_INFO_ONLY_COMPLETION_TOOLS = frozenset({
+    "file.read", "file.list",
+    "memory.search", "memory.get_fact",
+    "task.list", "schedule.list",
+    "skill.list", "skill.search",
+    "shell.capabilities",
+})
+
+# 会修改文件系统/代码/DB 的工具 — 需要后续验证才算有效完成
+_MUTATION_TOOLS = frozenset({
+    "file.edit", "file.write", "file.delete",
+    "shell.run",  # shell 可能执行破坏性命令
+})
+
+# 验证型动作 — 能确认修改是否正确的工具/模式
+_VERIFY_TOOLS = frozenset({
+    "shell.run",  # 通常用于跑测试/验证
+})
+
+
 @tool(ToolManifest(
     name="task.advance",
     description="将活跃任务推进到 in_progress 状态并更新 next_step（首次取任务时调用）",
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("task_id", "number", "可选：显式指定要推进的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "计划的下一步描述", required=False),
     ],
@@ -45,7 +66,8 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.add",
     description="创建一个新任务",
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("title", "string", "任务标题（简洁）", required=True),
         ToolParam("goal", "string", "任务目标（详细）", required=False),
         ToolParam("priority", "string", "优先级: low/normal/high/critical", required=False),
@@ -91,8 +113,10 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.complete",
     description="将当前活跃任务标记为完成，并将任务叙事编译进语义记忆",
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("task_id", "number", "可选：显式指定要完成的任务 id；不传则使用当前 active task", required=False),
+        ToolParam("force", "boolean", "可选：强制完成，跳过轻量证据门槛", required=False),
     ],
 ))
 async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -100,7 +124,62 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not task:
         return ToolResult(summary="无活跃任务可完成", skipped=True)
 
+    force = bool(params.get("force") or False)
+    if not force and ctx.task_store is not None:
+        recent_runs = await ctx.task_store.list_runs(task_id=task.id, limit=12)
+        recent_tools = [
+            r.tool_name for r in recent_runs
+            if r.status == "succeeded" and r.tool_name and not r.tool_name.startswith("task.")
+        ]
+        only_info_browsing = bool(recent_tools) and all(t in _INFO_ONLY_COMPLETION_TOOLS for t in recent_tools)
+        explicit_progress = bool((task.current_step or "").strip() or str(task.result_json.get("summary") or "").strip())
+        if only_info_browsing and not explicit_progress:
+            return ToolResult(
+                summary=(
+                    f"任务 [{task.id}] 暂不允许完成：最近仅有信息浏览类动作，"
+                    "且缺少 current_step / result summary 等明确结论。"
+                    "请先更新当前步骤或产出结论，再完成任务。"
+                ),
+                error="InsufficientEvidence",
+                skipped=True,
+                metadata={"task_id": task.id, "recent_tools": recent_tools},
+            )
+
+        # 新门槛：如果最近有 mutation（file.edit/write/delete/shell.run），
+        # 要求后面至少有一个成功的验证动作（如跑测试）。
+        # 这样"改了代码就跑"不会被当作已完成。
+        has_mutation = any(t in _MUTATION_TOOLS for t in recent_tools)
+        if has_mutation:
+            # 找到最后一个 mutation 之后的所有 run
+            last_mutation_idx = max(i for i, t in enumerate(recent_tools) if t in _MUTATION_TOOLS)
+            post_mutation_tools = recent_tools[last_mutation_idx + 1:]
+            verified_after = any(t in _VERIFY_TOOLS for t in post_mutation_tools)
+            if not verified_after:
+                return ToolResult(
+                    summary=(
+                        f"任务 [{task.id}] 暂不允许完成：最近有修改动作"
+                        f"（{recent_tools[last_mutation_idx]}），"
+                        "但缺少后续验证（如 shell.run 跑测试）。"
+                        "请先验证修改正确性，再完成任务。"
+                    ),
+                    error="MutationWithoutVerification",
+                    skipped=True,
+                    metadata={
+                        "task_id": task.id,
+                        "last_mutation": recent_tools[last_mutation_idx],
+                        "post_mutation_tools": post_mutation_tools,
+                    },
+                )
+
     await ctx.task_store.update_status(task.id, "done", "completed via agent")
+
+    # 自动 dismiss 该任务关联的未消除 failure（任务既然完成，旧失败已不再阻塞）
+    task_failures = await ctx.task_store.list_failures_for_task(str(task.id), limit=30)
+    dismissed_count = 0
+    for f in task_failures:
+        if not f.dismissed:
+            await ctx.task_store.dismiss_failure(f.id)
+            dismissed_count += 1
 
     # 程序性记忆编译：任务叙事 → 语义记忆节点（Anderson 1983 ACT-R）
     task_id_str = str(task.id)
@@ -135,7 +214,8 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.list",
     description="列出任务列表",
-    params=[
+    progress_category="info",
+        params=[
         ToolParam("status", "string", "过滤状态: pending/in_progress/ready/resumed/waiting/done/all", required=False),
         ToolParam("limit", "number", "最多返回条数，默认 10", required=False),
     ],
@@ -160,7 +240,8 @@ async def task_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.update",
     description="更新当前活跃任务的 next_step 或状态",
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("task_id", "number", "可选：显式指定要更新的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "下一步计划", required=False),
         ToolParam("status", "string", "新状态: pending/ready/in_progress/resumed/waiting/blocked/failed", required=False),
@@ -193,7 +274,8 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.fail",
     description="将当前活跃任务标记为失败，记录失败原因并写入失败日志（触发进化反馈）",
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("task_id", "number", "可选：显式指定要失败的任务 id；不传则使用当前 active task", required=False),
         ToolParam("reason", "string", "失败原因摘要", required=True),
     ],
@@ -204,6 +286,11 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="无活跃任务可标记失败", skipped=True)
     reason = (params.get("reason") or "未知原因").strip()
     await ctx.task_store.update_status(task.id, "failed", reason)
+    # 自动 dismiss 旧 failure，task 本身的 failed 状态就是最终记录
+    task_failures = await ctx.task_store.list_failures_for_task(str(task.id), limit=30)
+    for f in task_failures:
+        if not f.dismissed:
+            await ctx.task_store.dismiss_failure(f.id)
     await ctx.task_store.record_failure(
         kind="task_failure",
         summary=reason,

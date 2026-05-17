@@ -84,12 +84,30 @@ await evolution.evolve_tool(name, failure_summary, cfg)
 ├──────────────┬──────────────┬──────────────┬────────────────┤
 │  core/       │  memory/     │  tools/      │  provider/     │
 │  loop.py     │  working.py  │  registry.py │  openai_compat │
-│  perception  │  episodic.py │  file.py     │  (DashScope /  │
-│  judgment    │  semantic.py │  shell.py    │   Qwen)        │
-│  execution   │  task_store  │  memory_ops  │                │
+│  perception  │  episodic.py │  file.py     │  (DeepSeek /   │
+│  judgment    │  semantic.py │  shell.py    │   百炼 /        │
+│  execution   │  task_store  │  memory_ops  │   Copilot)     │
 │  evolution   │              │  task_ops    │                │
+│  self_model  │              │              │                │
+│  behavior_   │              │              │                │
+│  tracker     │              │              │                │
 └──────────────┴──────────────┴──────────────┴────────────────┘
 ```
+
+**Two-model architecture | 双模型架构**
+
+| Tier | Model | Role | Billing |
+|---|---|---|---|
+| reader (操作层) | deepseek-v4-flash | 快速判断、轻量查询 | 按量 |
+| reasoner (思考层) | deepseek-v4-pro | 深度推理、复杂决策 | 按量 |
+| repair (修复层) | deepseek-v4-flash | 格式修复 | 按量 |
+
+The reasoner sees the full team view and delegates simple tasks to reader via `next_phase_tier`.
+
+**Self model | 自我模型**
+
+Each tick, the LLM sees a self-awareness snapshot with uptime, token usage, and cost.
+Persists across restarts via `self:model` fact in SQLite.
 
 **Four memory layers | 四层记忆**
 
@@ -107,7 +125,7 @@ await evolution.evolve_tool(name, failure_summary, cfg)
 **Prerequisites | 前置条件**
 
 - Python 3.12+
-- DashScope API key (Qwen) — set `DASHSCOPE_API_KEY`
+- DeepSeek API key — set `DEEPSEEK_API_KEY` (or Bailian: `DASHSCOPE_API_KEY`)
 
 **Install | 安装**
 

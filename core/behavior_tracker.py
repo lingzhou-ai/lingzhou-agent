@@ -22,7 +22,11 @@ if TYPE_CHECKING:
 _log = logging.getLogger("lingzhou.behavior_tracker")
 
 _EXPLORE_TOOLS = frozenset(("file.list", "file.read"))
-_EXPLORE_THRESHOLDS = (8, 12, 16)
+_EXPLORE_THRESHOLDS = (5, 9, 13)
+# 同文件连续窗口探测阈值：同一文件被分窗口读取超过此次数时触发特定警告
+_SEQ_WINDOW_WARN_AT = 3
+# 窗口连续性判断：相邻读的 start 与上一次 end 的差距在此比例内视为连续
+_SEQ_WINDOW_GAP_RATIO = 0.25  # 25% 窗口大小内视作连续
 class BehaviorTracker:
     """行为模式追踪器：检测循环并把信号交给 LLM。"""
 
@@ -42,8 +46,18 @@ class BehaviorTracker:
         self._explore_count: int = 0
         self._explore_task_id: str | None = None
         self._explore_warned: set[int] = set()
+        # 同文件顺序窗口探测追踪
+        self._seq_window_path: str | None = None
+        self._seq_window_count: int = 0
+        self._seq_window_last_end: int = 0
+        self._seq_window_warned: bool = False
         self._wait_streak: int = 0          # 连续 wait/pause 决策次数
         self._wait_streak_warned: set[int] = set()   # 已触发通知的阈值
+
+    @property
+    def wait_streak(self) -> int:
+        """公开接口：连续 wait/pause 决策次数。"""
+        return self._wait_streak
 
     # ── 状态接口 ──────────────────────────────────────────────────────────────
 
@@ -57,6 +71,9 @@ class BehaviorTracker:
         signals.repeat_list_count = self._list_streak_count
         signals.repeat_list_path = (self._list_streak_fp or ("", ""))[0]
         signals.loop_probe_version = self._loop_probe_version
+        # 探索预算感知
+        signals.explore_count = self._explore_count
+        signals.explore_threshold = _EXPLORE_THRESHOLDS[-1] if _EXPLORE_THRESHOLDS else 0
 
     def snapshot(self) -> dict[str, Any]:
         """返回追踪器状态快照，供 state_snapshot 使用。"""
@@ -157,10 +174,21 @@ class BehaviorTracker:
             ))
         return items
 
-    def on_read(self, path: str, max_chars: int, result_summary: str) -> list["WMItem"]:
-        """追踪 file.read 相同内容重复读取。
+    def on_read(
+        self,
+        path: str,
+        max_chars: int,
+        result_summary: str,
+        *,
+        start: int = 0,
+        end: int = 0,
+    ) -> list["WMItem"]:
+        """追踪 file.read 重复读取。
 
-        按内容 MD5 去重（同路径但内容不同时不触发）。
+        两层检测：
+        1. 内容 MD5 去重 — 同一文件同一窗口读多次
+        2. 同文件顺序窗口探测 — 同一文件被分窗口连续读取（不同窗口内容不同但模式重复）
+
         返回需注入 WM 的条目列表（通常为空或 1 项）。
         """
         from memory.working import WMItem
@@ -178,6 +206,8 @@ class BehaviorTracker:
         self._loop_probe_version += 1
 
         items: list[WMItem] = []
+
+        # 层 1：同内容重复
         if len(self._recent_read_fps) == 3 and len(set(self._recent_read_fps)) == 1:
             _log.warning("[self-awareness] 连续 3 次读取相同内容: %s", path)
             items.append(WMItem(
@@ -190,6 +220,48 @@ class BehaviorTracker:
                 ),
                 priority=0.95,
             ))
+
+        # 层 2：同文件顺序窗口探测（不同窗口但模式为连续扫描）
+        if start >= 0 and end > start:
+            window_size = end - start
+            if path == self._seq_window_path:
+                gap = abs(start - self._seq_window_last_end)
+                gap_ratio = gap / max(window_size, 1)
+                # 窗口连续（与上次 end 接近）→ 递增计数
+                if gap_ratio <= _SEQ_WINDOW_GAP_RATIO or gap <= max(window_size, 100):
+                    self._seq_window_count += 1
+                else:
+                    # 跳到了不连续区域 → 重置
+                    self._seq_window_count = 1
+            else:
+                # 换文件了 → 重置
+                self._seq_window_path = path
+                self._seq_window_count = 1
+                self._seq_window_warned = False
+            self._seq_window_last_end = end
+
+            if (
+                self._seq_window_count >= _SEQ_WINDOW_WARN_AT
+                and not self._seq_window_warned
+            ):
+                self._seq_window_warned = True
+                _log.warning(
+                    "[self-awareness] 同文件连续 %d 次窗口探测: %s",
+                    self._seq_window_count, path,
+                )
+                items.append(WMItem(
+                    kind="self_awareness",
+                    content=(
+                        f"[行为信号] 已连续 {self._seq_window_count} 次按窗口分段读取 ({path})。"
+                        " 这种逐段扫描模式通常是探索而非验证。"
+                        " 请判断：(1) 是否已定位到目标代码区域？"
+                        " (2) 是否可以直接用 grep/sed 定位关键符号？"
+                        " (3) 是否已有足够信息进行下一步修改或验证？"
+                        " 建议：切换到 shell.run(grep) 或直接 file.edit 目标位置。"
+                    ),
+                    priority=0.93,
+                ))
+
         return items
 
     def on_list(self, path: str, result_summary: str) -> list["WMItem"]:

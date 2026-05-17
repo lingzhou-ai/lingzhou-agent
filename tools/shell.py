@@ -14,8 +14,20 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_PREVIEW_CHARS = 500
 _COMMON_COMMANDS = (
-    "python3", "python", "bash", "sh", "grep", "find", "ls", "cat",
-    "sqlite3", "git", "sed", "awk", "jq", "rg",
+    "python3",
+    "python",
+    "bash",
+    "sh",
+    "grep",
+    "find",
+    "ls",
+    "cat",
+    "sqlite3",
+    "git",
+    "sed",
+    "awk",
+    "jq",
+    "rg",
 )
 
 _MANIFEST = ToolManifest(
@@ -24,10 +36,11 @@ _MANIFEST = ToolManifest(
         "在当前宿主环境中执行一次性 shell 命令（非持久会话）。"
         "返回 stdout+stderr 合并输出摘要，并受 timeout 与输出截断限制。"
     ),
-    params=[
+    progress_category="mutation",
+        params=[
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),
-        ToolParam("workdir", "string", "工作目录，默认当前目录", required=False),
+        ToolParam("workdir", "string", "工作目录，默认项目根目录", required=False),
         ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认 500", required=False),
     ],
 )
@@ -39,13 +52,30 @@ _CAP_MANIFEST = ToolManifest(
 )
 
 
-def _resolve_workdir(raw: Any) -> str:
-    if raw:
-        return str(Path(str(raw)).expanduser())
-    return str(Path.cwd())
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
-def _build_capabilities(workdir: str, timeout: float = _DEFAULT_TIMEOUT, preview: int = _DEFAULT_PREVIEW_CHARS) -> dict[str, Any]:
+def _resolve_workdir(raw: Any, ctx: ToolContext | None = None) -> Path:
+    if raw is None or raw == "":
+        repo_root = _repo_root()
+        if repo_root.exists():
+            return repo_root
+        return Path.cwd()
+    return Path(str(raw)).expanduser()
+
+
+def _threshold_value(ctx: ToolContext, attr: str, default: Any) -> Any:
+    config = getattr(ctx, "config", None)
+    thresholds = getattr(config, "thresholds", None)
+    return getattr(thresholds, attr, default)
+
+
+def _build_capabilities(
+    workdir: Path,
+    timeout: float = _DEFAULT_TIMEOUT,
+    preview: int = _DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
     available = [cmd for cmd in _COMMON_COMMANDS if shutil.which(cmd)]
     return {
         "engine": "asyncio.create_subprocess_shell",
@@ -54,17 +84,54 @@ def _build_capabilities(workdir: str, timeout: float = _DEFAULT_TIMEOUT, preview
         "network_policy": "inherits-host-environment",
         "default_timeout_sec": timeout,
         "default_output_preview_chars": preview,
-        "workdir": workdir,
+        "workdir": str(workdir),
         "shell": os.environ.get("SHELL") or "/bin/sh",
         "available_commands": available,
         "missing_commands": [cmd for cmd in _COMMON_COMMANDS if cmd not in available],
     }
 
 
+def _truncate_text(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3] + "..."
+
+
+def _compact_summary_text(text: str, limit: int) -> str:
+    compact = " ".join(text.replace("\r", "\n").splitlines()).strip()
+    return _truncate_text(compact, limit)
+
+
+def _decode_output(data: bytes | None) -> str:
+    if not data:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _fingerprint(command: str, workdir: Path, returncode: int, output: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(command.encode("utf-8", errors="replace"))
+    digest.update(b"\0")
+    digest.update(str(workdir).encode("utf-8", errors="replace"))
+    digest.update(b"\0")
+    digest.update(str(returncode).encode("utf-8", errors="replace"))
+    digest.update(b"\0")
+    digest.update(output.encode("utf-8", errors="replace"))
+    return f"shell:{digest.hexdigest()[:16]}"
+
+
 @tool(_CAP_MANIFEST)
 async def shell_capabilities(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    workdir = _resolve_workdir(params.get("workdir"))
-    caps = _build_capabilities(workdir, ctx.config.thresholds.shell_timeout, ctx.config.thresholds.shell_max_output_chars)
+    workdir = _resolve_workdir(params.get("workdir"), ctx)
+    caps = _build_capabilities(
+        workdir,
+        float(_threshold_value(ctx, "shell_timeout", _DEFAULT_TIMEOUT)),
+        int(_threshold_value(ctx, "shell_max_output_chars", _DEFAULT_PREVIEW_CHARS)),
+    )
     summary = (
         "shell.capabilities: "
         f"sandbox={caps['sandbox']} mode={caps['execution_model']} "
@@ -73,7 +140,7 @@ async def shell_capabilities(params: dict[str, Any], ctx: ToolContext) -> ToolRe
     return ToolResult(
         summary=summary,
         evidence=json.dumps(caps, ensure_ascii=False),
-        resource_key=workdir,
+        resource_key=str(workdir),
         fingerprint=f"caps:{len(caps['available_commands'])}",
         metadata={"caps": caps},
     )
@@ -85,94 +152,81 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not command:
         return ToolResult(summary="命令为空", skipped=True)
 
-    timeout = float(params.get("timeout") or ctx.config.thresholds.shell_timeout)
-    preview_limit = int(params.get("max_output_chars") or ctx.config.thresholds.shell_max_output_chars)
-    workdir = _resolve_workdir(params.get("workdir"))
+    timeout_raw = params.get("timeout")
+    timeout = float(
+        _threshold_value(ctx, "shell_timeout", _DEFAULT_TIMEOUT)
+        if timeout_raw is None
+        else timeout_raw
+    )
 
-    if ctx.dry_run:
-        caps = _build_capabilities(workdir, timeout, preview_limit)
-        return ToolResult(
-            summary=f"[dry-run] shell.run: {command[:200]}",
-            evidence=json.dumps({
-                "dry_run": True,
-                "command": command[:120],
-                "timeout": timeout,
-                "workdir": workdir,
-                "capabilities": caps,
-            }, ensure_ascii=False),
-            skipped=True,
-        )
+    preview_raw = params.get("max_output_chars")
+    preview_limit = int(
+        _threshold_value(ctx, "shell_max_output_chars", _DEFAULT_PREVIEW_CHARS)
+        if preview_raw is None
+        else preview_raw
+    )
+
+    workdir = _resolve_workdir(params.get("workdir"), ctx)
+
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        cwd=str(workdir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=os.environ.copy(),
+    )
+
+    timed_out = False
+    stdout_b = b""
+    stderr_b = b""
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=workdir,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            payload = {
-                "timeout": timeout,
-                "command": command[:120],
-                "workdir": workdir,
-                "timed_out": True,
-            }
-            return ToolResult(
-                summary=f"执行超时（{timeout}s）: {command[:100]}",
-                evidence=json.dumps(payload, ensure_ascii=False),
-                error="TimeoutError",
-                resource_key=command[:120],
-                fingerprint=f"shell:timeout:{hashlib.md5(command.encode()).hexdigest()[:12]}",
-                metadata=payload,
-            )
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        timed_out = True
+        proc.kill()
+        stdout_b, stderr_b = await proc.communicate()
 
-        output = stdout.decode(errors="replace").strip()
-        preview_text = output or "(无输出)"
-        truncated = preview_text[:preview_limit] + ("..." if len(preview_text) > preview_limit else "")
-        payload = {
-            "command": command[:120],
-            "exit_code": proc.returncode,
-            "timeout": timeout,
-            "workdir": workdir,
-            "output_chars": len(output),
-            "preview_chars": min(len(preview_text), preview_limit),
-        }
-        evidence = json.dumps(payload, ensure_ascii=False)
-        if proc.returncode == 0:
-            payload["log_summary"] = (
-                f"shell.run exit=0 chars={payload['output_chars']} workdir={workdir} "
-                f"cmd={command[:80]}"
-            )
-            return ToolResult(
-                summary=f"执行成功:\n{truncated}",
-                evidence=evidence,
-                resource_key=command[:120],
-                fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
-                state_delta={"process": "finished", "exit_code": proc.returncode},
-                metadata=payload,
-            )
-        else:
-            payload["log_summary"] = (
-                f"shell.run exit={proc.returncode} chars={payload['output_chars']} workdir={workdir} "
-                f"cmd={command[:80]}"
-            )
-            return ToolResult(
-                summary=f"执行出错 (exit={proc.returncode}):\n{truncated}",
-                evidence=evidence,
-                error=output[:300],
-                resource_key=command[:120],
-                fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
-                state_delta={"process": "finished", "exit_code": proc.returncode},
-                metadata=payload,
-            )
-    except Exception as exc:
-        return ToolResult(
-            summary=f"执行异常: {exc}",
-            evidence=str(exc),
-            error=str(exc),
-            resource_key=command[:120],
-        )
+    returncode = proc.returncode if proc.returncode is not None else -1
+    stdout = _decode_output(stdout_b)
+    stderr = _decode_output(stderr_b)
+    combined = stdout
+    if stdout and stderr:
+        combined += "\n"
+    combined += stderr
+
+    preview = _truncate_text(combined, max(preview_limit, 0))
+    preview_text = preview or "(无输出)"
+    summary_body = _compact_summary_text(preview_text, 120)
+    status = "timeout" if timed_out else f"exit={returncode}"
+    summary = f"{status} cwd={workdir}"
+    if summary_body:
+        summary += f" | {summary_body}"
+
+    payload = {
+        "command": command,
+        "workdir": str(workdir),
+        "timeout_sec": timeout,
+        "timed_out": timed_out,
+        "returncode": returncode,
+        "stdout_chars": len(stdout),
+        "stderr_chars": len(stderr),
+        "output_chars": len(combined),
+        "output_preview": preview,
+        "stdout_preview": _truncate_text(stdout, preview_limit),
+        "stderr_preview": _truncate_text(stderr, preview_limit),
+        "log_summary": f"shell.run {'timeout' if timed_out else f'exit={returncode}'} chars={len(combined)}",
+    }
+
+    return ToolResult(
+        summary=summary,
+        evidence=json.dumps(payload, ensure_ascii=False),
+        resource_key=str(workdir),
+        fingerprint=_fingerprint(command, workdir, returncode, combined),
+        metadata=payload,
+        state_delta={
+            "process": "finished",
+            "exit_code": returncode,
+            "timed_out": timed_out,
+        },
+    )

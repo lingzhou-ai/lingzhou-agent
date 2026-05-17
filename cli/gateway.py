@@ -68,10 +68,15 @@ def _daemonize(argv: list[str]) -> None:
         raise typer.Exit(0)
     # 子进程：脱离终端
     os.setsid()
-    # 关闭 stdin/stdout/stderr，重定向到 /dev/null
+    # stdin → /dev/null, stdout/stderr → 崩溃日志（关键：保留 traceback）
+    log_dir = Path("~/.lingzhou/logs").expanduser()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    crash_log = os.open(str(log_dir / "crash.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     devnull = os.open(os.devnull, os.O_RDWR)
-    for fd in (0, 1, 2):
-        os.dup2(devnull, fd)
+    os.dup2(devnull, 0)   # stdin
+    os.dup2(crash_log, 1)  # stdout → crash.log
+    os.dup2(crash_log, 2)  # stderr → crash.log
+    os.close(crash_log)
     os.close(devnull)
     # 写 PID
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -88,7 +93,7 @@ _GATEWAY_CHANNELS: dict[str, tuple[str, bool]] = {
 }
 
 # 已实现的渠道
-_GATEWAY_READY = {"local", "webhook"}
+_GATEWAY_READY = {"local", "webhook", "wechat"}
 
 gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 
@@ -189,6 +194,22 @@ def gateway_setup(
         gw_cfg_path.write_text(_json.dumps(gw_conf, ensure_ascii=False, indent=2), encoding="utf-8")
         gw_cfg_path.chmod(0o600)
         console.print(f"\n[green]✓ Telegram 网关配置已保存: {gw_cfg_path}[/green]")
+
+    elif channel == "wechat":
+        console.print("\n  iLink Bot Token（微信开放平台 → bot 管理 → 复制 Token）")
+        token = typer.prompt("  ILINK_TOKEN").strip()
+        base_url = typer.prompt("  iLink API 地址", default="https://ilinkai.weixin.qq.com").strip()
+        poll_sec = typer.prompt("  长轮询超时（秒）", default="35")
+        gw_conf: dict[str, Any] = {
+            "channel": "wechat",
+            "token": token,
+            "base_url": base_url,
+            "poll_sec": int(poll_sec),
+            "reply_poll_sec": 3,
+        }
+        gw_cfg_path.write_text(_json.dumps(gw_conf, ensure_ascii=False, indent=2), encoding="utf-8")
+        gw_cfg_path.chmod(0o600)
+        console.print(f"\n[green]✓ 微信网关配置已保存: {gw_cfg_path}[/green]")
 
     elif channel == "webhook":
         host = typer.prompt("  监听地址", default="0.0.0.0")
@@ -330,6 +351,8 @@ def gateway_start(
     # 启动 channel sidecar（loop 主线程仍是 asyncio）
     if channel == "webhook":
         _start_webhook_sidecar(gw_conf, cfg)
+    elif channel == "wechat":
+        _start_wechat_sidecar(gw_conf, cfg)
 
     from core.loop import CognitionLoop
     loop_instance = CognitionLoop(cfg)
@@ -448,3 +471,18 @@ def _start_webhook_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
     server = HTTPServer((host, port), _Handler)
     t = threading.Thread(target=server.serve_forever, daemon=True, name="webhook-gateway")
     t.start()
+
+
+def _start_wechat_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
+    """启动微信 iLink 通道 sidecar（daemon 线程）。
+
+    iLink long-poll → 写入 SQLite tasks 表 → loop 消费 → 回复通过 iLink 发送
+    """
+    from core.wechat_channel import start_wechat_channel
+
+    db_path = str(cfg.db_path)
+    console.print(
+        f"[dim]微信 iLink: {gw_conf.get('base_url', 'https://ilinkai.weixin.qq.com')}"
+        f"  poll={gw_conf.get('poll_sec', 35)}s[/dim]"
+    )
+    start_wechat_channel(gw_conf, db_path)

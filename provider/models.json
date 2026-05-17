@@ -1,6 +1,44 @@
 {
   "_doc": "内置模型目录。context_window 用于推导 judgment 输入预算；max_tokens 是输出上限（provider 侧约束，代码不发送 max_tokens 参数）。用户可通过 lingzhou.json 的 context_window_tokens 字段覆盖此处的值。api/input/request_params/capabilities 属于模型能力元数据，会一并进入运行时 catalog。",
 
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "_doc": [
+      "DeepSeek 模型（OpenAI 兼容接口）。",
+      "V4 模型支持 thinking 控制（与 Qwen 相同的 OpenAI thinking 格式：enable_thinking + budget_tokens）。",
+      "thinking 通过顶层 thinking 等级自动映射（minimal=5%, low=15%, medium=40%, high=100%）。"
+    ],
+    "models": [
+      {
+        "id": "deepseek-v4-flash",
+        "context_window": 1000000,
+        "max_tokens": 384000,
+        "capabilities": ["text_generation", "thinking"],
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 32768 }
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "context_window": 1000000,
+        "max_tokens": 384000,
+        "capabilities": ["text_generation", "thinking"],
+        "thinking": { "supported": true, "budget_min": 1024, "budget_max": 65536 }
+      },
+      {
+        "id": "deepseek-chat",
+        "context_window": 131072,
+        "max_tokens": 8192,
+        "capabilities": ["text_generation"]
+      },
+      {
+        "id": "deepseek-reasoner",
+        "context_window": 131072,
+        "max_tokens": 65536,
+        "capabilities": ["text_generation", "thinking"],
+        "thinking": { "supported": true }
+      }
+    ]
+  },
+
   "bailian": {
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "sp_base_url": "https://coding.dashscope.aliyuncs.com/v1",

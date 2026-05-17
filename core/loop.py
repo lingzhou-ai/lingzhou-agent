@@ -1,11 +1,11 @@
-"""core/loop.py — 认知主循环（CognitionLoop）。
+"""core/loop.py - 认知主循环(CognitionLoop)。
 
-一个 tick 的流程：
+一个 tick 的流程:
   感知 → 情绪更新 → 伦理评估 → 判断信号生成 → LLM 判断 → 工具执行 → 记忆整合
-  每 consolidate_every 轮：WM 内容写入情节记忆
-  每 evolve_every 轮：触发自进化检查
+  每 consolidate_every 轮:WM 内容写入情节记忆
+  每 evolve_every 轮:触发自进化检查
 
-解耦原则：loop 只编排，不包含业务逻辑；各层职责内聚。
+解耦原则:loop 只编排,不包含业务逻辑;各层职责内聚。
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from core.perception import (
     build_perception_replay, build_emotion_replay,
     derive_ethos_state, compute_judgment_signals,
 )
-from core.judgment import JudgmentLayer, JudgmentOutput, READER_TOOLS
+from core.judgment import JudgmentLayer, JudgmentOutput, READER_TOOLS, _tool_tier
 from core.execution import (
     ExecutionLayer,
 )
@@ -52,23 +52,25 @@ from provider.models_gen import ensure_models_json
 from tools.registry import ToolRegistry, ToolContext, ToolResult
 from core.behavior_tracker import BehaviorTracker
 from core.soul import SoulManager
+from core.self_model import SelfModel
 
 console = Console()
 
-# 上下文截断具名常量（语义记忆 & 日志截断阈值；调整后重启即生效，不影响已存数据）
+# 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)
 _LOG_RATIONALE_CHARS  = 120   # log 行 rationale 截断
 _LOG_REPLY_CHARS      = 240   # log 行 reply 截断
 _SEM_TITLE_CHARS      = 60    # 语义/事件节点 title 截断
 _SEM_TAG_TASK_CHARS   = 20    # 语义节点 task tag 截断
-_EVENT_TITLE_CHARS    = 40    # 事件结晶节点 title（任务名部分）截断
+_EVENT_TITLE_CHARS    = 40    # 事件结晶节点 title(任务名部分)截断
 _EVENT_APPEND_CHARS   = 8000   # 事件结晶 body 追加上限
 _EVENT_BODY_MAX_CHARS = 40000  # 事件结晶 body 滚动上限
 _EVENT_NEW_BODY_CHARS = 16000  # 新事件节点 body 上限
 
-# P1-B: reflection → 情绪效价的关键词启发式推断（模块级，无 LLM 依赖）
+# P1-B: reflection → 情绪效价的关键词启发式推断(模块级,无 LLM 依赖)
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
 _VALENCE_NEG = frozenset(["失败", "错误", "困惑", "卡住", "无法", "问题", "不对", "不清", "循环", "重复", "卡顿"])
-_SUCCESS_STALL_TRACK_TOOLS = frozenset(("file.read", "file.list", "memory.search", "shell.run"))
+# 停滞检测工具集(硬编码回退;工具可通过 ToolManifest.progress_category 自声明)
+_SUCCESS_STALL_TRACK_TOOLS = frozenset(("file.read", "file.list", "memory.search", "shell.run", "file.edit", "file.write"))
 
 
 
@@ -76,8 +78,8 @@ _SUCCESS_STALL_TRACK_TOOLS = frozenset(("file.read", "file.list", "memory.search
 def _infer_valence_from_text(text: str, current: float) -> float:
     """从 reflection 文本推断情绪效价倾向。
 
-    只做轻度修正（±0.05 上限在调用处控制）；
-    关键词命中越多越偏向极性，无命中时返回 current（不产生噪声）。
+    只做轻度修正(±0.05 上限在调用处控制);
+    关键词命中越多越偏向极性,无命中时返回 current(不产生噪声)。
     """
     pos = sum(1 for w in _VALENCE_POS if w in text)
     neg = sum(1 for w in _VALENCE_NEG if w in text)
@@ -90,7 +92,7 @@ def _infer_valence_from_text(text: str, current: float) -> float:
 
 
 def _strip_memory_context(text: str) -> str:
-    """剥离 LLM 输出中意外泄露的 <memory-context>...</memory-context> 内容（Hermes 借鉴）。
+    """剥离 LLM 输出中意外泄露的 <memory-context>...</memory-context> 内容(Hermes 借鉴)。
 
     Hermes 使用 StreamingContextScrubber 防止 memory fencing 标签泄露给用户。
     lingzhou 在 tick_interact() 的 reply 返回前做一次性清洗。
@@ -162,7 +164,7 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
             _fact_line("detail", _brief(result.summary or result.error, 100)),
             _fact_line("next", _brief(next_step, 60)) if next_step else "",
         ]
-        return "；".join(line for line in lines if line)
+        return ";".join(line for line in lines if line)
 
     if action.decision in {"wait", "pause"}:
         basis = _brief(action.rationale or result.summary or "需要更多信息后再继续。", 100)
@@ -171,7 +173,7 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
             _fact_line("basis", basis),
             _fact_line("next", _brief(next_step, 60)) if next_step else "",
         ]
-        return "；".join(line for line in lines if line)
+        return ";".join(line for line in lines if line)
 
     task_status = str((result.state_delta or {}).get("task_status") or "").strip()
     if task_status == "waiting":
@@ -183,14 +185,14 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
             _fact_line("wait", wait_desc),
             _fact_line("next", _brief(next_step, 60)) if next_step else "",
         ]
-        return "；".join(line for line in lines if line)
+        return ";".join(line for line in lines if line)
 
     if result.summary:
         lines = [
             _fact_line("结果", _brief(result.summary, 100)),
             _fact_line("next", _brief(next_step, 60)) if next_step else "",
         ]
-        return "；".join(line for line in lines if line)
+        return ";".join(line for line in lines if line)
 
     if next_step:
         return _fact_line("next", _brief(next_step, 60))
@@ -232,7 +234,7 @@ def _resolve_thinking_override(
 
 
 def _action_key_param(params: dict[str, Any] | None) -> str:
-    """提取动作的主键参数，用于行为追踪与 WM 前缀。"""
+    """提取动作的主键参数,用于行为追踪与 WM 前缀。"""
     p = params or {}
     return (
         p.get("path")
@@ -248,7 +250,7 @@ def _action_key_param(params: dict[str, Any] | None) -> str:
 
 _PROGRESS_MUTATION_TOOLS = frozenset({
     "file.write", "file.edit",
-    "shell.run", "exec", "process.write", "process.kill",
+    "exec", "process.write", "process.kill",
     "task.add", "task.update", "task.advance", "task.complete", "task.fail",
     "memory.add_wm", "memory.add_semantic", "memory.set_fact",
     "schedule.add", "schedule.ack", "schedule.cancel",
@@ -271,45 +273,112 @@ def _result_fingerprint(summary: str) -> str:
     return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+def _looks_like_path_probe_output(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped or "\n" in stripped:
+        return False
+    if " " in stripped or "\t" in stripped:
+        return False
+    return stripped.startswith(("/", "./", "../", "~"))
+
+
+def _has_failure_markers(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in (
+        "traceback",
+        "runtimewarning",
+        "exception",
+        "syntaxerror",
+        "attributeerror",
+        "typeerror",
+        "filenotfound",
+        "error:",
+        "warning:",
+    ))
+
+
+def _shell_run_made_progress(
+    action: JudgmentOutput,
+    result: ToolResult,
+    *,
+    prev_sig: str = "",
+    prev_fp: str = "",
+) -> tuple[bool, str]:
+    metadata = result.metadata or {}
+    stdout_preview = str(metadata.get("stdout_preview") or "")
+    stderr_preview = str(metadata.get("stderr_preview") or "")
+    output_preview = str(metadata.get("output_preview") or result.summary or "")
+
+    if _has_failure_markers(stderr_preview) or _has_failure_markers(output_preview):
+        return False, "shell.run 输出包含错误标记(Traceback/RuntimeWarning)"
+    probe_text = stdout_preview.strip() or output_preview.strip()
+    if _looks_like_path_probe_output(probe_text):
+        return False, "shell.run 仅探测路径存在,非实质推进"
+
+    if result.state_delta or result.artifact_paths:
+        return True, "shell.run 产生副作用或产出文件"
+
+    fp = _result_fingerprint(probe_text)
+    if not fp:
+        return False, "shell.run 无有效输出"
+    cur_sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}"
+    if cur_sig == prev_sig and fp == prev_fp:
+        return False, "shell.run 结果与上轮相同"
+    return True, "shell.run 获得新输出"
+
+
+def _action_progress_category(tool_id: str) -> str:
+    """从工具 manifest 读取进展类别,回退到硬编码集合。"""
+    # 尝试从注册表读取(需要外部注入 registry)
+    # 回退到硬编码集合
+    if tool_id in _PROGRESS_MUTATION_TOOLS:
+        return "mutation"
+    if tool_id in _PROGRESS_INFO_TOOLS:
+        return "info"
+    return "unknown"
+
+
 def _action_made_progress(
     action: JudgmentOutput,
     result: ToolResult,
     *,
     prev_sig: str = "",
     prev_fp: str = "",
-) -> bool:
-    """结果感知版“是否推进了 next_step”。
+) -> tuple[bool, str]:
+    """结果感知:判断动作是否推进了任务(返回 (bool, 原因)。
 
-    核心原则：不再把“任何 act 且没报错”都视为已推进。
-    - 写入 / 执行 / task 状态变更类工具：成功即视为推进
-    - 读取 / 枚举类工具：只有读到了非空结果，且结果相对上一轮有变化，才视为推进
+    这不是系统裁决--LLM 看到原因后可以自行判断。
     """
     if action.decision != "act" or result.error or result.skipped:
-        return False
+        return False, f"decision={action.decision} error={bool(result.error)} skipped={result.skipped}"
 
     tool = action.chosen_action_id or ""
+    if tool == "shell.run":
+        progressed, reason = _shell_run_made_progress(action, result, prev_sig=prev_sig, prev_fp=prev_fp)
+        return progressed, reason
+
     if tool in _PROGRESS_MUTATION_TOOLS:
-        return True
+        return True, f"{tool} 是变更类工具,成功执行即视为推进"
 
     if tool in _PROGRESS_INFO_TOOLS:
         fp = _result_fingerprint(result.summary)
         if not fp:
-            return False
+            return False, f"{tool} 返回空结果"
         cur_sig = f"{tool}|{_action_key_param(action.params)}"
         if cur_sig == prev_sig and fp == prev_fp:
-            return False
-        return True
+            return False, f"{tool} 结果与上轮相同(重复操作)"
+        return True, f"{tool} 获得新信息(结果指纹变化)"
 
-    # 未知工具保守处理：需要明确副作用信号，或返回了非空且有变化的结果。
+    # 未知工具保守处理
     if result.state_delta or result.artifact_paths or result.resource_key:
-        return True
+        return True, f"{tool} 产生副作用(state_delta/artifact)"
     fp = _result_fingerprint(result.summary)
     if not fp:
-        return False
+        return False, f"{tool} 无有效输出"
     cur_sig = f"{tool}|{_action_key_param(action.params)}"
     if cur_sig == prev_sig and fp == prev_fp:
-        return False
-    return True
+        return False, f"{tool} 结果与上轮相同"
+    return True, f"{tool} 输出与上轮不同"
 
 
 async def _write_success_stall_meta_reflection(
@@ -330,11 +399,11 @@ async def _write_success_stall_meta_reflection(
         "decision": "apply",
         "target_kind": "stall_recovery",
         "proposal": (
-            f"连续 {streak} 次成功动作均未推进 next_step，先停止重复 {tool_name}，"
-            "基于当前已知事实收敛，再决定是否换路径、换工具或转写入。"
+            f"连续 {streak} 次成功动作均未推进 next_step,先停止重复 {tool_name},"
+            "基于当前已知事实收敛,再决定是否换路径、换工具或转写入。"
         ),
         "verification_plan": (
-            "下一轮应先总结当前事实并给出更窄的下一步，"
+            "下一轮应先总结当前事实并给出更窄的下一步,"
             "而不是继续同类探索。"
         ),
         "tool_name": tool_name,
@@ -354,7 +423,7 @@ def _should_continue_within_tick(
     user_message: str = "",
     has_active_task: bool = False,
 ) -> bool:
-    """有新用户消息且本轮进入前已存在活跃任务时，不让旧任务在同一 tick 里继续插队。"""
+    """有新用户消息且本轮进入前已存在活跃任务时,不让旧任务在同一 tick 里继续插队。"""
     if action.decision != "act":
         return False
     if (action.chosen_action_id or "") in {"task.complete", "task.fail"}:
@@ -389,9 +458,9 @@ class CognitionLoop:
         # 记忆层
         self._wm = WorkingMemory(capacity=cfg.memory.working_capacity, token_budget=cfg.effective_wm_token_budget())
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
-        self._task_store = TaskStore(cfg.db_path)
+        self._task_store = TaskStore(Path(cfg.db_path))
 
-        # 情绪状态（初始值来自 config）
+        # 情绪状态(初始值来自 config)
         self._emotion = EmotionState.from_config(cfg)
 
         # 认知组件
@@ -400,9 +469,9 @@ class CognitionLoop:
         self._judgment = JudgmentLayer(self._provider, self._registry, cfg)
         self._execution = ExecutionLayer(self._registry, cfg)
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
-        # 分层路由 providers（{"simple": p1, "complex": p2}，由 open() 注入 JudgmentLayer）
+        # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
-        # embedding 混合检索（embed_fn=None 则纯关键词模式）
+        # embedding 混合检索(embed_fn=None 则纯关键词模式)
         _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
         self._semantic = SemanticMemory(
             cfg.memory_dir,
@@ -411,17 +480,22 @@ class CognitionLoop:
             embedding_weight=cfg.memory.embedding_weight,
         )
 
-        # 子系统：Soul 文件管理 + 行为模式追踪
+        # 子系统:Soul 文件管理 + 行为模式追踪
         self._soul = SoulManager(self._cfg, self._task_store, self._wm)
         self._behavior = BehaviorTracker(
             wait_streak_notify=list(cfg.loop.wait_streak_notify),
         )
 
-        # tick 间连续性追踪（预测误差 + 认知信号计算用）
+        # 自驱力引擎 (Active Inference + Intrinsic Motivation)
+        from core.self_drive import SelfDriveEngine
+        self._self_drive = SelfDriveEngine(cfg.db_path)
+
+        # tick 间连续性追踪(预测误差 + 认知信号计算用)
         self._last_next_step: str = ""
         self._last_decision: str = "wait"
-        self._last_act_error: bool = False   # 兼容旧信号：上轮 act 是否以工具错误结束
+        self._last_act_error: bool = False   # 兼容旧信号:上轮 act 是否以工具错误结束
         self._last_act_progressful: bool = False
+        self._last_act_progress_reason: str = ""  # LLM 可见的进展判断原因
         self._last_action_tool: str = ""
         self._last_action_key: str = ""
         self._last_action_status: str = ""
@@ -436,13 +510,13 @@ class CognitionLoop:
         self._idle_cycles: int = 0
         self._last_curiosity_signal_idle_cycle: int = 0
 
-        # 多轮对话历史（最多保留 6 轮 user/assistant 对）
+        # 多轮对话历史(最多保留 6 轮 user/assistant 对)
         self._conv_history: deque[tuple[str, str]] = deque(maxlen=6)
-        # 心跳计时（monotonic，独立于用户 cron，不存 DB）
+        # 心跳计时(monotonic,独立于用户 cron,不存 DB)
         self._last_heartbeat_at: float = 0.0
-        # 按请求计费聚合：追踪距上次真正调用 LLM 已经过了几轮
+        # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
-        # 上一轮 tick 的决策类型（act/wait/fallback），用于动态 sleep 计算
+        # 上一轮 tick 的决策类型(act/wait/fallback),用于动态 sleep 计算
         self._last_decision: str = "wait"
         # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
         self._pending_tier: str | None = None
@@ -452,7 +526,7 @@ class CognitionLoop:
         _cfg_file = cfg._base_dir / "lingzhou.json"
         self._cfg_file: Path = _cfg_file
         self._cfg_mtime: float = _cfg_file.stat().st_mtime if _cfg_file.exists() else 0.0
-        # 同时监听 auth-profiles.json（token 更新时重建 provider）
+        # 同时监听 auth-profiles.json(token 更新时重建 provider)
         from auth_store import AUTH_PROFILES_PATH as _AUTH_PROFILES_PATH
         self._auth_profiles_path: Path = _AUTH_PROFILES_PATH
         self._auth_profiles_mtime: float = _AUTH_PROFILES_PATH.stat().st_mtime if _AUTH_PROFILES_PATH.exists() else 0.0
@@ -466,7 +540,7 @@ class CognitionLoop:
         return self._episodic
 
     async def _maybe_hot_reload_provider(self) -> None:
-        """检测 lingzhou.json 和 auth-profiles.json mtime；若已改变则热换 provider 和相关组件。"""
+        """检测 lingzhou.json 和 auth-profiles.json mtime;若已改变则热换 provider 和相关组件。"""
         if not self._cfg_file.exists():
             return
         mtime = self._cfg_file.stat().st_mtime
@@ -480,13 +554,13 @@ class CognitionLoop:
         try:
             new_cfg = Config.load(self._cfg_file)
         except Exception as e:
-            _log.warning("[hot-reload] 配置解析失败，跳过热换: %s", e)
+            _log.warning("[hot-reload] 配置解析失败,跳过热换: %s", e)
             return
         old_model = self._cfg.model
         new_model = new_cfg.model
         if not cfg_changed and auth_changed:
-            # 仅 token 变更，重建 provider（保持模型不变）
-            _log.info("[hot-reload] 检测到 auth-profiles.json 变更，重建 provider")
+            # 仅 token 变更,重建 provider(保持模型不变)
+            _log.info("[hot-reload] 检测到 auth-profiles.json 变更,重建 provider")
             try:
                 await self._provider.close()
             except Exception:
@@ -501,13 +575,13 @@ class CognitionLoop:
             self._routing_providers = _build_routing_providers(new_cfg)
             self._judgment.set_routing_providers(self._routing_providers)
             await self._soul.refresh_identity(self._judgment)
-            console.print("[green]✓ 检测到 token 更新，provider 已重建[/green]")
+            console.print("[green]✓ 检测到 token 更新,provider 已重建[/green]")
             return
         if old_model == new_model:
-            # 其他配置变更；静默更新 cfg 引用
+            # 其他配置变更;静默更新 cfg 引用
             self._cfg = new_cfg
             return
-        _log.info("[hot-reload] 检测到模型变更: %s → %s，开始热换 provider", old_model, new_model)
+        _log.info("[hot-reload] 检测到模型变更: %s → %s,开始热换 provider", old_model, new_model)
         try:
             await self._provider.close()
         except Exception:
@@ -551,9 +625,13 @@ class CognitionLoop:
         self._routing_providers = _build_routing_providers(cfg)
         self._judgment.set_routing_providers(self._routing_providers)
         await self._soul.bootstrap(self._judgment)
+        # 初始化自我模型(数字生命的自知):启动时间、路由、身份
+        self._judgment.self_model.record_start(name="lingzhou")
+        self._judgment.self_model.set_routing(cfg)
+        await self._restore_self_model()
         await self._restore_state_from_db()
 
-        # 路由摘要：展示各 tier 实际使用的 model（方便排查 provider 缺失问题）
+        # 路由摘要:展示各 tier 实际使用的 model(方便排查 provider 缺失问题)
         _routing_lines: list[str] = []
         for _tier, _model_ref in cfg.routing.items():
             if _model_ref == cfg.model:
@@ -561,14 +639,14 @@ class CognitionLoop:
             elif _tier in self._routing_providers:
                 _routing_lines.append(f"  {_tier}: {_model_ref} ✓")
             else:
-                _routing_lines.append(f"  {_tier}: {_model_ref} ✗ MISSING — provider 创建失败，实际回退至 {cfg.model}")
+                _routing_lines.append(f"  {_tier}: {_model_ref} ✗ MISSING - provider 创建失败,实际回退至 {cfg.model}")
         if cfg.routing and not self._routing_providers:
             _log.warning(
-                "[routing] 所有 routing provider 均创建失败，整个 routing 降级为单模型 %s。"
+                "[routing] 所有 routing provider 均创建失败,整个 routing 降级为单模型 %s。"
                 "请检查各 provider 的 API key 环境变量是否已设置。",
                 cfg.model,
             )
-        _routing_summary = "\n".join(_routing_lines) if _routing_lines else "  (无路由配置，全部使用主模型)"
+        _routing_summary = "\n".join(_routing_lines) if _routing_lines else "  (无路由配置,全部使用主模型)"
 
         console.print(Panel(
             f"[bold green]lingzhou[/bold green] 启动\n"
@@ -584,7 +662,7 @@ class CognitionLoop:
         try:
             while True:
                 try:
-                    # 检查是否有待处理的 chat 消息（CLI chat 命令注入）
+                    # 检查是否有待处理的 chat 消息(CLI chat 命令注入)
                     chat_msg = await self._task_store.pop_pending_chat_message()
                     if chat_msg:
                         cycle += 1
@@ -597,12 +675,12 @@ class CognitionLoop:
                         if reply:
                             reply = _strip_memory_context(reply)
                         _log.info("[chat] assistant › %s", (reply or "")[:200])
-                        # _tick 在拿到最终 reply 后会立即持久化，避免后处理异常导致用户看不到结论。
-                        # 这里只兜底极端情况下的空回复，防止 chat 端永久等待。
+                        # _tick 在拿到最终 reply 后会立即持久化,避免后处理异常导致用户看不到结论。
+                        # 这里只兜底极端情况下的空回复,防止 chat 端永久等待。
                         if not reply:
                             await self._task_store.add_chat_message(
                                 "assistant",
-                                "（请求已处理，任务正在后台继续）",
+                                "(请求已处理,任务正在后台继续)",
                                 chat_msg["session_id"],
                             )
                     else:
@@ -614,18 +692,18 @@ class CognitionLoop:
                     console.print_exception(max_frames=5)
                     if consecutive_errors >= cfg.loop.max_consecutive_errors:
                         console.print(
-                            f"[red]连续错误 {consecutive_errors} 次，暂停循环[/red]"
+                            f"[red]连续错误 {consecutive_errors} 次,暂停循环[/red]"
                         )
                         break
 
-                # 事件驱动时序（Active Inference 理念：由事件/预测误差驱动，而非时钟节拍）
-                # act + 有任务 → min_act_gap（2s）让工具副作用落地，立即续跑
-                # wait/pause + 有任务 → active_idle_gap（15s）短等待，事件驱动唤醒
-                # 无任务       → max_idle_gap（60s）兜底，事件驱动唤醒
+                # 事件驱动时序(Active Inference 理念:由事件/预测误差驱动,而非时钟节拍)
+                # act + 有任务 → min_act_gap(2s)让工具副作用落地,立即续跑
+                # wait/pause + 有任务 → active_idle_gap(15s)短等待,事件驱动唤醒
+                # 无任务       → max_idle_gap(60s)兜底,事件驱动唤醒
                 # LLM 随时可通过 model_strategy.next_idle_gap_secs 覆盖
                 after_task = await self._task_store.get_active()
                 if self._last_decision == "act" and after_task is not None:
-                    # act 后短等：让副作用落地，但用事件驱动（chat 消息到了也能立即唤醒）
+                    # act 后短等:让副作用落地,但用事件驱动(chat 消息到了也能立即唤醒)
                     _min_w = cfg.loop.idle_with_task_bounds[0] if cfg.loop.idle_with_task_bounds else cfg.loop.min_act_gap
                     _act_gap = max(float(_min_w), float(cfg.loop.min_act_gap))
                     await self._wait_for_event(_act_gap, after_task)
@@ -633,11 +711,11 @@ class CognitionLoop:
                     if self._pending_idle_gap is not None:
                         _gap = self._pending_idle_gap
                     elif after_task is not None:
-                        _gap = cfg.loop.active_idle_gap   # 有任务：默认短等待
+                        _gap = cfg.loop.active_idle_gap   # 有任务:默认短等待
                     else:
-                        _gap = cfg.loop.max_idle_gap      # 无任务：默认长等待
+                        _gap = cfg.loop.max_idle_gap      # 无任务:默认长等待
                     await self._wait_for_event(_gap, after_task)
-                # 事件驱动等待结束后检测配置变更（模型热换）
+                # 事件驱动等待结束后检测配置变更(模型热换)
                 await self._maybe_hot_reload_provider()
                 cfg = self._cfg  # 可能已更新
         finally:
@@ -650,11 +728,11 @@ class CognitionLoop:
                     pass
 
     async def _wait_for_event(self, max_wait: float, before_task) -> None:
-        """事件驱动等待：chat 消息、task 状态变化、超时三类事件任一发生即唤醒。
+        """事件驱动等待:chat 消息、task 状态变化、超时三类事件任一发生即唤醒。
 
-        设计依据（Active Inference / Global Workspace Theory）：
-        认知唤醒由外部事件或内部预测误差阈值驱动，而非固定时钟节拍。
-        max_wait 是兜底超时（防止永久沉睡），不是轮询周期。
+        设计依据(Active Inference / Global Workspace Theory):
+        认知唤醒由外部事件或内部预测误差阈值驱动,而非固定时钟节拍。
+        max_wait 是兜底超时(防止永久沉睡),不是轮询周期。
         """
         cfg = self._cfg
         poll = cfg.loop.wake_poll_interval
@@ -668,29 +746,35 @@ class CognitionLoop:
             if remaining <= 0:
                 break
             await asyncio.sleep(min(poll, remaining))
-            # 事件1：chat 消息到达 → 立即唤醒处理用户输入
+            # 事件1:chat 消息到达 → 立即唤醒处理用户输入
             if await self._task_store.has_pending_chat_message():
-                _log.debug("[wake] chat 消息到达，提前唤醒")
+                _log.debug("[wake] chat 消息到达,提前唤醒")
                 break
-            # 事件2：task 状态变化 → 立即响应任务推进
+            # 事件2:task 状态变化 → 立即响应任务推进
             if cfg.loop.wake_on_task_change:
                 now = await self._task_store.get_active()
                 now_sig = (now.id if now else None, now.status if now else None)
                 if now_sig != before_sig:
                     _log.info("[wake] task 状态变化 %s → %s", before_sig, now_sig)
                     break
-            # 事件3：max_wait 超时 → 自主思考节律兜底（60s 默认，非固定 30s）
+            # 事件3:max_wait 超时 → 自主思考节律兜底(60s 默认,非固定 30s)
 
     async def _tick(self, cycle: int, user_message: str = "", chat_session_id: str | None = None) -> str:
-        """执行一轮完整认知 tick，返回 reply_to_user（interact 模式时非空）。"""
+        """执行一轮完整认知 tick,返回 reply_to_user(interact 模式时非空)。"""
         cfg = self._cfg
         ctx = self._make_ctx()
 
-        # 1. 感知
+        # 1. 感知（管道阶段入口：待进一步提取）
+
+        # 5. 执行
         running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()
         await _ingest_actionable_meta_reflections(self._task_store, self._wm)
         active_task = await _consume_task_runtime_hints(self._task_store, active_task, self._wm)
+
+        # 自驱力引擎：无用户消息时注入自主探索目标（即使有任务也可能被卡住）
+        if not user_message:
+            self._maybe_inject_self_drive()
         if running_updates:
             running_count = sum(1 for item in running_updates if item.get("status") == "running")
             finished_count = sum(1 for item in running_updates if item.get("status") in {"succeeded", "failed", "cancelled"})
@@ -714,7 +798,7 @@ class CognitionLoop:
                         "excerpt": crystal[:800],
                     })
 
-        # 调度器：检查到期用户 cron 信号 → 注入 WM（心跳不走此路径）
+        # 调度器:检查到期用户 cron 信号 → 注入 WM(心跳不走此路径)
         for sig in await self._task_store.due_signals():
             _payload = sig.get("payload") or {}
             _note = (_payload.get("note") or "").strip()
@@ -722,12 +806,12 @@ class CognitionLoop:
             _parts = [
                 (
                     f"[调度触发 #{sig['id']}] {sig['title']}"
-                    f"（{_repeat_desc}，已送达本轮上下文；是否响应由你决定。"
-                    "delivery 后该 signal 会由 runtime 自动推进/完成，通常无需再调用 schedule.ack）"
+                    f"({_repeat_desc},已送达本轮上下文;是否响应由你决定。"
+                    "delivery 后该 signal 会由 runtime 自动推进/完成,通常无需再调用 schedule.ack)"
                 ),
             ]
             if _note:
-                _parts.append(f"任务内容：{_note}")
+                _parts.append(f"任务内容:{_note}")
             self._wm.add(WMItem(
                 kind="scheduler",
                 content="\n".join(_parts),
@@ -736,9 +820,9 @@ class CognitionLoop:
             await self._task_store.ack_signal(sig["id"])
             _log.info("[scheduler] signal fired: #%s %s", sig["id"], sig["title"])
 
-        # 心跳自检：系统级计时（monotonic），独立于用户 cron。
-        # HEARTBEAT.md 定义检查清单，LLM 自主决定是否行动（静默回复 HEARTBEAT_OK）。
-        # heartbeat 是独立定时机制，不是 DB 任务。
+        # 心跳自检:系统级计时(monotonic),独立于用户 cron。
+        # HEARTBEAT.md 定义检查清单,LLM 自主决定是否行动(静默回复 HEARTBEAT_OK)。
+        # heartbeat 是独立定时机制,不是 DB 任务。
         _now = time.monotonic()
         if _now - self._last_heartbeat_at >= self._cfg.loop.heartbeat_interval:
             _hb_path = self._cfg.workspace_dir / "HEARTBEAT.md"
@@ -751,13 +835,13 @@ class CognitionLoop:
                             content=f"[心跳自检]\n{_hb_md}",
                             priority=self._cfg.thresholds.wm_pri_signal,
                         ))
-                        _log.info("[heartbeat] 注入 WM，间隔 %ds", self._cfg.loop.heartbeat_interval)
+                        _log.info("[heartbeat] 注入 WM,间隔 %ds", self._cfg.loop.heartbeat_interval)
                 except Exception:
                     pass
             self._last_heartbeat_at = _now
 
-        # tick 间连续性：上轮 next_step 是否真正推进？（首轮为 None）
-        # 结果感知版：不再把“没报错的 act”直接当成 fulfilled。
+        # tick 间连续性:上轮 next_step 是否真正推进?(首轮为 None)
+        # 结果感知版:不再把"没报错的 act"直接当成 fulfilled。
         _next_step_fulfilled: bool | None = None
         if self._last_next_step:
             _next_step_fulfilled = self._last_act_progressful
@@ -767,14 +851,14 @@ class CognitionLoop:
             last_decision=self._last_decision,
         )
 
-        # 1b. 持久化感知事件 → episodic events.jsonl（追加式，cat 直读）
+        # 1b. 持久化感知事件 → episodic events.jsonl(追加式,cat 直读)
         self._episodic.record_event("perception", {
             "prediction_error": round(percept.prediction_error, 4),
             "workspace_dirty": percept.workspace_dirty,
             "wm_pressure": round(self._wm.pressure, 4),
         })
 
-        # 1c. 一次 IO 读取 perception + emotion 事件，减少文件扫描次数
+        # 1c. 一次 IO 读取 perception + emotion 事件,减少文件扫描次数
         _events_batch = self._episodic.list_events_multi(["perception", "emotion"], limit=8)
         perception_events = _events_batch["perception"]
         perception_replay = build_perception_replay(
@@ -782,7 +866,7 @@ class CognitionLoop:
             high_error_threshold=cfg.thresholds.prediction_error_task,
         )
 
-        # 2. 认知信号计算（只统计内部状态，不产生决策；信号注入 LLM 上下文后由 LLM 自主决定响应方式）
+        # 2. 认知信号计算(只统计内部状态,不产生决策;信号注入 LLM 上下文后由 LLM 自主决定响应方式)
         if active_task is None:
             self._idle_cycles += 1
         else:
@@ -804,9 +888,10 @@ class CognitionLoop:
         cognitive_signals.last_action_error = self._last_action_error
         cognitive_signals.last_action_state_delta = self._last_action_state_delta
         cognitive_signals.last_action_progressful = self._last_act_progressful if self._last_action_status else None
+        cognitive_signals.last_action_progress_reason = self._last_act_progress_reason if self._last_action_status else ""
         cognitive_signals.recent_action_history = list(self._recent_action_feedback)
 
-        # 3a. 情绪更新（在判断前）：OCC 评价理论，感知信号确定性推导
+        # 3a. 情绪更新(在判断前):OCC 评价理论,感知信号确定性推导
         failures_recent = await self._task_store.list_failures(limit=5)
         self._emotion.derive_from_signals(
             failure_count=len(failures_recent),
@@ -831,7 +916,7 @@ class CognitionLoop:
             "regulation_reason": self._emotion.regulation.reason,
         })
 
-        # 3c. 构建情绪重放 + Ethos + JudgmentSignals（复用已读批次，无需再次 IO）
+        # 3c. 构建情绪重放 + Ethos + JudgmentSignals(复用已读批次,无需再次 IO)
         emotion_replay = build_emotion_replay(_events_batch["emotion"])
 
         ethos_baseline_json, _ = await self._task_store.get_fact("soul:ethos_baseline")
@@ -849,7 +934,7 @@ class CognitionLoop:
             floor_caution=cfg.soul.ethos_floor_caution,
         )
 
-        # EMA 写回：灵魂随每次经历缓慢漂移（derive_ethos_state 内已做 EMA 混合，直接持久化结果）
+        # EMA 写回:灵魂随每次经历缓慢漂移(derive_ethos_state 内已做 EMA 混合,直接持久化结果)
         await self._task_store.set_fact("soul:ethos_baseline", json.dumps({
             "truth":      ethos_state.values.truth,
             "caution":    ethos_state.values.caution,
@@ -867,14 +952,14 @@ class CognitionLoop:
         axioms_json, _ = await self._task_store.get_fact("soul:hard_axioms")
         hard_boundaries: list[str] = json.loads(axioms_json) if axioms_json else []
 
-        # 3d. 判断（传入 ethos/signals/hard_boundaries/replay）
-        # 好奇心驱动的确定性任务生成（空闲 + 高好奇心 → 自动探索任务）
+        # 3d. 判断(传入 ethos/signals/hard_boundaries/replay)
+        # 好奇心驱动的确定性任务生成(空闲 + 高好奇心 → 自动探索任务)
         if active_task is None:
             await self._maybe_curiosity_task(ethos_state)
 
-        # 按请求计费聚合门控：
-        # 仅在空闲（无活跃任务、无用户消息、WM 中无高优先级外部信号）且 judge_every > 1 时生效。
-        # 有任务或有用户消息时始终调用 LLM，不受此限制。
+        # 按请求计费聚合门控:
+        # 仅在空闲(无活跃任务、无用户消息、WM 中无高优先级外部信号)且 judge_every > 1 时生效。
+        # 有任务或有用户消息时始终调用 LLM,不受此限制。
         _has_external_signal = any(
             item.get("kind") in ("heartbeat", "scheduler") for item in self._wm.get_top(20)
         )
@@ -888,17 +973,17 @@ class CognitionLoop:
         if _skip_llm:
             self._ticks_since_judge += 1
             action = JudgmentOutput.wait(
-                reason=f"[按请求聚合] 空闲跳过 LLM（{self._ticks_since_judge}/{cfg.loop.judge_every}）"
+                reason=f"[按请求聚合] 空闲跳过 LLM({self._ticks_since_judge}/{cfg.loop.judge_every})"
             )
             _log.debug(
-                "[loop] tick=%d 跳过 LLM 判断（聚合 %d/%d）",
+                "[loop] tick=%d 跳过 LLM 判断(聚合 %d/%d)",
                 cycle, self._ticks_since_judge, cfg.loop.judge_every,
             )
         else:
-            # thinking 覆盖：
-            #   有用户消息 → chat_thinking（默认 low，~3-10s，保证响应性）
-            #   自主循环   → autonomous_thinking（默认 medium，~10-20s，平衡质量与速度）
-            #   两者均与顶层 thinking 相同时不传 override（保持原有行为）
+            # thinking 覆盖:
+            #   有用户消息 → chat_thinking(默认 low,~3-10s,保证响应性)
+            #   自主循环   → autonomous_thinking(默认 medium,~10-20s,平衡质量与速度)
+            #   两者均与顶层 thinking 相同时不传 override(保持原有行为)
             #   LLM 通过 model_strategy.thinking_override 可在此基础上进一步覆盖
             _pending_initial_thinking = self._pending_thinking_override
             if user_message:
@@ -922,12 +1007,14 @@ class CognitionLoop:
                 prefer_tier=_prefer_tier_for_task(self._pending_tier, active_task),
                 routing_overrides=self._pending_routing_overrides,
             )
-            # 消费上一轮 LLM 表达的 tier 偏好和 thinking 覆盖（用完即清）
+            # 消费上一轮 LLM 表达的 tier 偏好和 thinking 覆盖(用完即清)
             self._pending_tier = None
             self._pending_thinking_override = None
             self._ticks_since_judge = 0
 
         # 决策结果输出到 stdout
+        self._judgment.self_model.record_tick()
+        self._judgment.self_model.record_api_call()
         _call_meta = self._judgment.last_call_meta
         _actual_model = _call_meta.get("model_ref") or cfg.model
         _actual_thinking = _call_meta.get("thinking") or cfg.thinking
@@ -959,32 +1046,34 @@ class CognitionLoop:
             for _item in self._behavior.on_act(_tool_id, _key_param, _cur_task_id):
                 self._wm.add(_item)
         else:
-            # wait/pause 连续计数：超阈值注入自我感知提示
+            # wait/pause 连续计数:超阈值注入自我感知提示
             for _item in self._behavior.on_wait(action.decision, active_task is not None):
                 self._wm.add(_item)
 
-        # 4. 执行前行为信号采样：不替 LLM 决策，只记录重复/空转观察
+        # 4. 执行前行为信号采样:不替 LLM 决策,只记录重复/空转观察
         action = self._behavior.apply_execution_gate(action, cognitive_signals)
 
         # 5. 执行
         result = await self._execution.dispatch(action, ctx)
 
-        # 5a. 结果感知型反循环：file.read/file.list 只在“结果未变化”时发出警告
+        # 5a. 结果感知型反循环:file.read/file.list 只在"结果未变化"时发出警告
         if action.decision == "act" and not result.error:
             _tool = action.chosen_action_id or ""
             _path = (action.params or {}).get("path") or ""
             if _tool == "file.read":
                 _max_chars = int((action.params or {}).get("max_chars") or 4000)
-                for _item in self._behavior.on_read(_path, _max_chars, result.summary):
+                _start = int((action.params or {}).get("start") or 0)
+                _end = int((action.params or {}).get("end") or 0)
+                for _item in self._behavior.on_read(_path, _max_chars, result.summary, start=_start, end=_end):
                     self._wm.add(_item)
             elif _tool == "file.list":
                 for _item in self._behavior.on_list(_path, result.summary):
                     self._wm.add(_item)
 
-        # 5b. 内层工具循环（chat + autonomous 共用）
-        # 目标：让 LLM 在单次 tick 内连续调用工具直到本轮无需继续 act，节省 perception 重装 token。
-        # 注意：不判断 reply_to_user——首轮 act 可能包含中间 ACK（如"正在扫描..."），
-        # 内层循环应继续执行工具调用，最终生成的 reply 会覆盖中间 ACK。
+        # 5b. 内层工具循环(chat + autonomous 共用)
+        # 目标:让 LLM 在单次 tick 内连续调用工具直到本轮无需继续 act,节省 perception 重装 token。
+        # 注意:不判断 reply_to_user--首轮 act 可能包含中间 ACK(如"正在扫描..."),
+        # 内层循环应继续执行工具调用,最终生成的 reply 会覆盖中间 ACK。
         if _should_continue_within_tick(
             action,
             user_message=user_message,
@@ -997,6 +1086,11 @@ class CognitionLoop:
             }]
             _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
             for _inner in range(cfg.loop.max_tool_rounds - 1):
+                # 中断检测：有新 chat 消息到达 → 立即跳出，让外层循环处理用户输入
+                if await self._task_store.has_pending_chat_message():
+                    _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", _inner)
+                    break
+
                 _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
                 _continue_thinking = _resolve_thinking_override(
                     cfg,
@@ -1017,7 +1111,7 @@ class CognitionLoop:
                     _kp = _action_key_param(_cont.params)
                     for _bi in self._behavior.on_act(_t, _kp, str(active_task.id) if active_task else None):
                         self._wm.add(_bi)
-                    # 每次 on_act 后同步 cognitive_signals，确保 gate 看到最新计数
+                    # 每次 on_act 后同步 cognitive_signals,确保 gate 看到最新计数
                     self._behavior.apply_cognitive_probe(cognitive_signals)
                 _cont = self._behavior.apply_execution_gate(_cont, cognitive_signals)
                 _cont_result = await self._execution.dispatch(_cont, ctx)
@@ -1028,7 +1122,7 @@ class CognitionLoop:
                     _kp2 = _action_key_param(_cont.params)
                     _pfx = f"[{_t}{'  ' + _kp2 if _kp2 else ''}] "
                     self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _cont_result.summary, priority=_cont_result.priority))
-                # 内层 reflection → WM 高优先级合成条目（LLM 对工具结果的即时提炼）
+                # 内层 reflection → WM 高优先级合成条目(LLM 对工具结果的即时提炼)
                 if _cont.reflection and _cont.reflection.strip():
                     self._wm.add(WMItem(kind="synthesis", content=f"[合成] {_cont.reflection.strip()}", priority=0.88))
                 # 内层 rationale → 情节记忆
@@ -1037,8 +1131,8 @@ class CognitionLoop:
                                          task_id=str(active_task.id) if active_task else None, affect=_affect)
 
                 if _cont.decision == "act":
-                    # 无论成功还是报错都追加历史，避免 LLM 重复调同一个失败工具
-                    # P1-2: 错误分类 transient(可重试) vs fatal(不可重试)，帮助 LLM 决策
+                    # 无论成功还是报错都追加历史,避免 LLM 重复调同一个失败工具
+                    # P1-2: 错误分类 transient(可重试) vs fatal(不可重试),帮助 LLM 决策
                     if _cont_result.error:
                         _err_lower = (_cont_result.error or "").lower()
                         _err_cat = (
@@ -1060,7 +1154,7 @@ class CognitionLoop:
                 if action.reply_to_user or not _should_continue_within_tick(action):
                     break
 
-        # chat/interact 模式下，内层循环结束仍无回复时给用户兜底真实状态，而非固定 ACK
+        # chat/interact 模式下,内层循环结束仍无回复时给用户兜底真实状态,而非固定 ACK
         if user_message and not action.reply_to_user:
             action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
 
@@ -1079,17 +1173,37 @@ class CognitionLoop:
                     chat_session_id,
                 )
 
+        # 执行后记忆整合 + 进化 + 清理 → 提取为管道阶段
+        reply = await self._tick_finalize(action, result, active_task, cycle, user_message, cognitive_signals, reply, chat_session_id)
+        return reply
+
+    async def _tick_finalize(
+        self,
+        action: JudgmentOutput,
+        result: ToolResult | Any,
+        active_task: Task | None,
+        cycle: int,
+        user_message: str,
+        cognitive_signals: Any,
+        reply: str,
+        chat_session_id: str | None = None,
+    ) -> str:
+        cfg = self._cfg
+
         # 执行后记忆整合（结晶、WM 注入、情节记录、语义结晶、情绪反写）
         await self._post_tick_memory(action, result, active_task, cycle, user_message)
 
-        # 9. 定期：WM → 情节记忆整合（只在 WM 真正有压力时才触发，避免机械周期强制清空）
+        # 持久化自我模型（跨重启连续性）
+        await self._save_self_model()
+
+        # 9. 定期:WM → 情节记忆整合(只在 WM 真正有压力时才触发,避免机械周期强制清空)
         if cycle % cfg.loop.consolidate_every == 0:
             if self._wm.pressure >= self._cfg.thresholds.wm_pressure_task:
                 await self._consolidate(active_task)
-            # 将最新 EMA 值同步写回 SOUL.md（人类可读镜像）
+            # 将最新 EMA 值同步写回 SOUL.md(人类可读镜像)
             await self._soul.sync_md()
 
-        # 10. 自进化检查：由内环失败模式驱动（Reflexion 2023 双环纠偏原则）
+        # 10. 自进化检查:由内环失败模式驱动(Reflexion 2023 双环纠偏原则)
         _should_evolve = (
             cfg.evolution.enabled and (
                 perception_replay.high_error_streak >= cfg.evolution.error_streak_evolve
@@ -1104,10 +1218,10 @@ class CognitionLoop:
                     if r.target.startswith("prompt:"):
                         prompt_key = r.target.split(":", 1)[1]
                         self._judgment.reload_prompt(prompt_key)
-            # 进化后刷新身份前缀：evolution 可能已修改 BOOTSTRAP.md / IDENTITY.md
+            # 进化后刷新身份前缀:evolution 可能已修改 BOOTSTRAP.md / IDENTITY.md
             await self._soul.refresh_identity(self._judgment)
 
-        # tick 间状态更新（下轮感知用）
+        # tick 间状态更新(下轮感知用)
         _previous_task_next_step = (active_task.next_step or "") if active_task else ""
         _prev_sig = self._last_action_sig
         _prev_fp = self._last_result_fp
@@ -1116,7 +1230,7 @@ class CognitionLoop:
         self._last_next_step = action.next_step or ""
         self._last_decision = action.decision
         self._last_act_error = bool(action.decision == "act" and result.error)
-        self._last_act_progressful = _action_made_progress(action, result, prev_sig=_prev_sig, prev_fp=_prev_fp)
+        self._last_act_progressful, self._last_act_progress_reason = _action_made_progress(action, result, prev_sig=_prev_sig, prev_fp=_prev_fp)
         self._last_action_tool = action.chosen_action_id or ""
         self._last_action_key = _action_key_param(action.params) if action.decision == "act" else ""
         self._last_action_summary = _clip_signal_text(result.summary or "") if action.decision == "act" else ""
@@ -1150,7 +1264,7 @@ class CognitionLoop:
         )
         await self._maybe_record_success_stall_reflection(active_task, action, result, cycle)
 
-        # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
+        # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好,存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
         _task_tier = _task_model_tier(active_task)
         _persist_tier = _next_tier if _next_tier in _VALID_MODEL_TIERS else (_task_tier or (_actual_tier if _actual_tier in _VALID_MODEL_TIERS else ""))
@@ -1160,14 +1274,15 @@ class CognitionLoop:
         if _next_tier in {"reader", "reasoner", "repair"}:
             self._pending_tier = _next_tier
         else:
-            # 自动推断：若本轮工具是 reader 类且 LLM 未显式设 tier，下轮自动用 reader
-            if action.decision == "act" and action.chosen_action_id in READER_TOOLS:
+            # 自动推断:用数据驱动 tier 判断替代硬编码集合
+            tool_id = action.chosen_action_id or ""
+            if action.decision == "act" and _tool_tier(tool_id, self._registry) == "reader":
                 self._pending_tier = "reader"
             else:
                 self._pending_tier = None
 
         # LLM 通过 model_strategy.next_idle_gap_secs 动态调控下一轮空闲等待时长
-        # 有任务时有效范围 2-30s，无任务时 5-300s
+        # 有任务时有效范围 2-30s,无任务时 5-300s
         _raw_gap = (action.model_strategy or {}).get("next_idle_gap_secs")
         if _raw_gap is not None:
             try:
@@ -1185,7 +1300,7 @@ class CognitionLoop:
         else:
             self._pending_idle_gap = None
 
-        # LLM 通过 model_strategy.routing_overrides 临时覆盖 tier→model 映射（持久到显式修改）
+        # LLM 通过 model_strategy.routing_overrides 临时覆盖 tier→model 映射(持久到显式修改)
         _raw_overrides = (action.model_strategy or {}).get("routing_overrides")
         if isinstance(_raw_overrides, dict):
             if not _raw_overrides:
@@ -1201,10 +1316,10 @@ class CognitionLoop:
                     self._pending_routing_overrides = _valid
                     await self._task_store.set_fact("pref:routing_overrides", json.dumps(_valid), scope="system")
 
-        # LLM 通过 model_strategy.thinking_override 一次性覆盖下轮 thinking 等级；未设置或无效值都视为不覆盖。
+        # LLM 通过 model_strategy.thinking_override 一次性覆盖下轮 thinking 等级;未设置或无效值都视为不覆盖。
         self._pending_thinking_override = _next_thinking_override(action.model_strategy)
 
-        # 情绪状态持久化（跨重启情绪连续性，与 ethos_baseline 对称）
+        # 情绪状态持久化(跨重启情绪连续性,与 ethos_baseline 对称)
         await self._task_store.set_fact("soul:emotion_state", json.dumps({
             "valence":   round(self._emotion.valence, 4),
             "arousal":   round(self._emotion.arousal, 4),
@@ -1253,7 +1368,7 @@ class CognitionLoop:
         )
 
     async def _restore_state_from_db(self) -> None:
-        """从 DB 恢复上次持久化的情绪状态和路由偏好，实现跨重启连续性。"""
+        """从 DB 恢复上次持久化的情绪状态和路由偏好,实现跨重启连续性。"""
         _em_json, _em_found = await self._task_store.get_fact("soul:emotion_state")
         if _em_found and _em_json:
             try:
@@ -1263,7 +1378,7 @@ class CognitionLoop:
                 self._emotion.dominance = float(_em.get("dominance", self._emotion.dominance))
             except Exception:
                 pass
-        # 恢复 routing_overrides（用户/LLM 上次设置的模型路由偏好）
+        # 恢复 routing_overrides(用户/LLM 上次设置的模型路由偏好)
         _ro_json, _ro_found = await self._task_store.get_fact("pref:routing_overrides")
         if _ro_found and _ro_json:
             try:
@@ -1278,6 +1393,66 @@ class CognitionLoop:
             except Exception:
                 pass
 
+    async def _restore_self_model(self) -> None:
+        """从 DB 恢复自我模型(跨重启连续性)。
+        
+        保留累积统计(total_tokens, api_call_count)但不继承上轮 tick_count。
+        每组新启动 tick_count 从 0 开始，避免"空转 N 轮"误判。
+        """
+        _raw, _found = await self._task_store.get_fact("self:model")
+        if _found and _raw:
+            self._judgment.self_model = SelfModel.from_json(_raw, name="lingzhou")
+            self._judgment.self_model.set_routing(self._cfg)
+            self._judgment.self_model.tick_count = 0  # 新运行重置 tick 计数
+            _log.info("[self_model] 已恢复: api=%d tokens=%d (tick=0 重置)",
+                      self._judgment.self_model.api_call_count,
+                      self._judgment.self_model.total_tokens)
+
+    async def _save_self_model(self) -> None:
+        """持久化自我模型到 DB(每 tick 调用)。"""
+        await self._task_store.set_fact("self:model", self._judgment.self_model.to_json(), scope="system")
+
+    def _maybe_inject_self_drive(self) -> None:
+        """自驱力引擎：空闲或任务卡住时注入自主探索目标到 WM。
+
+        基于 Active Inference + Intrinsic Motivation:
+        - 好奇心 C(t) > 阈值 → 生成探索目标
+        - 长时间空闲 → 强制探索
+        - 任务卡住（等待用户 > 5 tick）→ 绕开任务自主探索
+        """
+        # 检查是否有真的活跃任务（非 waiting 状态）
+        has_real_work = (
+            self._last_decision == "act"
+            and self._last_action_tool
+            and not self._last_action_tool.startswith("task.update")
+        )
+        
+        signal = self._self_drive.compute_signal(
+            idle_ticks=self._behavior.wait_streak,
+            has_user_message=False,
+            has_active_task=has_real_work,
+        )
+        if not signal.should_explore:
+            return
+
+        task = self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
+        self._wm.add(WMItem(
+            kind="self_drive",
+            content=(
+                f"[自驱力探索] C={signal.curiosity_score:.2f} "
+                f"{signal.rationale}\n"
+                f"目标: {task['goal']}\n"
+                f"第一步: {task['next_step']}"
+            ),
+            priority=0.75,  # 低于用户消息(0.9)但高于心跳(0.6)
+        ))
+        _log.info(
+            "[self_drive] C=%.2f domain=%s idle=%d",
+            signal.curiosity_score,
+            signal.suggested_domain,
+            self._behavior.wait_streak,
+        )
+
     async def _post_tick_memory(
         self,
         action: JudgmentOutput,
@@ -1286,13 +1461,13 @@ class CognitionLoop:
         cycle: int,
         user_message: str,
     ) -> None:
-        """执行后记忆整合：结晶、WM 注入、情节记录、语义结晶、情绪反写。
+        """执行后记忆整合:结晶、WM 注入、情节记录、语义结晶、情绪反写。
 
-        从 _tick 提取，使主循环只做编排，不包含存储业务逻辑。
-        步骤 4b-8（结晶 → WM → episodic → semantic → emotion EMA 反写）。
+        从 _tick 提取,使主循环只做编排,不包含存储业务逻辑。
+        步骤 4b-8(结晶 → WM → episodic → semantic → emotion EMA 反写)。
         """
-        # 4b. 任务完成兜底结晶（macro-crystallization）
-        # task.complete 工具已对 done 做结晶，此处兜底 failed 或未经工具的 done
+        # 4b. 任务完成兜底结晶(macro-crystallization)
+        # task.complete 工具已对 done 做结晶,此处兜底 failed 或未经工具的 done
         if active_task and active_task.status not in ("done", "failed"):
             refreshed = await self._task_store.get_task_by_id(active_task.id)
             if refreshed and refreshed.status in ("done", "failed"):
@@ -1313,7 +1488,7 @@ class CognitionLoop:
                         ))
                     await self._task_store.set_fact(_marker, "1", scope="system")
 
-        # 5. 结果写入 WM（kind=tool_id，让反循环规则能识别来源）
+        # 5. 结果写入 WM(kind=tool_id,让反循环规则能识别来源)
         if result.summary and not result.skipped:
             tool_id = action.chosen_action_id or ""
             key_param = _action_key_param(action.params)
@@ -1325,8 +1500,8 @@ class CognitionLoop:
             ))
 
         # 5b. LLM reflection → WM 高优先级合成条目
-        # reflection 是 LLM 主动提炼的本轮理解，比原始工具输出更紧凑、更有价值，
-        # 应以高优先级写入 WM，确保下一 tick 能优先看到已提炼的认知，而非重新读原始数据。
+        # reflection 是 LLM 主动提炼的本轮理解,比原始工具输出更紧凑、更有价值,
+        # 应以高优先级写入 WM,确保下一 tick 能优先看到已提炼的认知,而非重新读原始数据。
         if action.reflection and action.reflection.strip():
             self._wm.add(WMItem(
                 kind="synthesis",
@@ -1334,8 +1509,8 @@ class CognitionLoop:
                 priority=0.88,
             ))
 
-        # 6. 内部独白写入情节记忆（Tulving 1983 四元素绑定：WHAT+WHEN+CONTEXT+AFFECT）
-        # P0-3: 写入前先剔除可能混入 LLM 输出的 <memory-context> 标签（防止跨-tick 内容污染）
+        # 6. 内部独白写入情节记忆(Tulving 1983 四元素绑定:WHAT+WHEN+CONTEXT+AFFECT)
+        # P0-3: 写入前先剔除可能混入 LLM 输出的 <memory-context> 标签(防止跨-tick 内容污染)
         _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
         if action.rationale:
             _clean_rationale = _strip_memory_context(action.rationale)
@@ -1346,7 +1521,7 @@ class CognitionLoop:
                 affect=_affect,
             )
 
-        # 7. reflection → 语义记忆 + 情绪效价弱反写（P1-B，delta ≤ 0.05）
+        # 7. reflection → 语义记忆 + 情绪效价弱反写(P1-B,delta ≤ 0.05)
         if action.reflection:
             _clean_reflection = _strip_memory_context(action.reflection)
             _node_id = f"insight_{hashlib.md5(_clean_reflection.encode()).hexdigest()[:10]}"
@@ -1366,8 +1541,8 @@ class CognitionLoop:
                     self._emotion.valence + min(max(_delta, -0.05), 0.05), 4
                 )
 
-            # 7b. 事件结晶：每 N 轮 reflection → kind="event" 节点（Park et al. 2023 重要性模型）
-            #     零额外 LLM call：直接从 LLM 产出的 reflection 蒸馏，积累当天对话摘要
+            # 7b. 事件结晶:每 N 轮 reflection → kind="event" 节点(Park et al. 2023 重要性模型)
+            #     零额外 LLM call:直接从 LLM 产出的 reflection 蒸馏,积累当天对话摘要
             if active_task:
                 _turns_key = f"chat:{active_task.id}:turns"
                 _turns_val, _ = await self._task_store.get_fact(_turns_key)
@@ -1379,8 +1554,8 @@ class CognitionLoop:
                     _evt_id = f"event-task{active_task.id}-{_ts_label}"
                     _existing = self._semantic.get(_evt_id)
                     if _existing:
-                        # 同一天：追加 reflection，保持最近 600 字
-                        _existing.body = (_existing.body + f"\n— {_clean_reflection[:_EVENT_APPEND_CHARS]}")[- _EVENT_BODY_MAX_CHARS:]
+                        # 同一天:追加 reflection,保持最近 600 字
+                        _existing.body = (_existing.body + f"\n- {_clean_reflection[:_EVENT_APPEND_CHARS]}")[- _EVENT_BODY_MAX_CHARS:]
                         _existing.activation = min(1.0, _existing.activation + 0.05)
                         self._semantic.upsert(_existing)
                     else:
@@ -1399,7 +1574,7 @@ class CognitionLoop:
                             tags=_tags,
                         ))
 
-        # 8. 用户消息 & 回复写入情节记忆（Ricoeur 叙事连续性）
+        # 8. 用户消息 & 回复写入情节记忆(Ricoeur 叙事连续性)
         if user_message:
             self._episodic.record(
                 role="user",
@@ -1424,10 +1599,10 @@ class CognitionLoop:
         return self._provider
 
     async def tick_interact(self, cycle: int, user_message: str) -> str:
-        """interact 命令的单次入口：完整内环 + 返回 reply_to_user。
+        """interact 命令的单次入口:完整内环 + 返回 reply_to_user。
 
-        P0-C: 将近期对话历史注入 WM，让 LLM 在判断时能回顾上下文。
-        每次完整交互后记录 (user, reply) pair，最多保留 6 轮。
+        P0-C: 将近期对话历史注入 WM,让 LLM 在判断时能回顾上下文。
+        每次完整交互后记录 (user, reply) pair,最多保留 6 轮。
         """
         # 将近期对话历史作为高优先级 WM 条目注入
         if self._conv_history:
@@ -1440,7 +1615,7 @@ class CognitionLoop:
                 priority=self._cfg.thresholds.wm_pri_history,
             ))
         reply = await self._tick(cycle, user_message=user_message)
-        # Hermes 借鉴：剥离 LLM 输出中意外泄露的 <memory-context> 标签内容
+        # Hermes 借鉴:剥离 LLM 输出中意外泄露的 <memory-context> 标签内容
         if reply:
             reply = _strip_memory_context(reply)
         if reply:
@@ -1448,9 +1623,9 @@ class CognitionLoop:
         return reply
 
     async def state_snapshot(self) -> dict[str, Any]:
-        """返回当前可见状态快照，供 interact REPL 渲染（Clark & Schaefer 1989 基础共识）。
+        """返回当前可见状态快照,供 interact REPL 渲染(Clark & Schaefer 1989 基础共识)。
 
-        P2-A: 扩展字段，包含行为循环探针、空闲计数、WM 压力等诊断信息。
+        P2-A: 扩展字段,包含行为循环探针、空闲计数、WM 压力等诊断信息。
         """
         active_task = await self._task_store.get_active()
         running_runs = await self._task_store.list_runs(status="running", limit=5)
@@ -1488,11 +1663,11 @@ class CognitionLoop:
     async def _maybe_curiosity_task(self, ethos_state: Any) -> None:
         """P1-C: 好奇心阈值驱动的探索信号注入。
 
-        触发条件（全部满足）：
+        触发条件(全部满足):
         1. 当前无活跃任务
         2. 空闲周期 >= thresholds.curiosity_idle_min_cycles
         3. ethos.curiosity >= thresholds.curiosity_idle_task
-        4. 每个 idle 周期段最多提示一次，由 LLM 决定是否创建任务
+        4. 每个 idle 周期段最多提示一次,由 LLM 决定是否创建任务
         """
         cfg = self._cfg
         if self._idle_cycles < cfg.thresholds.curiosity_idle_min_cycles:
@@ -1516,8 +1691,8 @@ class CognitionLoop:
                 kind="self_awareness",
                 content=(
                     f"[好奇心信号] 当前已有 {len(pending_curiosity)} 个未完成的探索任务"
-                    f"（如：#{getattr(t0, 'id', '?')} {getattr(t0, 'title', '')}）。"
-                    " 系统倾向再生成一个探索任务，但由你判断是否真正需要。"
+                    f"(如:#{getattr(t0, 'id', '?')} {getattr(t0, 'title', '')})。"
+                    " 系统倾向再生成一个探索任务,但由你判断是否真正需要。"
                 ),
                 priority=0.80,
             ))
@@ -1525,28 +1700,28 @@ class CognitionLoop:
         self._wm.add(WMItem(
             kind="self_awareness",
             content=(
-                f"[好奇心信号] 当前空闲 {self._idle_cycles} 轮，curiosity={curiosity:.2f}。"
+                f"[好奇心信号] 当前空闲 {self._idle_cycles} 轮,curiosity={curiosity:.2f}。"
                 " 最近没有未完成的 curiosity 任务。"
-                " 如果你判断值得探索，可自行创建一个低优先级探索任务；若现有线索不足，也可以继续等待或先整理记忆。"
+                " 如果你判断值得探索,可自行创建一个低优先级探索任务;若现有线索不足,也可以继续等待或先整理记忆。"
             ),
             priority=0.80,
         ))
         _log.info(
-            "[curiosity] idle=%d curiosity=%.2f → 注入探索信号，由 LLM 决定是否建任务",
+            "[curiosity] idle=%d curiosity=%.2f → 注入探索信号,由 LLM 决定是否建任务",
             self._idle_cycles, curiosity,
         )
 
     async def _consolidate(self, active_task: Task | None) -> None:
-        """将 WM 高优先级条目写入情节记忆，然后清空 WM，保留身份锚点。"""
+        """将 WM 高优先级条目写入情节记忆,然后清空 WM,保留身份锚点。"""
         items = self._wm.get_top(25)
         if not items:
             return
         task_id = str(active_task.id) if active_task else None
         summary = "\n".join(f"- [{i['kind']}] {i['content']}" for i in items)
         self._episodic.record(role="consolidation", content=summary, task_id=task_id)
-        # 保留身份锚点（bootstrap_identity），不参与周期轮换
+        # 保留身份锚点(bootstrap_identity),不参与周期轮换
         self._wm.clear(preserve_kinds={"bootstrap_identity"})
-        # 清空后注入任务锚点，避免下一轮因 WM 为空而丢失任务上下文
+        # 清空后注入任务锚点,避免下一轮因 WM 为空而丢失任务上下文
         if active_task:
             _progress_line = ""
             try:
@@ -1559,13 +1734,13 @@ class CognitionLoop:
                 kind="task_anchor",
                 content=(
                     f"[任务锚点] {active_task.title}\n"
-                    f"目标: {active_task.goal or '（未指定）'}\n"
-                    f"下一步: {active_task.next_step or '（未指定）'}"
+                    f"目标: {active_task.goal or '(未指定)'}\n"
+                    f"下一步: {active_task.next_step or '(未指定)'}"
                     f"{_progress_line}"
                 ),
                 priority=0.95,
             ))
-        # 同步感知基准，避免下一轮因 WM 大小骤降产生假预测误差
+        # 同步感知基准,避免下一轮因 WM 大小骤降产生假预测误差
         self._perception.reset_wm_baseline(len(self._wm))
         _log.info("[consolidate] WM→episodic %d items, WM cleared (bootstrap+task_anchor preserved)", len(items))
 
@@ -1576,7 +1751,7 @@ def _build_routing_providers(cfg: "Config") -> dict:
     """根据 cfg.routing 构建分层路由 providers 字典。
 
     routing = {"simple": "bailian/qwen3.6-plus", "complex": "copilot/gpt-5.4"}
-    如果某个 tier 的 model_ref 与主模型相同或未配置，则跳过（避免重复创建连接）。
+    如果某个 tier 的 model_ref 与主模型相同或未配置,则跳过(避免重复创建连接)。
     """
     if not cfg.routing:
         return {}
@@ -1588,5 +1763,5 @@ def _build_routing_providers(cfg: "Config") -> dict:
             providers[tier] = create_provider_with_model(cfg, model_ref)
             _log.info("[routing] tier=%s model=%s", tier, model_ref)
         except Exception as e:
-            _log.warning("[routing] tier=%s model=%s 创建失败，跳过: %s", tier, model_ref, e)
+            _log.warning("[routing] tier=%s model=%s 创建失败,跳过: %s", tier, model_ref, e)
     return providers

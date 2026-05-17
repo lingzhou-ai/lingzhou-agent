@@ -1,5 +1,40 @@
 # lingzhou 路线图（v2026.5.15 之后）
 
+## 0. 已完成（2026-05-16 打磨）
+
+以下项目在两轮深度打磨中完成：
+
+### 思考/操作分离
+- deepseek-v4-pro 作为思考模型（reasoner），deepseek-v4-flash 作为操作模型（reader）
+- 双模型架构：思考层统筹全局，可委派简单任务给操作层
+- 4 个 DeepSeek 模型接入（v4-flash/v4-pro/chat/reasoner）
+
+### 自我模型
+- `core/self_model.py`：数字生命自知——tick 计数、token 消耗、成本估算
+- 跨重启持久化（`self:model` fact）
+- 按量 vs 按次计费模式感知
+- 每个 tick LLM 都能看到自我状态
+
+### 机制"有思想"改造
+- `_action_made_progress` 从 bool → (bool, reason)，LLM 看到原因后自主判断
+- `ToolManifest.progress_category` / `prefer_tier`：工具自声明，减少硬编码
+- 行为追踪器状态全量注入 CognitiveSignals
+- `task.complete` 证据门槛（MutationWithoutVerification）
+- 同文件顺序窗口探测
+
+### Provider 重构
+- `_ModeAdapter` 模式适配器替代 83 if/elif → 57
+- copilot/bailian/deepseek 统一通过适配器
+
+### 路由与感知
+- `team_view`：思考模型看到完整团队架构和调度规则
+- `self_model_section`：每次 tick 注入 LLM 上下文
+- 探索预算感知注入 CognitiveSignals
+- 上下文压缩时告知 LLM "原 N→M tokens"
+
+---
+
+
 **创建时间：** 2026-05-15  
 **基线版本：** v2026.5.15  
 **定位：** 去历史包袱，只做最对的事情

@@ -239,6 +239,12 @@ def model(
                     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     "api_key_env": "DASHSCOPE_API_KEY",
                 },
+                "deepseek": {
+                    "type": "openai_compat",
+                    "mode": "openai",
+                    "base_url": "https://api.deepseek.com",
+                    "api_key_env": "DEEPSEEK_API_KEY",
+                },
                 "copilot": {
                     "type": "openai_compat",
                     "mode": "copilot",

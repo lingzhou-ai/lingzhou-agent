@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
+from core.self_model import SelfModel, fmt_self_model
 
 _log = logging.getLogger("lingzhou.judgment")
 
@@ -51,6 +52,47 @@ _TOOL_TIER_MAPPING = {
     "reasoner": sorted(_REASONER_TOOLS),
     "repair": [],
 }
+
+
+def _build_team_view_from_cfg(cfg) -> str:
+    """从配置构建思考模型的团队视图（不依赖运行时 model list）。"""
+    routing = getattr(cfg, "routing", {}) or {}
+    lines = ["## 团队架构（你作为思考模型，统筹以下资源）"]
+    for tier in ("reader", "reasoner", "repair"):
+        model = routing.get(tier, cfg.model)
+        role = {
+            "reader": "操作层 — 快速/低成本，适合 file.read/task.list/memory.search 等轻量查询",
+            "reasoner": "思考层 — 你本人，深度推理，适合复杂决策/代码修改/用户交互",
+            "repair": "修复层 — 格式修复/小修小补",
+        }.get(tier, tier)
+        lines.append(f"- {tier}: {model}")
+        lines.append(f"  {role}")
+    lines.append("")
+    lines.append("调度规则:")
+    lines.append("- 你是 reasoner（思考层），负责复杂决策。简单操作应委派给 reader")
+    lines.append("- 委派方式: 在 model_strategy 中设置 next_phase_tier='reader'")
+    lines.append("- reader 的操作层模型成本低速度快，不要在 reasoner 上做纯查询")
+    lines.append("- 关键决策、代码修改、用户交互必须由你亲自处理")
+    return "\n".join(lines)
+
+
+def _tool_tier(tool_id: str, registry = None) -> str:
+    """判断工具应该用哪个 tier。
+
+    优先级：manifest.prefer_tier → 硬编码集合 → 默认 reasoner。
+    数据驱动的工具可以声明 prefer_tier，无需改此处。
+    """
+    # 从注册表读取 manifest
+    if registry is not None and tool_id:
+        entry = registry.get(tool_id)
+        if entry and entry.manifest.prefer_tier:
+            return entry.manifest.prefer_tier
+    # 回退到硬编码集合
+    if tool_id in _READER_TOOLS:
+        return "reader"
+    if tool_id in _REASONER_TOOLS:
+        return "reasoner"
+    return "reasoner"
 
 
 @dataclass
@@ -169,6 +211,8 @@ class JudgmentLayer:
         _skills_dir = Path(cfg.loop.workspace_dir).expanduser() / "skills"
         self._skills = SkillRegistry(skills_dir=_skills_dir)
         self._ref_resolver = ReferenceResolver(provider=provider)
+        # 自我模型追踪（借鉴 Hermes state + OpenClaw session 连续性）
+        self.self_model = SelfModel()
         # 分层路由 providers：{"simple": <provider>, "complex": <provider>}
         # 由 loop.open() 在 bootstrap 后注入，未配置时为空字典
         self._routing_providers: dict[str, "Provider"] = {}
@@ -189,6 +233,15 @@ class JudgmentLayer:
         self._model_health: dict[str, ModelHealth] = {}
         # 运行时临时 provider 缓存：routing_overrides 指定的临时 model 按需创建并缓存
         self._override_providers: dict[str, "Provider"] = {}
+
+    def _track_token_usage(self, provider: "Provider") -> None:
+        """从 provider 读取 last_usage 并累积到 self_model。"""
+        usage = getattr(provider, "last_usage", None)
+        if isinstance(usage, dict):
+            self.self_model.record_token_usage(
+                prompt=usage.get("prompt_tokens", 0),
+                completion=usage.get("completion_tokens", 0),
+            )
 
     def set_identity_prefix(self, prefix: str) -> None:
         """由 SoulManager.bootstrap() 调用，将 BOOTSTRAP.md/IDENTITY.md 永久注入 system prompt。"""
@@ -501,21 +554,6 @@ class JudgmentLayer:
                 "condition": "仅在本轮未显式设置 next_phase_tier 时生效",
             }
         payload = {
-            "primary_provider": {
-                "model": self._cfg.model,
-                "available": self._is_model_available(self._cfg.model),
-                "current_thinking": effective_thinking or self._cfg.thinking,
-                "last_error": self._provider_errors.get(self._cfg.model),
-                "last_error_code": primary_health.last_code or None,
-                "cooldown_remaining_sec": max(0, int(primary_health.cooldown_until - time.time())),
-            },
-            "reference_resolution": {
-                "uses_primary_provider": True,
-                "llm_available": self._ref_resolver.llm_available,
-                "last_error": self._ref_resolver.last_llm_error or None,
-                "last_error_code": self._ref_resolver.last_llm_error_code or None,
-            },
-            "available_models": available_models,
             "active_overrides": routing_overrides or {},
             "tool_tier_mapping": _TOOL_TIER_MAPPING,
             "implicit_next_phase_default": implicit_next_phase_default,
@@ -640,6 +678,7 @@ class JudgmentLayer:
             try:
                 raw = await selected_provider.chat(messages, thinking_override=thinking_override)
                 self._mark_model_success(selection.model_ref)
+                self._track_token_usage(selected_provider)
                 break
             except Exception as exc:
                 _err = str(exc) or repr(exc)
@@ -782,6 +821,7 @@ class JudgmentLayer:
             try:
                 raw = await selected_provider.chat(messages, thinking_override=resolved_thinking)
                 self._mark_model_success(selection.model_ref)
+                self._track_token_usage(selected_provider)
                 break
             except Exception as exc:
                 _err = str(exc) or repr(exc)
@@ -999,6 +1039,8 @@ class JudgmentLayer:
             "primary_skill_section": _fmt_primary_skill(primary_skill),
             "skills_section": _fmt_skills(secondary_skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
+            "self_model_section": fmt_self_model(self.self_model),
+            "team_view": _build_team_view_from_cfg(self._cfg),
             "model_routing_section": self._build_model_routing_section(
                 phase=phase,
                 user_message=user_message,
@@ -1015,10 +1057,30 @@ class JudgmentLayer:
             self._cfg.judgment_input_token_budget(),
             skill_min_tokens=self._cfg.thresholds.skill_min_budget_tokens,
         )
+        # 注入上下文预算信息到自我模型（借鉴 Hermes context pressure awareness）
+        budget = self._cfg.judgment_input_token_budget()
+        if budget:
+            used = sum(len(v) for v in ctx.values())
+            self.self_model.context_budget = f"{budget // 1000}K" if budget >= 1000 else str(budget)
+            self.self_model.context_pressure = min(1.0, used / max(budget, 1))
         return _fill_template(self._judgment_template, ctx)
 
 
 # ── 格式化辅助函数 ─────────────────────────────────────────────────────────────
+
+def _task_narrative(task: "Task | None") -> str:
+    """从任务状态构建叙事线：目标 → 当前步骤 → 下一步。"""
+    if not task:
+        return "无"
+    parts = []
+    if task.goal:
+        parts.append(f"目标: {task.goal[:80]}")
+    if task.current_step:
+        parts.append(f"进展: {task.current_step[:80]}")
+    if task.next_step:
+        parts.append(f"下一步: {task.next_step[:80]}")
+    return " → ".join(parts) if parts else f"执行中 ({task.status})"
+
 
 def _fmt_task(task: "Task | None") -> str:
     if not task:
@@ -1053,6 +1115,7 @@ def _fmt_task(task: "Task | None") -> str:
         f"模型层级: {task.model_tier or '（未指定）'}",
         f"当前步骤: {task.current_step or '（未指定）'}",
         f"下一步: {task.next_step or '（未指定）'}",
+        f"叙事线: {_task_narrative(task)}",
     ]
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
@@ -1383,12 +1446,13 @@ def apply_context_budget(
     max_chars: int | None = None,
     skill_min_tokens: int = 0,
 ) -> dict[str, str]:
-    """按优先级压缩 judgment 输入，优先保留任务、感知、禁忌与 Soul。
+    """智能压缩上下文（借鉴 Hermes trajectory_compressor 分层策略）。
 
-    skill_min_tokens: skills_section 下限（小于此就不裁剪），默认 0。
-    建议从 cfg.thresholds.skill_min_budget_tokens 传入（默认 80），
-    确保压力最大时护栏不是第一个被裁掉的内容。
+    保护头: task + self_model + soul + ethos + perception（不压缩）
+    弹性中: wm + episodic + memories + tools（按优先级压缩）
+    保护尾: user_message + current_time（不压缩）
     """
+
     if token_budget is None:
         token_budget = max_chars
     if token_budget is None:
@@ -1436,6 +1500,8 @@ def apply_context_budget(
         reduction = min(original_tokens - keep_floor, current_total - token_budget)
         keep_tokens = max(keep_floor, original_tokens - reduction)
         trimmed = _compress_text_segments(original, keep_tokens)
+        if trimmed != original:
+            trimmed = f"（上下文已智能压缩：原 {original_tokens} tokens → {keep_tokens} tokens）\n{trimmed}"
         budgeted[key] = trimmed
         current_total -= _estimate_tokens(original) - _estimate_tokens(trimmed)
 

@@ -309,6 +309,7 @@ def auth_set_token(
     if not env_key:
         env_key = {
             "bailian": "DASHSCOPE_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
             "copilot": "GITHUB_TOKEN",
         }.get(provider_name, f"{provider_name.upper()}_API_KEY")
 
@@ -337,3 +338,13 @@ def auth_bailian(
 ) -> None:
     """快捷配置百炼 token：等价于 lingzhou auth set-token --provider bailian。"""
     auth_set_token(provider="bailian", token=token, env_name=env_name, profile_id=profile_id)
+
+
+@auth_app.command("deepseek")
+def auth_deepseek(
+    token: Annotated[str, typer.Option("--token", help="DeepSeek API Key", prompt=True, hide_input=True)],
+    profile_id: Annotated[str, typer.Option("--profile-id", help="auth profile id，默认 deepseek:default")] = "deepseek:default",
+    env_name: Annotated[str, typer.Option("--env", help="写入 credentials.json 的键名，默认 DEEPSEEK_API_KEY")] = "DEEPSEEK_API_KEY",
+) -> None:
+    """快捷配置 DeepSeek token：等价于 lingzhou auth set-token --provider deepseek。"""
+    auth_set_token(provider="deepseek", token=token, env_name=env_name, profile_id=profile_id)
