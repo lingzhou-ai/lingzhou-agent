@@ -390,8 +390,10 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             )
         
         path.parent.mkdir(parents=True, exist_ok=True)
-        text = str(content)
-        path.write_text(text, encoding="utf-8")
+        # 原子写入：先写临时文件，成功后再 rename
+        tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)  # 原子 rename
         # 语法验证
         syntax_error = _verify_python_syntax(path, text)
         summary = f"写入成功: {path} ({len(text)} 字符)"
@@ -532,7 +534,10 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if content == original:
             return ToolResult(summary=f"编辑未产生变化: {path}", error="NoChange", skipped=True)
 
-        path.write_text(content, encoding="utf-8")
+        # 原子写入
+        tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
         # 语法验证
         syntax_error = _verify_python_syntax(path, content)
         applied.reverse()
