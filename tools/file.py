@@ -286,7 +286,12 @@ async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(ToolManifest(
     name="file.read",
-    description="读取文件内容，支持按下标区间读取。不指定任何参数时读取全部内容。",
+    description=(
+        "读取文件内容。支持区间读取。\n"
+        "⚠️ 区间太小时会浪费轮次：建议至少读 200-500 字符以获得足够上下文。\n"
+        "只有需要精确匹配 file.edit 的 oldText 时才用小区间。\n"
+        "不确定内容时先用大区间（如 start=0, end=2000）通读。"
+    ),
     progress_category="info",
     params=[
         ToolParam("path", "string", "文件路径", required=True),

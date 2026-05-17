@@ -1448,12 +1448,12 @@ class CognitionLoop:
         await self._task_store.set_fact("self:model", self._judgment.self_model.to_json(), scope="system")
 
     def _maybe_inject_self_drive(self) -> None:
-        """自驱力引擎：空闲或任务卡住时注入自主探索目标到 WM。
+        """自驱力引擎：空闲或探索卡住时注入自主探索目标到 WM。
 
         基于 Active Inference + Intrinsic Motivation:
         - 好奇心 C(t) > 阈值 → 生成探索目标
         - 长时间空闲 → 强制探索
-        - 任务卡住（等待用户 > 5 tick）→ 绕开任务自主探索
+        - 探索卡住（explore-awareness 触发）→ 建议换策略
         """
         # 检查是否有真的活跃任务（非 waiting 状态）
         has_real_work = (
@@ -1461,11 +1461,17 @@ class CognitionLoop:
             and self._last_action_tool
             and not self._last_action_tool.startswith("task.update")
         )
+
+        # 检查是否探索卡住 — 从 behavior tracker 获取重复探针信号
+        explore_stuck = (
+            hasattr(self._behavior, '_list_streak_count') and self._behavior._list_streak_count >= 5
+            or hasattr(self._behavior, '_read_streak_count') and self._behavior._read_streak_count >= 5
+        )
         
         signal = self._self_drive.compute_signal(
             idle_ticks=self._behavior.wait_streak,
             has_user_message=False,
-            has_active_task=has_real_work,
+            has_active_task=has_real_work and not explore_stuck,
             tick=self._judgment.self_model.tick_count,
         )
         if not signal.should_explore:

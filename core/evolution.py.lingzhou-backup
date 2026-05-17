@@ -491,11 +491,6 @@ class EvolutionEngine:
                     )
 
                 # 写回
-                # 语法检查
-                try:
-                    ast.parse(new_src)
-                except SyntaxError as e:
-                    raise ValueError(f'Syntax error in generated tool source: {e}') from e
                 tool_path.write_text(new_src, encoding="utf-8")
 
                 # 热重载 + 载荷校验：必须能重新注册目标工具，否则回滚
