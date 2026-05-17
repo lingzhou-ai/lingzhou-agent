@@ -23,9 +23,13 @@ _CORE_FILES = frozenset({
 MAX_READ_CHARS = 100_000
 MAX_WRITE_CHARS = 200_000
 
-# 写入允许的根目录（空集合 = 允许所有路径）
-# 设为 {"/root/lingzhou"} 可启用 workspace 沙箱
-_WRITE_ALLOW_ROOTS: frozenset[str] = frozenset()
+# 写入允许的根目录 — workspace 沙箱
+# 空集合 = 允许所有路径；设为具体路径则只允许写入这些目录内的文件。
+# 系统级操作（如 /etc/systemd）请通过 shell.run 执行。
+_WRITE_ALLOW_ROOTS: frozenset[str] = frozenset({
+    "/root/lingzhou",
+    "/root/.lingzhou",
+})
 
 
 def _path_guard(path: Path) -> tuple[bool, str]:
