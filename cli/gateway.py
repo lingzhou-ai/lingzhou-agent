@@ -17,6 +17,7 @@ import typer
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
+from cli.plugin import plugin_app
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 
@@ -106,6 +107,7 @@ logs_group.command("crash")(logs_crash)
 logs_group.command("wechat")(logs_wechat)
 logs_group.command("stats")(logs_stats)
 gateway_app.add_typer(logs_group)
+gateway_app.add_typer(plugin_app)
 
 
 def _kill_existing_loop(quiet: bool = False) -> None:

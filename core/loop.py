@@ -466,6 +466,16 @@ class CognitionLoop:
         tools_dir = Path(__file__).parent.parent / "tools"
         self._registry.discover(tools_dir)
 
+        # 插件系统：发现并加载插件
+        from core.plugin import PluginManager
+        plugins_dir = Path(__file__).parent.parent / "plugins"
+        self._plugin_manager = PluginManager(plugins_dir)
+        self._plugin_manager.discover()
+        self._plugin_manager.load_all()
+        self._plugin_manager.register_all(tool_registry=self._registry)
+        self._plugin_manager.start_all()
+        _log.info("[plugin] 已加载 %d 个插件", len(self._plugin_manager.list_plugins()))
+
         # 记忆层
         self._wm = WorkingMemory(capacity=cfg.memory.working_capacity, token_budget=cfg.effective_wm_token_budget())
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
