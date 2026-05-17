@@ -802,6 +802,9 @@ class CognitionLoop:
                 priority=0.95,  # 最高优先级，确保 LLM 先关注
             ))
 
+        # 预算感知：token 消耗超阈值时注入 WM 提醒
+        self._maybe_inject_budget_warning()
+
         # 5. 执行
         running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()
@@ -1473,6 +1476,24 @@ class CognitionLoop:
     async def _save_self_model(self) -> None:
         """持久化自我模型到 DB(每 tick 调用)。"""
         await self._task_store.set_fact("self:model", self._judgment.self_model.to_json(), scope="system")
+
+    def _maybe_inject_budget_warning(self) -> None:
+        """Token 预算感知：消耗超阈值时注入 WM 提醒。"""
+        sm = self._judgment.self_model
+        tokens = sm.total_tokens
+        # 分级提醒
+        if tokens > 15_000_000:
+            self._wm.add(WMItem(
+                kind="budget_warning",
+                content=f"[预算] ⚠️ 今日 Token 消耗已达 {tokens/1e6:.1f}M，建议精简上下文、降低 thinking 等级、优先完成关键任务后进入低功耗。",
+                priority=0.82,
+            ))
+        elif tokens > 8_000_000:
+            self._wm.add(WMItem(
+                kind="budget_notice",
+                content=f"[预算] 📊 今日 Token 消耗 {tokens/1e6:.1f}M，注意控制每次工具输出的字符数。",
+                priority=0.65,
+            ))
 
     def _maybe_inject_self_drive(self) -> None:
         """自驱力引擎：空闲或探索卡住时注入自主探索目标到 WM。

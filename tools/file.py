@@ -62,6 +62,57 @@ def _path_guard(path: Path) -> tuple[bool, str]:
 
 
 
+import re
+
+
+def _fuzzy_find(content: str, old_text: str) -> int:
+    """模糊匹配链：依次尝试宽松策略找到 old_text 在 content 中的位置。
+    
+    策略（对齐 hermes fuzzy_match）：
+    1. 行去空格匹配 — 每行 strip 后比较
+    2. 空白归一化 — 多空格/Tab 坍塌为单空格
+    3. 换行归一化 — 字面 \\n 转为实际换行
+    
+    返回匹配位置，找不到返回 -1。
+    """
+    # 策略1: 行去空格匹配
+    old_lines = [l.strip() for l in old_text.split("\n")]
+    content_lines = content.split("\n")
+    for i in range(len(content_lines) - len(old_lines) + 1):
+        match = True
+        for j, old_l in enumerate(old_lines):
+            cl = content_lines[i + j].strip()
+            if not cl.startswith(old_l):
+                match = False
+                break
+        if match:
+            return sum(len(l) + 1 for l in content_lines[:i])
+    
+    # 策略2: 空白归一化（忽略所有空白差异）
+    def _strip_spaces(s):
+        return re.sub(r"\s+", "", s)
+    old_nosp = _strip_spaces(old_text)
+    content_nosp = _strip_spaces(content)
+    idx = content_nosp.find(old_nosp)
+    if idx != -1 and len(old_nosp) >= 6:
+        # 反推原始位置
+        _pos = 0
+        for _i in range(len(content)):
+            if not content[_i].isspace():
+                if _pos == idx:
+                    return _i
+                _pos += 1
+        return content.find(old_text.split("\n")[0].strip())
+    
+    # 策略3: 换行归一化
+    old_unescaped = old_text.replace("\\n", "\n").replace("\\t", "\t")
+    idx = content.find(old_unescaped)
+    if idx != -1:
+        return idx
+    
+    return -1
+
+
 def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
     """代码修改安全守卫：备份 + 语法验证。
     返回 (warning, error)。error 非空表示应阻断操作。
@@ -500,21 +551,26 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             # 对齐 OpenClaw：所有 edit 都基于原始文件匹配，而不是增量匹配修改后的内容。
             first_idx = original.find(old_text)
             if first_idx == -1:
-                # 查找 partial match 帮助 LLM 定位
-                first_line = old_text.split("\n")[0][:60]
-                partial_idx = original.find(first_line) if len(first_line) > 10 else -1
-                context = ""
-                if partial_idx != -1:
-                    # 显示实际内容供 LLM 校正
-                    ctx_start = max(0, partial_idx - 20)
-                    ctx_end = min(len(original), partial_idx + len(first_line) + 60)
-                    context = f"\n实际内容（大约该位置）:\n{original[ctx_start:ctx_end]}"
-                return ToolResult(
-                    summary=f"edits[{i}]: oldText 在文件中未找到。{context}\n请用 file.read 确认完整的当前内容后重试。",
-                    error="OldTextNotFound",
-                    skipped=True,
-                    metadata={"old_preview": old_text[:80], "partial_match": partial_idx != -1},
-                )
+                # 模糊匹配链（对齐 hermes fuzzy_match）：依次尝试宽松策略
+                fuzzy_idx = _fuzzy_find(original, old_text)
+                if fuzzy_idx != -1:
+                    first_idx = fuzzy_idx
+                    _log.info("[file.edit] 使用模糊匹配找到 oldText")
+                else:
+                    # 查找 partial match 帮助 LLM 定位
+                    first_line = old_text.split("\n")[0][:60]
+                    partial_idx = original.find(first_line) if len(first_line) > 10 else -1
+                    context = ""
+                    if partial_idx != -1:
+                        ctx_start = max(0, partial_idx - 20)
+                        ctx_end = min(len(original), partial_idx + len(first_line) + 60)
+                        context = f"\n实际内容（大约该位置）:\n{original[ctx_start:ctx_end]}"
+                    return ToolResult(
+                        summary=f"edits[{i}]: oldText 在文件中未找到。{context}\n请用 file.read 确认完整的当前内容后重试。",
+                        error="OldTextNotFound",
+                        skipped=True,
+                        metadata={"old_preview": old_text[:80], "partial_match": partial_idx != -1},
+                    )
 
             second_idx = original.find(old_text, first_idx + 1)
             if second_idx != -1:
