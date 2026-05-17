@@ -212,3 +212,25 @@ Meta-Learning Plane
 - `judgment-layer.md`：判断层现状与升级方向
 - `memory-architecture.md`：记忆层如何承接 Run 和 MetaReflection
 - `schema-evolution.md`：如何无痛加 runs / meta_reflections 表
+
+## 2026-05-17 — 工具能力对齐
+
+### 新增工具
+- web.fetch — 网页抓取
+- web.search — 网页搜索 (DuckDuckGo)
+- browser.* — 浏览器自动化 (agent-browser)
+- task.plan — 结构化执行计划 (对齐 OpenClaw update_plan)
+
+### 安全增强
+- 路径守卫: workspace 沙箱 (/root/lingzhou, /root/.lingzhou)
+- 原子写入: .lingzhou-tmp → rename
+- 目录保护: is_dir 前置检查
+- 文件大小限制: 100k 读 / 200k 写
+
+### 修复
+- perception_replay NameError → _tick_finalize 传参
+- _MUTATION_TOOLS 死循环 → 移除 shell.run
+- systemd service → /etc/systemd/system/lingzhou.service
+- crash log 捕获 → stderr → crash.log
+- 默认通道 → gateway.default_channel: "wechat"
+- gateway logs CLI → tail/errors/crash/wechat/stats
