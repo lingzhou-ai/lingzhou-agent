@@ -173,6 +173,9 @@ class CognitionLoop:
         self._conv_history: deque[tuple[str, str]] = deque(maxlen=6)
         # 心跳计时(monotonic,独立于用户 cron,不存 DB)
         self._last_heartbeat_at: float = 0.0
+        # bootstrap 模式（由 soul.bootstrap() 在 open/run 时写入）
+        # "full" = 首次运行；"none" = 正常运行（BOOTSTRAP.md 已删除）
+        self._bootstrap_mode: str = "none"
         # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
         # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好

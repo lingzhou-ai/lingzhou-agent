@@ -53,7 +53,7 @@ async def _open_runtime_impl(loop: Any) -> None:
     await ensure_models_json(loop._cfg)
     loop._routing_providers = _build_routing_providers(loop._cfg)
     loop._judgment.set_routing_providers(loop._routing_providers)
-    await loop._soul.bootstrap(loop._judgment)
+    loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
     await _restore_state_from_db_impl(loop)
 
 
@@ -63,7 +63,7 @@ async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
     await ensure_models_json(cfg)
     loop._routing_providers = _build_routing_providers(cfg)
     loop._judgment.set_routing_providers(loop._routing_providers)
-    await loop._soul.bootstrap(loop._judgment)
+    loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
     loop._judgment.self_model.record_start(name="lingzhou")
     loop._judgment.self_model.set_routing(cfg)
     await _restore_self_model_impl(loop)

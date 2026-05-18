@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from core.workspace_defaults import (
     IDENTITY_MD,
@@ -23,6 +23,17 @@ from core.workspace_defaults import (
     TOOLS_MD,
     HEARTBEAT_MD,
     MEMORY_MD,
+)
+
+from core.workspace_state import (
+    BootstrapMode,
+    WorkspaceState,
+    bootstrap_status,
+    read_workspace_state,
+    reconcile_bootstrap_completion,
+    resolve_bootstrap_mode,
+    write_workspace_state,
+    _now_iso,
 )
 
 if TYPE_CHECKING:
@@ -131,6 +142,12 @@ class SoulManager:
             if not fpath.exists():
                 fpath.write_text(content, encoding="utf-8")
                 _log.info("%s 初始化: 已写入 %s", fname, fpath)
+                if fname == "BOOTSTRAP.md":
+                    state = read_workspace_state(workspace)
+                    if not state.bootstrap_seeded_at:
+                        state.bootstrap_seeded_at = _now_iso()
+                        write_workspace_state(workspace, state)
+                        _log.debug("[workspace_state] bootstrapSeededAt 已写入")
 
     async def sync_md(self) -> None:
         """将 facts DB 中最新 EMA ethos 值同步写回 SOUL.md（人类可读镜像）。
@@ -146,20 +163,41 @@ class SoulManager:
         soul_path = self._cfg.workspace_dir / "SOUL.md"
         soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
 
-    async def bootstrap(self, judgment: "JudgmentLayer | None" = None) -> None:
+    async def bootstrap(
+        self,
+        judgment: "JudgmentLayer | None" = None,
+        run_kind: Literal["interactive", "heartbeat", "cron"] = "interactive",
+    ) -> BootstrapMode:
         """冷启动：Soul 文件初始化 + WM 身份注入 + system prompt 前缀注入。
 
-        启动身份注入规则：
-        - BOOTSTRAP.md / IDENTITY.md → judgment.set_identity_prefix()（永久注入 system prompt）
-        - 所有身份文件 → WM（in-context 引用，优先级 0.85）
+        对齐 OpenClaw bootstrap 三模式机制：
+        - "full"  : bootstrap 待完成（BOOTSTRAP.md 存在）且交互式运行
+                   → BOOTSTRAP.md + 所有身份文件注入 system prompt 和 WM
+        - "limited": bootstrap 待完成但非交互式（预留）
+        - "none"  : bootstrap 已完成（BOOTSTRAP.md 已删除或 setupCompletedAt 已写入）
+                   → 跳过 BOOTSTRAP.md，仅注入其余身份文件
+
+        返回本次计算的 BootstrapMode，供 CognitionLoop 存储在 _bootstrap_mode 上。
         """
         from memory.working import WMItem
 
         await self.init_files()
         workspace = self._cfg.workspace_dir
+
+        # ① 检测上次 run 末尾是否已删除 BOOTSTRAP.md → 持久化 setupCompletedAt
+        state = reconcile_bootstrap_completion(workspace)
+
+        # ② 计算本次 bootstrap 模式
+        pending = bootstrap_status(workspace, state) == "pending"
+        mode = resolve_bootstrap_mode(pending, run_kind)
+        _log.info("[boot] bootstrap_mode=%s (pending=%s run_kind=%s)", mode, pending, run_kind)
+
         injected: list[str] = []
         identity_parts: list[str] = []
         for fname in _BOOTSTRAP_FILES:
+            # "none" 模式：跳过 BOOTSTRAP.md（已完成初始化，不再注入启动指令）
+            if mode == "none" and fname == "BOOTSTRAP.md":
+                continue
             fpath = workspace / fname
             if fpath.exists():
                 try:
@@ -171,7 +209,8 @@ class SoulManager:
                     ))
                     injected.append(fname)
                     # 核心身份文件 → system prompt 前缀（永久，不随 WM 驱逐）
-                    if fname in ("BOOTSTRAP.md", "IDENTITY.md"):
+                    # "none" 模式只保留 IDENTITY.md；"full" 模式保留两者
+                    if fname == "IDENTITY.md" or (mode == "full" and fname == "BOOTSTRAP.md"):
                         identity_parts.append(f"[{fname}]\n{content}")
                 except Exception:
                     pass
@@ -202,6 +241,8 @@ class SoulManager:
         ]
         for s in old_hb:
             await self._task_store.cancel_signal(s["id"])
+
+        return mode
 
     async def refresh_identity(self, judgment: "JudgmentLayer | None" = None) -> None:
         """重读身份文件，更新 system prompt 前缀。

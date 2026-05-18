@@ -648,3 +648,41 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     except Exception as e:
         _log.exception("编辑文件失败: %s", path)
         return ToolResult(summary=f"编辑失败: {path}", error=type(e).__name__)
+
+
+@tool(ToolManifest(
+    name="file.delete",
+    description=(
+        "删除 workspace 中的指定文件。"
+        "⚠️ 不可逆操作，请确认路径正确。"
+        "主要用途：初始化完成后删除 BOOTSTRAP.md，或清理临时文件。"
+    ),
+    progress_category="mutation",
+    params=[
+        ToolParam("path", "string", "要删除的文件路径（相对于 workspace 或绝对路径）", required=True),
+    ],
+))
+async def file_delete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    path = _resolve_mutation_path(Path(params.get("path") or "").expanduser(), ctx)
+
+    if not path.exists():
+        return ToolResult(summary=f"文件不存在: {path}", error="FileNotFound", skipped=True)
+
+    if path.is_dir():
+        return ToolResult(summary=f"目标是目录而非文件: {path}（file.delete 仅删除文件）", error="IsDirectory", skipped=True)
+
+    ok, err = _path_guard(path)
+    if not ok:
+        return ToolResult(summary=err, error="PathBlocked", skipped=True)
+
+    try:
+        path.unlink()
+        _log.info("file.delete: 已删除 %s", path)
+        return ToolResult(
+            summary=f"已删除: {path}",
+            state_delta={"file": "deleted", "path": str(path)},
+            resource_key=str(path),
+        )
+    except Exception as e:
+        _log.exception("删除文件失败: %s", path)
+        return ToolResult(summary=f"删除失败: {path}", error=type(e).__name__)

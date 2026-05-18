@@ -378,6 +378,18 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             for item in loop._behavior.on_edit_failure(result.error or ""):
                 loop._wm.add(item)
 
+    # ① in-session bootstrap 完成检测
+    # 当本次运行为“full” 模式时，如果工具将 BOOTSTRAP.md 删除，说明初始化已完成；
+    # 立即 reconcile（写入 setupCompletedAt）并刷新 identity 前缀（移除 BOOTSTRAP.md 内容）。
+    if loop._bootstrap_mode == "full":
+        bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
+        if not bootstrap_path.exists():
+            from core.workspace_state import reconcile_bootstrap_completion
+            reconcile_bootstrap_completion(loop._cfg.workspace_dir)
+            await loop._soul.refresh_identity(loop._judgment)
+            loop._bootstrap_mode = "none"
+            _log.info("[bootstrap] BOOTSTRAP.md 已删除，切换到正常运行模式")
+
     if _should_continue_within_tick(
         action,
         user_message=user_message,
@@ -456,6 +468,16 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             result = cont_result
             if action.reply_to_user or not _should_continue_within_tick(action):
                 break
+
+        # ② continue 循环结束后同步检测（兜底 inner 轮删除 BOOTSTRAP.md 的场景）
+        if loop._bootstrap_mode == "full":
+            bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
+            if not bootstrap_path.exists():
+                from core.workspace_state import reconcile_bootstrap_completion
+                reconcile_bootstrap_completion(loop._cfg.workspace_dir)
+                await loop._soul.refresh_identity(loop._judgment)
+                loop._bootstrap_mode = "none"
+                _log.info("[bootstrap] BOOTSTRAP.md 已删除（inner），切换到正常运行模式")
 
     if user_message and not action.reply_to_user:
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)

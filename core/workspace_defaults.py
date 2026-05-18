@@ -53,7 +53,18 @@ BOOTSTRAP_MD = """\
 - 是否有 MEMORY.md 中的重要长期原则要带进当前判断
 - 是否有 HEARTBEAT / schedule 需要处理的提醒
 - 是否存在“我会继续”但没有真正启动后续动作的假继续链
-"""
+## 初始化完成后
+
+完成以下所有工作后，使用 `file.delete` 删除本文件（BOOTSTRAP.md）：
+
+1. 确认 IDENTITY.md 包含正确的身份描述
+2. 确认 SOUL.md 包含核心价值观与使命
+3. 确认 USER.md 包含爸爸的偏好与称呼信息
+4. 确认 TOOLS.md 包含本地环境与工具经验
+
+> **文件存在 = 初始化待完成；文件不存在 = 运行时正常模式。**
+> 删除后每次重启不再注入 BOOTSTRAP.md 及其启动指令，
+> 其他身份文件（IDENTITY.md、SOUL.md 等）照常注入。"""
 
 USER_MD = """\
 # USER.md - 关于爸爸
