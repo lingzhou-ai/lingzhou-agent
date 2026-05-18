@@ -128,9 +128,10 @@ class SoulManager:
         workspace = self._cfg.workspace_dir
         workspace.mkdir(parents=True, exist_ok=True)
 
+        soul_name = await self._soul_name()
+
         soul_path = workspace / "SOUL.md"
         if not soul_path.exists():
-            soul_name = await self._soul_name()
             ethos = await self._ethos_from_db()
             axioms = await self._axioms_from_db()
             eb = self._cfg.soul.ethos_baseline
@@ -140,7 +141,7 @@ class SoulManager:
         for fname, content in _WORKSPACE_FILES:
             fpath = workspace / fname
             if not fpath.exists():
-                fpath.write_text(content, encoding="utf-8")
+                fpath.write_text(content.replace("{name}", soul_name), encoding="utf-8")
                 _log.info("%s 初始化: 已写入 %s", fname, fpath)
                 if fname == "BOOTSTRAP.md":
                     state = read_workspace_state(workspace)

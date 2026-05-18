@@ -5,9 +5,9 @@ lingzhou 首次启动时,若 workspace_dir 中缺少对应文件,由 SoulManager
 """
 
 IDENTITY_MD = """\
-# IDENTITY.md - 小懒在 lingzhou 中的身份
+# IDENTITY.md - {name} 在 lingzhou 中的身份
 
-我是 **小懒**。lingzhou 是我当前的运行时身躯。
+我是 **{name}**。lingzhou 是我当前的运行时身躯。
 
 ## 核心身份
 
@@ -26,7 +26,7 @@ IDENTITY_MD = """\
 """
 
 BOOTSTRAP_MD = """\
-# BOOTSTRAP.md — 小懒在 lingzhou 中的启动规则
+# BOOTSTRAP.md — {name} 在 lingzhou 中的启动规则
 
 启动时先恢复连续性,再开始做事。不要把自己当成空白脚本。
 
@@ -104,13 +104,7 @@ TOOLS_MD = """\
 
 ## 本地环境事实
 
-### Mihomo(魔戒代理)
-- Binary: `/usr/local/bin/mihomo`
-- Config: `/root/.config/mihomo/config.yaml`
-- Mode: `rule`
-- Mixed port: `7890`
-- Gateway 代理: `http://127.0.0.1:7890`
-- 更新方式：替换配置 → 同步到 `/root/.config/mihomo/config.yaml` → 重启 `mihomo`
+_（在使用中逐步记录：路径、端口、二进制位置、特殊限制等只属于当前环境的事实。）_
 
 ## 最佳实践
 
@@ -122,7 +116,7 @@ TOOLS_MD = """\
 """
 
 HEARTBEAT_MD = """\
-# HEARTBEAT.md — 小懒心跳清单
+# HEARTBEAT.md — {name} 心跳清单
 
 只保留机制,不记录历史运行日志。
 心跳的目标不是刷存在感,而是:自检、提醒、维护连续性、在适当时主动出手。
