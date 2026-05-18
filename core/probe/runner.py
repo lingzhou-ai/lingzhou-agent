@@ -186,7 +186,8 @@ class ProbeRunner:
 
 
 def _format_summary(cfg: ProbeConfig, result: ProbeResult) -> str:
-    header = f"[探针 {cfg.name}] {result.triggered_at} ({result.duration_ms}ms)"
+    purpose_hint = f" [{cfg.purpose}]" if getattr(cfg, "purpose", "") else ""
+    header = f"[探针 {cfg.name}]{purpose_hint} {result.triggered_at} ({result.duration_ms}ms)"
     if result.error:
         return f"{header}\n❌ 错误: {result.error}"
     return f"{header}\n{result.output[:1000]}" if result.output else f"{header}\n(无输出)"

@@ -74,6 +74,19 @@ class ProbeManager:
     async def get_probe(self, name: str) -> ProbeConfig | None:
         return await self._store.get(name)
 
+    async def set_enabled(self, name: str, enabled: bool) -> bool:
+        """启用或暂停探针。暂停时停止调度但保留配置；恢复时重新启动调度。"""
+        ok = await self._store.set_enabled(name, enabled)
+        if not ok:
+            return False
+        if enabled:
+            cfg = await self._store.get(name)
+            if cfg:
+                self._runner._schedule(cfg)
+        else:
+            self._runner.unschedule(name)
+        return True
+
     def runner_status(self) -> dict[str, str]:
         """各探针调度 Task 的运行状态。"""
         return self._runner.status()

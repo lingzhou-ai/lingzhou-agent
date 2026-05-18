@@ -93,11 +93,18 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _log.exception("[probe.install] 失败: %s", exc)
         return ToolResult(summary=f"安装探针失败: {exc}", error=type(exc).__name__)
 
+    first_run_hint = (
+        "  ℹ 立即用 probe.run 获取首次读数（interval 探针首次执行需等满一个间隔）"
+        if saved.trigger.startswith("interval:")
+        else ""
+    )
     return ToolResult(
         summary=(
             f"探针已安装: {saved.name}\n"
+            f"  purpose={saved.purpose or '（未填写）'}\n"
             f"  kind={saved.kind}  trigger={saved.trigger}  data_back={saved.data_back}\n"
             f"  spec={saved.spec[:80]}"
+            + ("\n" + first_run_hint if first_run_hint else "")
         ),
         state_delta={"probe": "installed", "name": saved.name},
     )
@@ -194,13 +201,58 @@ async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             result_preview = f"  最近错误: {p.last_error[:80]}"
         elif p.last_result:
             result_preview = f"  最近结果: {p.last_result[:80]}"
+        purpose_line = f"\n  目的: {p.purpose}" if getattr(p, "purpose", "") else ""
         lines.append(
-            f"• {p.name} [{status}]\n"
+            f"• {p.name} [{status}]{purpose_line}\n"
             f"  kind={p.kind}  trigger={p.trigger}  data_back={p.data_back}\n"
             f"  最近运行: {last}{result_preview}"
         )
 
     return ToolResult(summary="\n".join(lines))
+
+
+@tool(ToolManifest(
+    name="probe.disable",
+    description="暂停（禁用）一个探针：停止其调度但保留配置，可用 probe.enable 恢复。",
+    params=[
+        ToolParam("name", "string", "要禁用的探针名称", required=True),
+    ],
+    progress_category="mutation",
+))
+async def probe_disable(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    probe_mgr = _get_probe_manager(ctx)
+    if probe_mgr is None:
+        return ToolResult(summary="探针系统未初始化", error="ProbeManagerNotFound", skipped=True)
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return ToolResult(summary="name 不能为空", error="InvalidParam", skipped=True)
+    ok = await probe_mgr.set_enabled(name, False)
+    if not ok:
+        return ToolResult(summary=f"探针不存在: {name}", error="NotFound", skipped=True)
+    return ToolResult(summary=f"探针已暂停: {name}（配置保留，用 probe.enable 恢复）",
+                      state_delta={"probe": "disabled", "name": name})
+
+
+@tool(ToolManifest(
+    name="probe.enable",
+    description="恢复（启用）一个已暂停的探针，立即重启调度。",
+    params=[
+        ToolParam("name", "string", "要启用的探针名称", required=True),
+    ],
+    progress_category="mutation",
+))
+async def probe_enable(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    probe_mgr = _get_probe_manager(ctx)
+    if probe_mgr is None:
+        return ToolResult(summary="探针系统未初始化", error="ProbeManagerNotFound", skipped=True)
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return ToolResult(summary="name 不能为空", error="InvalidParam", skipped=True)
+    ok = await probe_mgr.set_enabled(name, True)
+    if not ok:
+        return ToolResult(summary=f"探针不存在: {name}", error="NotFound", skipped=True)
+    return ToolResult(summary=f"探针已恢复运行: {name}",
+                      state_delta={"probe": "enabled", "name": name})
 
 
 # ── 内部工具函数 ────────────────────────────────────────────────────────────────

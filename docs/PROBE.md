@@ -90,6 +90,9 @@ purpose: "监控 Redis"
 | `alert_expr`    | -    | 告警条件 Python 表达式                                  |
 | `alert_message` | -    | 告警提示文本，支持 `{output}` 占位符                    |
 
+> **注意**：`interval` 探针安装后第一次执行会延迟一个完整间隔。
+> 如需立即获取数据，安装后立即调用 `probe.run`。
+
 ### `probe.run` — 立即触发探针
 
 立即执行指定探针并返回结果，无论探针是 `manual` 还是 `interval`。
@@ -103,9 +106,26 @@ purpose: "监控 Redis"
 
 返回当前部署的所有探针状态，包括名称、目的、最近读数、是否启用等。
 
+### `probe.disable` — 暂停探针
+
+停止探针的定时调度，但保留配置（purpose / spec 等）。
+可用 `probe.enable` 恢复，无需重新安装。
+
+```json
+{ "name": "disk_usage" }
+```
+
+### `probe.enable` — 恢复探针
+
+重新启动一个已暂停的探针，立即恢复调度。
+
+```json
+{ "name": "disk_usage" }
+```
+
 ### `probe.remove` — 拆除探针
 
-停止并删除指定探针，释放感知资源。
+停止并永久删除指定探针，释放感知资源。
 
 ```json
 { "name": "disk_usage" }
