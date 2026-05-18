@@ -236,7 +236,7 @@ class WechatChannel:
                 "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
                 "WHERE role = 'assistant' AND session_id LIKE 'wechat:%' "
                 "AND status IN ('pending', 'processed') "
-                "ORDER BY id DESC LIMIT 20"
+                "ORDER BY id ASC LIMIT 20"
             ).fetchall()
         finally:
             conn.close()
