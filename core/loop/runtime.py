@@ -81,6 +81,7 @@ from provider import create_provider
 from tools.registry import ToolRegistry, ToolContext, ToolResult
 from core.behavior_tracker import BehaviorTracker
 from core.soul import SoulManager
+from core.probe import ProbeManager
 from .driver import _run_cycle_impl, _wait_after_cycle_impl, _wait_for_event_impl
 from .chat import _process_pending_chat_turn, _tick_interact_impl
 from .reload import _maybe_hot_reload_provider_impl
@@ -176,6 +177,10 @@ class CognitionLoop:
         # bootstrap 模式（由 soul.bootstrap() 在 open/run 时写入）
         # "full" = 首次运行；"none" = 正常运行（BOOTSTRAP.md 已删除）
         self._bootstrap_mode: str = "none"
+        # 探针系统：由 startup.open 调用 manager.start() 初始化
+        self._probe_manager: ProbeManager = ProbeManager(lambda: self._task_store._db)
+        # 将 probe_manager 注入 task_store，供工具层通过 ctx.task_store 访问
+        self._task_store._probe_manager_ref = self._probe_manager
         # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
         # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
@@ -190,6 +195,10 @@ class CognitionLoop:
         from store.auth import AUTH_PROFILES_PATH as _AUTH_PROFILES_PATH
         self._auth_profiles_path: Path = _AUTH_PROFILES_PATH
         self._auth_profiles_mtime: float = _AUTH_PROFILES_PATH.stat().st_mtime if _AUTH_PROFILES_PATH.exists() else 0.0
+
+    @property
+    def probe_manager(self) -> ProbeManager:
+        return self._probe_manager
 
     @property
     def semantic(self) -> SemanticMemory:
@@ -247,6 +256,7 @@ class CognitionLoop:
                 await _wait_after_cycle_impl(self)
                 cfg = self._cfg  # 可能已更新
         finally:
+            self._probe_manager.stop()
             await self._task_store.close()
             await self._provider.close()
             for _rp in self._routing_providers.values():

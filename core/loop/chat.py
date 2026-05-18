@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -65,6 +66,19 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
     cycle += 1
     user_message = str(chat_message.get("content") or "")
     chat_id = str(chat_message.get("chat_id") or "")
+    msg_id: int = chat_message.get("id") or 0
+
+    # 短暂等待，让同一会话紧随而来的附件消息（如图片下载完成后插入的消息）有时间落库，
+    # 然后原子 drain — 合并为同一个 LLM 上下文轮次，避免"看不到图片"的竞态。
+    if chat_id:
+        await asyncio.sleep(0.4)
+        follow_ups = await loop._task_store.drain_pending_for_session(chat_id, after_id=msg_id)
+        if follow_ups:
+            extra = "\n".join(m["content"] for m in follow_ups)
+            user_message = f"{user_message}\n{extra}".strip()
+            _log.debug("[chat] merged %d follow-up message(s) into turn (ids=%s)",
+                       len(follow_ups), [m["id"] for m in follow_ups])
+
     _log.info("[chat] user › %s", user_message[:200])
     reply = await loop._tick(
         cycle,

@@ -76,6 +76,32 @@ class ChatMessageStore:
         await self._db.commit()
         return {"id": mid, "content": content, "chat_id": chat_id}
 
+    async def drain_pending_for_session(
+        self,
+        chat_id: str,
+        after_id: int,
+    ) -> list[dict[str, Any]]:
+        """原子获取并标记同 session_id 中 id > after_id 的所有 pending 用户消息。
+
+        用于在 pop_pending_message 之后合并紧跟而来的同会话消息（如图片附件）。
+        """
+        async with self._db.execute(
+            "SELECT id, content FROM chat_messages "
+            "WHERE role='user' AND status='pending' AND session_id=? AND id>? ORDER BY id",
+            (chat_id, after_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            return []
+        ids = [r[0] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"UPDATE chat_messages SET status='processed' WHERE id IN ({placeholders})",
+            ids,
+        )
+        await self._db.commit()
+        return [{"id": r[0], "content": r[1]} for r in rows]
+
     async def get_messages_since(
         self,
         since_id: int = 0,

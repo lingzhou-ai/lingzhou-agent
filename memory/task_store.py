@@ -416,6 +416,8 @@ class TaskStore:
         self._tasks = TaskStateStore(lambda: self._db)
         self._runs = RunStore(lambda: self._db)
         self._meta_reflections = MetaReflectionStore(lambda: self._db)
+        # 由 CognitionLoop.__init__ 注入，供 probe 工具通过 ctx.task_store 访问
+        self._probe_manager_ref: Any = None
 
     @property
     def _db(self) -> aiosqlite.Connection:
@@ -861,6 +863,14 @@ class TaskStore:
     async def pop_pending_chat_message(self) -> Optional[dict[str, Any]]:
         """原子获取并标记最早一条待处理 user 消息（无则返回 None）。"""
         return await self._chat.pop_pending_message()
+
+    async def drain_pending_for_session(
+        self, chat_id: str, after_id: int
+    ) -> list[dict[str, Any]]:
+        """原子获取并标记同 session 中 id > after_id 的所有 pending 用户消息。
+        用于合并图片等紧随文本消息之后到达的附件消息。
+        """
+        return await self._chat.drain_pending_for_session(chat_id, after_id)
 
     async def get_chat_messages_since(
         self,
