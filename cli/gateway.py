@@ -314,7 +314,7 @@ def gateway_start(
 
     local    — 本地终端，无需配置，直接运行
     webhook  — HTTP 接入，loop 与 webhook server 并行
-    wechat   — 微信 bot（通过 hermesclaw 代理）
+    wechat   — 微信 iLink 通道
     telegram — Telegram Bot（开发中）
     """
     # 从 config 读取默认渠道（直接读 JSON，避免 Pydantic 模型不包含 gateway 字段）
@@ -502,7 +502,7 @@ def _start_wechat_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
 
     iLink long-poll → 写入 SQLite tasks 表 → loop 消费 → 回复通过 iLink 发送
     """
-    from core.wechat_channel import start_wechat_channel
+    from channels.wechat import start_wechat_channel
 
     db_path = str(cfg.db_path)
     console.print(

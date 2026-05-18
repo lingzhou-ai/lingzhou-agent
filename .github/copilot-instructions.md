@@ -12,28 +12,37 @@ lingzhou is a **self-evolving digital life seed**, not a chat wrapper or tool or
 - The agent is named **灵舟 (Língzhōu)**.
 - It is designed to run autonomously in a loop, evolving its own tools and behavior.
 - Python is chosen because `importlib.reload()` + `compile()` enable true runtime self-modification.
-- The primary runtime is `core/loop.py`. One tick = perceive → emotion → ethos → judgment → execute → memory.
+- The primary runtime is `core/loop/runtime.py` (stable import path `core.loop`). One tick = perceive → emotion → ethos → judgment → execute → memory.
 
 ---
 
 ## Repository Layout
 
 ```
-lingzhou.py           CLI entry (init / loop / interact)
+lingzhou.py           CLI entry
+store/
+  auth.py             Auth credential storage & token resolution
+  memory/             Persistence helpers (chat/fact/failure/run/reflection/signal/task)
 core/
   config.py           All config from lingzhou.json (no hardcoded values)
-  loop.py             Main cognitive loop (tick orchestration)
-  perception.py       OCC emotion, Ethos, JudgmentSignals, replay summaries
-  judgment.py         Bundle assembly → LLM call → JudgmentOutput parse
-  execution.py        Tool dispatch
+  loop/               Main cognitive loop — runtime, tick, chat, driver, startup, reload, postprocess, logging, progress
+  judgment/           JudgmentLayer (runtime), context helpers (context), stable façade (__init__)
   evolution.py        LLM code-gen + importlib hot-swap
+  perception.py       OCC emotion, Ethos, JudgmentSignals
+  execution.py        Tool dispatch
+  behavior_tracker.py Repeat action pattern detection
+  self_drive.py       Intrinsic motivation engine
+  plugin.py           Plugin lifecycle manager
+  run_refresh.py      Run status refresh
+  task_runtime.py     Meta reflection ingestion & task progress sync
 memory/
   working.py          Bounded priority heap (WMEntry)
   episodic.py         task-{id}.md narrative + events.jsonl structured events
   semantic.py         nodes/*.json — ACT-R multi-anchor retrieval
-  task_store.py       SQLite ACID state: tasks / failures / facts
+  task_store.py       SQLite ACID face: tasks / failures / facts (delegates to store/memory/)
 provider/
-  openai_compat.py    DashScope/Qwen via OpenAI-compatible API
+  openai_compat.py    DashScope/Qwen/Copilot via OpenAI-compatible API
+  catalog.py          Model context window catalog
 tools/
   registry.py         @tool decorator + discover() + reload_tool()
   file.py             file.read / file.write / file.list
@@ -44,6 +53,7 @@ prompts/
   judgment.md         Judgment bundle template (Jinja2-style {placeholders})
   system.md           Static identity text
   evolution.md        Code synthesis prompt
+channels/             External message channels (wechat etc.)
 docs/                 Project documentation (bilingual)
 ```
 
@@ -69,13 +79,13 @@ docs/                 Project documentation (bilingual)
 | Issue | 解决位置 | 状态 |
 |---|---|---|
 | template variables not in judgment.md | `prompts/judgment.md` | ✅ 已修复 |
-| `reflection` field missing from `JudgmentOutput` | `core/judgment.py:45` | ✅ 已修复 |
-| `skills_section` not wired | `core/judgment.py` | ✅ 已修复 |
+| `reflection` field missing from `JudgmentOutput` | `core/judgment/runtime.py` | ✅ 已修复 |
+| `skills_section` not wired | `core/judgment/runtime.py` | ✅ 已修复 |
 | `core/skill.py` (`SkillRegistry`) does not exist | `core/skill.py` | ✅ 已创建 |
 | `BOOTSTRAP.md` / `IDENTITY.md` not injected | `core/soul.py:bootstrap()` | ✅ 已修复 |
 | Activation decay not implemented | `memory/semantic.py:effective_activation()` | ✅ 已修复 |
 | `events.jsonl` unbounded growth, O(n) | `memory/episodic.py:_rotate_events_db()` | ✅ 已修复 |
-| EMA write-back not implemented | `core/loop.py:345-356` | ✅ 已修复 |
+| EMA write-back not implemented | `core/loop/runtime.py` | ✅ 已修复 |
 
 ---
 
@@ -104,7 +114,7 @@ These notes are internal AI context. They inform design decisions but are not pa
 ### Prior Agent A (session-centric TypeScript agent)
 
 - **Memory model**: SQLite with tables `sessions`, `messages`, `state_meta`, FTS5 virtual table (trigram tokenizer) over messages.
-- **Soul injection**: `SOUL.md` file read from `HERMES_HOME` once per session → injected into system prompt as-is.
+- **Soul injection**: `SOUL.md` file read from a central config path once per session → injected into system prompt as-is.
 - **Memory fencing**: `<memory-context>...</memory-context>` XML tags in prompt; `StreamingContextScrubber` strips them from user-visible output.
 - **Plugin memory manager**: Separate plugin handles reading/writing memory nodes, decoupled from main agent loop.
 - **Schema evolution**: `_reconcile_columns()` pattern — `PRAGMA table_info` diff then `ALTER TABLE ADD COLUMN` for missing columns. lingzhou adopted this pattern in `task_store._migrate()`.

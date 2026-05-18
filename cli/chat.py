@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from memory.task_store import TaskStore
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
-from memory.task_store import _sanitize_chat_content
+from store.memory import sanitize_chat_content
 
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
@@ -83,9 +83,9 @@ def _infer_user_title_from_messages(messages: list[dict[str, object]]) -> str:
     return ""
 
 
-def _chat_input_prompt(user_title: str = "", session_id: str = "") -> str:
-    """优先使用会话中已识别的用户称谓；未知时退回 session/chat id。"""
-    label = str(user_title or "").strip() or str(session_id or "").strip() or "chat"
+def _chat_input_prompt(user_title: str = "", chat_id: str = "") -> str:
+    """优先使用会话中已识别的用户称谓；未知时退回 chat id。"""
+    label = str(user_title or "").strip() or str(chat_id or "").strip() or "chat"
     return f"{label}> "
 
 
@@ -204,7 +204,7 @@ async def _main(
     config: Path,
     ask: Optional[str],
     timeout: int,
-    session_id: str,
+    chat_id: str,
 ) -> None:
     from memory.task_store import TaskStore
 
@@ -223,11 +223,11 @@ async def _main(
             pass
 
         if ask is not None:
-            await _ask_once(store, ask, timeout, session_id, name_val)
+            await _ask_once(store, ask, timeout, chat_id, name_val)
         else:
             # 交互模式：从配置读 chat_reply_timeout
             interactive_timeout = cfg.loop.chat_reply_timeout
-            await _interactive(store, cfg, session_id, name_val, interactive_timeout)
+            await _interactive(store, cfg, chat_id, name_val, interactive_timeout)
     finally:
         await store.close()
 
@@ -236,18 +236,18 @@ async def _ask_once(
     store: "TaskStore",
     text: str,
     timeout: int,
-    session_id: str,
+    chat_id: str,
     agent_name: str,
 ) -> None:
     """一次性模式：发送 → 轮询回复 → 打印 → 退出。"""
-    msg_id = await store.add_chat_message("user", text, session_id)
+    msg_id = await store.add_chat_message("user", text, chat_id=chat_id)
     console.print(f"[dim][你][/dim] {text}")
     console.print(f"[dim]等待 {agent_name} 回复（最长 {timeout}s）…[/dim]")
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(0.1)
-        msgs = await store.get_chat_messages_since(msg_id, session_id)
+        msgs = await store.get_chat_messages_since(msg_id, chat_id=chat_id)
         for m in msgs:
             if m["role"] == "assistant":
                 console.print(f"[bold green][{agent_name}][/bold green] {m['content']}")
@@ -261,7 +261,7 @@ async def _ask_once(
 async def _interactive(
     store: "TaskStore",
     cfg,
-    session_id: str,
+    chat_id: str,
     agent_name: str,
     reply_timeout: int = 300,  # noqa: ARG001 — 保留签名兼容，异步模式不再阻塞等待
 ) -> None:
@@ -273,9 +273,9 @@ async def _interactive(
       两个 task 并发运行，互不阻塞。LLM 慢/宕机时用户可继续输入。
     """
     # 显示最近历史（最多 10 条）
-    history = await store.get_chat_messages_since(0, session_id)
+    history = await store.get_chat_messages_since(0, chat_id=chat_id)
     last_id = 0
-    prompt_state = {"value": _chat_input_prompt(_infer_user_title_from_messages(history), session_id)}
+    prompt_state = {"value": _chat_input_prompt(_infer_user_title_from_messages(history), chat_id)}
     if history:
         recent = history[-10:]
         last_id = history[-1]["id"]
@@ -308,7 +308,7 @@ async def _interactive(
                     inferred = llm_title
             except Exception:
                 pass
-        prompt_state["value"] = _chat_input_prompt(inferred, session_id)
+        prompt_state["value"] = _chat_input_prompt(inferred, chat_id)
         if redraw:
             _print_input_prompt(prompt_state["value"])
 
@@ -338,9 +338,9 @@ async def _interactive(
                     break
                 user_text = line.strip()
                 if user_text:
-                    await store.add_chat_message("user", user_text, session_id)
+                    await store.add_chat_message("user", user_text, chat_id=chat_id)
                     history.append({"role": "user", "content": user_text})
-                    prompt_state["value"] = _chat_input_prompt(_infer_user_title_from_messages(history), session_id)
+                    prompt_state["value"] = _chat_input_prompt(_infer_user_title_from_messages(history), chat_id)
                     _schedule_prompt_refresh(redraw=False)
                     _erase_last_input_echo()
                     # 告知用户消息已入队，loop 在后台处理（异步模式核心体验）
@@ -353,11 +353,11 @@ async def _interactive(
         try:
             while not stop.is_set():
                 await asyncio.sleep(0.1)
-                new_msgs = await store.get_chat_messages_since(cur_last_id, session_id)
+                new_msgs = await store.get_chat_messages_since(cur_last_id, chat_id=chat_id)
                 for m in new_msgs:
                     cur_last_id = m["id"]
                     history.append({"role": str(m.get("role") or ""), "content": str(m.get("content") or "")})
-                    prompt_state["value"] = _chat_input_prompt(_infer_user_title_from_messages(history), session_id)
+                    prompt_state["value"] = _chat_input_prompt(_infer_user_title_from_messages(history), chat_id)
                     if m["role"] == "assistant":
                         # \n 前缀避免把回复直接挤到用户当前输入后面。
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
@@ -397,13 +397,13 @@ def _read_line(prompt: str = _CHAT_INPUT_PROMPT) -> str:
     """
     import sys
     try:
-        return _sanitize_chat_content(input(prompt))
+        return sanitize_chat_content(input(prompt))
     except UnicodeDecodeError:
         try:
             sys.stdout.write(prompt)
             sys.stdout.flush()
             raw = sys.stdin.buffer.readline()
-            return _sanitize_chat_content(raw.decode("utf-8", errors="replace"))
+            return sanitize_chat_content(raw.decode("utf-8", errors="replace"))
         except (EOFError, KeyboardInterrupt, OSError):
             return ""
     except (EOFError, KeyboardInterrupt, OSError):

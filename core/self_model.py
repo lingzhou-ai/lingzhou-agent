@@ -1,6 +1,6 @@
 """core/self_model.py — 自我模型追踪器。
 
-设计哲学（借鉴 Hermes state + OpenClaw session）：
+设计哲学：
 - 数字生命应该知道自己是谁、运行了多久、消耗了多少
 - 不替 LLM 做决策，而是提供结构化的自我认知信号
 - 轻量、可观测、不增加代码分支复杂度
@@ -120,7 +120,7 @@ class SelfModel:
         provider = cfg.model.split("/")[0] if "/" in cfg.model else ""
         self.billing_mode = "subscription" if provider == "copilot" else "token"
 
-    # ── 持久化（借鉴 OpenClaw session state）──────────────────────────
+    # ── 持久化 ────────────────────────────────────────────────────────
 
     def to_json(self) -> str:
         import json as _json

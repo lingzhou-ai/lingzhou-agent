@@ -9,7 +9,7 @@ import typer
 from rich.panel import Panel
 
 from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path, DEFAULT_CONFIG_PATH
-from auth_store import resolve_copilot_token, AUTH_PROFILES_PATH
+from store.auth import resolve_copilot_token, AUTH_PROFILES_PATH
 
 
 def version() -> None:

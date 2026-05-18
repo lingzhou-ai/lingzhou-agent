@@ -269,7 +269,7 @@ def model(
 
             # copilot 走 auth login 的 token exchange 链，不需要手动填 key
             if chosen_provider == "copilot":
-                from auth_store import get_auth_profile, COPILOT_PROFILE_ID
+                from store.auth import get_auth_profile, COPILOT_PROFILE_ID
                 existing_auth = get_auth_profile(COPILOT_PROFILE_ID)
                 if existing_auth and existing_auth.get("token"):
                     console.print(f"\n[green]✓ 已检测到 Copilot 登录凭证[/green]  [dim](lingzhou auth login 已完成)[/dim]")

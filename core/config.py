@@ -73,7 +73,7 @@ class ProviderDefinition(BaseModel):
         # 3. 回退：~/.lingzhou/auth-profiles.json（需显式配置 auth_profile_id）
         if self.auth_profile_id:
             try:
-                from auth_store import get_auth_profile
+                from store.auth import get_auth_profile
 
                 profile = get_auth_profile(self.auth_profile_id)
                 if isinstance(profile, dict):
@@ -171,6 +171,8 @@ class LoopConfig(BaseModel):
             "复杂推理（evolution、ethos 反思）仍可单独配置为 high。"
         ),
     )
+    # 运行时目录硬规则：一切运行期状态都必须落在 ~/.lingzhou 下，
+    # 不能写回源码仓目录；源码树只承载代码与文档，不承载 runtime data。
     db_path: str = "~/.lingzhou/state/runtime.db"
     memory_dir: str = "~/.lingzhou/memory"
     state_dir: str = "~/.lingzhou/state"

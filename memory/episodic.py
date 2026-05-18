@@ -1,6 +1,6 @@
 """memory/episodic.py — 情节记忆（EpisodicMemory）。
 
-双层存储（借鉴 Hermes，解决 O(n) P0 问题）：
+双层存储（解决 O(n) P0 问题）：
   1. task-{id}.md / global.md  — 人类可读叙事（保持原行为；直接截取末尾注入 LLM context）
   2. episodic.db               — 结构化事件 + 叙事 FTS5 索引
      - events 表：替代 O(n) events.jsonl 扫描，O(log n) 索引查询
@@ -102,7 +102,7 @@ class EpisodicMemory:
     # ── DB 初始化 & 迁移 ─────────────────────────────────────────────────────
 
     def _migrate_schema(self) -> None:
-        """幂等索引补全（Hermes _reconcile_columns 模式）。
+        """幂等索引补全。
 
         新增索引：
           idx_narrative_task_id — load_for_context 按 task_id 过滤

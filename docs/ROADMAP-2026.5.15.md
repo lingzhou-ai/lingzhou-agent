@@ -219,7 +219,7 @@ Meta-Learning Plane
 - web.fetch — 网页抓取
 - web.search — 网页搜索 (DuckDuckGo)
 - browser.* — 浏览器自动化 (agent-browser)
-- task.plan — 结构化执行计划 (对齐 OpenClaw update_plan)
+- task.plan — 结构化执行计划
 
 ### 安全增强
 - 路径守卫: workspace 沙箱 (/root/lingzhou, /root/.lingzhou)

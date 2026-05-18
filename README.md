@@ -34,6 +34,8 @@ lingzhou gateway restart           # 重启
 lingzhou stop                      # 停止
 ```
 
+运行时目录规则：所有 runtime data 一律写入 `~/.lingzhou/`，包括 `state/`、`memory/`、`workspace/`、日志和临时产物。源码仓目录只放代码、配置样例和文档，不承载运行期文件。
+
 ### 系统服务（推荐）
 
 ```bash
@@ -80,7 +82,7 @@ sudo systemctl enable --now lingzhou
 - **🧠 自驱力引擎** — Active Inference + Intrinsic Motivation，空闲时自主探索
 - **🔧 自进化** — 检测失败模式，LLM 生成修复代码，语法验证后用热加载生效
 - **📋 任务管理** — 完整的 add→advance→complete→fail 生命周期
-- **💬 微信 Bot** — 通过 hermesclaw 代理接入，支持 slash 命令路由
+- **💬 微信 Bot** — iLink long-poll 接入，图片消息可落地后进入多模态分析链路
 - **🌐 Web 能力** — 网页搜索、网页抓取、headless 浏览器
 - **🔌 插件系统** — discover→load→register→start 生命周期
 - **♻️ 配置热加载** — 修改 lingzhou.json 无需重启
@@ -98,9 +100,7 @@ sudo systemctl enable --now lingzhou
 }
 ```
 
-LLM 可通过 `config.get` / `config.set` 工具在运行时自主调参。
-
-[完整配置参考](docs/CONFIG.md)
+LLM 可通过 `config.get` / `config.set` 工具在运行时自主调参。[完整配置参考](docs/CONFIG.md)
 
 ## 插件开发
 
@@ -121,9 +121,11 @@ def register(ctx):
 ```
 lingzhou/
 ├── core/           # 认知核心 (loop/judgment/perception/evolution/self_drive)
+├── channels/       # 外部消息通道 (wechat 等)
 ├── cli/            # 命令行入口 (gateway/chat/config/logs/plugin)
 ├── tools/          # 46 个工具
-├── memory/         # 记忆系统 (WM/episodic/semantic/task_store)
+├── store/          # 持久化主线 (auth + memory/)
+├── memory/         # 记忆系统 façade (WM/episodic/semantic/task_store)
 ├── provider/       # LLM 接入层
 ├── plugins/        # 插件目录
 ├── docs/           # 文档
@@ -142,7 +144,7 @@ lingzhou/
 - **Self-Regulated Learning** — Zimmerman (2000)
 - **Open-Ended Learning** — Wang et al. (2019, POET)
 
-灵舟在架构上参考了 [OpenClaw](https://github.com/openclaw/openclaw) 和 [Hermes](https://github.com/AaronWong1999/hermesclaw)。
+灵舟参考的是通用认知架构、事件驱动通道和可热加载运行时的设计思路，而不是复刻单一外部项目。
 
 ## 许可证
 

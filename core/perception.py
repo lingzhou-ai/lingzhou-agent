@@ -173,7 +173,7 @@ class EmotionState:
 
 @dataclass
 class PerceptionReplaySummary:
-    """最近 N 次感知事件的趋势摘要（Hermes BuildPerceptionReplay 移植）。"""
+    """最近 N 次感知事件的趋势摘要。"""
     samples: int = 0
     avg_prediction_error: float = 0.0
     high_error_streak: int = 0      # 从最新往前，连续 prediction_error > high_error_threshold 的次数
@@ -236,7 +236,7 @@ def build_emotion_replay(events: list[dict[str, Any]]) -> EmotionReplaySummary:
     return r
 
 
-# ── Ethos 价值层（Hermes ethos.DeriveWithBaseline 移植）────────────────────────
+# ── Ethos 价值层 ─────────────────────────────────────────────────────────────
 # 参考：Kohlberg (1969) 道德发展内化原则；McCloskey & Glucksberg (1978) 概念渐变
 
 @dataclass
@@ -250,7 +250,7 @@ class EthosValues:
 
 @dataclass
 class EthosBias:
-    """当前 tick 的行为倾向，用于候选动作预排名（Hermes rank.go 移植）。"""
+    """当前 tick 的行为倾向，用于候选动作预排名。"""
     prefer_verification: bool = False   # 优先验证类动作
     prefer_narrow_scope: bool = False   # 优先收窄范围
     preserve_continuity: bool = False   # 优先维持任务连续
@@ -333,7 +333,6 @@ def derive_ethos_state(
 
 
 # ── 判断信号（预计算，供 rank + LLM 消费）─────────────────────────────────────
-# 参考：Hermes judgment/simulate.go simulateDecision
 
 @dataclass
 class JudgmentSignals:

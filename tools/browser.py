@@ -1,6 +1,6 @@
-"""tools/browser.py — 浏览器自动化工具（对齐 OpenClaw browser 能力）。
+"""tools/browser.py — 浏览器自动化工具。
 
-基于 agent-browser CLI（headless Chromium），与 hermes 相同方案。
+基于 agent-browser CLI（headless Chromium）。
 无需图形界面，在 Linux 服务器上零成本运行。
 
 工具：

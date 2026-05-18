@@ -1,9 +1,31 @@
 # 更新日志
 
+## [Unreleased]
+
+### 重构
+- **loop 模块第二阶段拆分** — 新增 `core/loop/common.py`、`core/loop/tick.py`，将 `_tick`、`_tick_finalize` 与 post-tick memory/进度收尾从 `core/loop/runtime.py` 迁出，`runtime.py` 只保留装配与生命周期
+- **loop chat 子模块落地** — 新增 `core/loop/chat.py`，将会话绑定、reply session 恢复与 `tick_interact` 从主编排中抽出，修复“自主追问只写日志不外发”的链路缺口
+- **chat 口径统一为 chat_id** — chat IPC / loop chat / CLI chat / wechat 通道统一改用 `chat_id` 语义；SQLite 历史列名 `session_id` 保留为存储实现细节
+- **loop driver 子模块落地** — 新增 `core/loop/driver.py`，将 run 主循环中的“单轮执行 + 事件驱动等待”从 `runtime.py` 抽离，进一步收窄 runtime 职责
+- **loop startup 子模块落地** — 新增 `core/loop/startup.py`，将 `open()/run()` 启动期的 routing/provider 装配、soul bootstrap、self model 恢复与 DB 状态恢复从 `runtime.py` 抽离
+- **store/memory 主线落地** — chat/fact/failure/signal/run/reflection/task 持久化 helper 统一收口到 `store/memory/`；`memory/task_store.py` 只保留 façade；删除 `memory/store/` 旧兼容路径与误入仓库的运行期节点样本
+- **store/auth 主线落地** — auth 持久化统一收口到 `store/auth.py`，移除 `auth_store.py` 兼容入口
+- **冗余清理继续推进** — 删除 `runtime.py` 重复的 `_last_decision` 初始化；`cli/chat.py` 内部私有链路统一为 `chat_id`
+- **loop chat 内部接口继续收紧** — `pop_pending_chat_message()` 内部返回结构仅保留 `chat_id`；`_tick()` 私有入口移除 `chat_session_id` 旧参数
+- **judgment 目录化** — `core/judgment/runtime.py` 承载判断层主逻辑，`core/judgment/context.py` 承载 context/format/budget helper，`core/judgment/__init__.py` 仅保留 façade 和兼容导出
+- **channel 目录落地** — 微信通道实现迁移到 `channels/wechat.py`，`core/wechat_channel.py` 兼容 re-export 已清理删除
+
+### 新增
+- **图片能力路由** — `image.analyze` 在当前模型不支持 `vision + image` 时，会自动切换到可用视觉模型，而不是直接沿用纯文本模型
+
+### 修复
+- **打包清单缺口** — `pyproject.toml` 的 wheel 包列表补入 `channels`
+- **运行时依赖缺失** — 为微信通道补充 `requests`、`cryptography` 依赖声明，并同步安装到本地虚拟环境
+
 ## [0.2.0] — 2026-05-17
 
 ### 新增
-- **46 个工具** — 全面对齐 OpenClaw：web.fetch、web.search、browser.*、image.generate、tts.speak
+- **46 个工具** — 覆盖 web.fetch、web.search、browser.*、image.generate、tts.speak
 - **task.plan** — 结构化执行计划（对齐 update_plan）
 - **config.get/set** — LLM 可自主调参，自动热重载
 - **插件系统** — discover→load→register→start 生命周期
@@ -29,6 +51,6 @@
 - 认知循环 (Perception → Judgment → Execution → Reflection)
 - 自驱力引擎 (Active Inference + Intrinsic Motivation)
 - 进化引擎 (LLM 生成 + 语法验证 + 热重载)
-- 微信 bot 通道 (iLink long-poll via hermesclaw proxy)
+- 微信 bot 通道 (iLink long-poll)
 - 30+ 工具：文件、Shell、记忆、任务、定时
 - CLI chat、gateway logs、plugin 管理

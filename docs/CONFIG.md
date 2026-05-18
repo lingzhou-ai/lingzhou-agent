@@ -3,6 +3,8 @@
 所有配置在 `~/.lingzhou/lingzhou.json` 中。LLM 可通过 `config.get` / `config.set` 工具运行
 时读写，修改后自动热重载。
 
+运行时目录是硬规则：`db_path`、`memory_dir`、`state_dir`、`workspace_dir` 以及日志、临时产物都必须位于 `~/.lingzhou/` 下；源码仓目录只承载代码、样例配置和文档，不承载 runtime data。
+
 ## 模型
 
 ```jsonc

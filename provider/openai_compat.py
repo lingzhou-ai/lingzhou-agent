@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from auth_store import (
+from store.auth import (
     load_copilot_token_cache,
     resolve_copilot_token,
     save_copilot_token_cache,

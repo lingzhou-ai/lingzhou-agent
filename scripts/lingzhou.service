@@ -1,0 +1,16 @@
+[Unit]
+Description=灵舟 (lingzhou) — 自编程自进化认知 Agent
+Documentation=https://github.com/xiaolanplan/lingzhou
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lingzhou-systemd-wrapper.sh
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=-/root/.lingzhou/.env
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

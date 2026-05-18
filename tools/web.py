@@ -1,7 +1,4 @@
-"""tools/web.py — web_fetch + web_search 工具。
-
-对齐 OpenClaw web fetch/search 能力。
-"""
+"""tools/web.py — web_fetch + web_search 工具。"""
 
 from __future__ import annotations
 

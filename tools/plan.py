@@ -1,4 +1,4 @@
-"""tools/plan.py — task.plan 工具（对齐 OpenClaw update_plan）。
+"""tools/plan.py — task.plan 工具。
 
 让 LLM 为当前任务维护结构化执行计划。
 每步三种状态：pending / in_progress / completed，至多一步 in_progress。

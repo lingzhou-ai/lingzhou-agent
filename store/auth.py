@@ -1,12 +1,4 @@
-"""auth_store.py — 认证资料存储与解析。
-
-目标：给 lingzhou 提供最小但正式的 Copilot 凭证管理能力。
-
-当前范围：
-- 规范化 auth-profiles.json 读写
-- Copilot token 解析（env → auth profile → legacy credentials）
-- Copilot 短期 token cache 读写
-"""
+"""认证资料存储与解析。"""
 from __future__ import annotations
 
 import json
@@ -23,8 +15,6 @@ GITHUB_DEVICE_AUTH_PATH = Path("~/.lingzhou/auth/github-device.json").expanduser
 
 COPILOT_PROFILE_ID = "copilot:default"
 COPILOT_ENV_ORDER = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
-# TODO: 这里应替换成 Lingzhou 自己注册的 GitHub OAuth App client_id。
-# 目前保持空字符串，避免误把别家的 client_id 当作 Lingzhou 的正式方案。
 BUILTIN_GITHUB_DEVICE_CLIENT_ID = ""
 
 
@@ -137,7 +127,6 @@ def resolve_copilot_token(api_key_env: str = "GITHUB_TOKEN") -> TokenResolution 
             ordered_envs.append(name)
             seen.add(name)
 
-    # lingzhou 规则：显式登录写入的 auth profile 比环境变量优先。
     profile = get_auth_profile(COPILOT_PROFILE_ID)
     if profile and isinstance(profile, dict):
         token = str(profile.get("token", "")).strip()
@@ -189,3 +178,27 @@ def save_copilot_token_cache(
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     path.chmod(0o600)
+
+
+__all__ = [
+    "AUTH_PROFILES_PATH",
+    "LEGACY_CREDENTIALS_PATH",
+    "COPILOT_TOKEN_CACHE_PATH",
+    "GITHUB_DEVICE_AUTH_PATH",
+    "COPILOT_PROFILE_ID",
+    "COPILOT_ENV_ORDER",
+    "BUILTIN_GITHUB_DEVICE_CLIENT_ID",
+    "TokenResolution",
+    "CopilotTokenCache",
+    "mask_secret",
+    "load_auth_profiles",
+    "save_auth_profiles",
+    "get_auth_profile",
+    "set_token_profile",
+    "load_legacy_credentials",
+    "save_legacy_credentials",
+    "load_github_device_client_id",
+    "resolve_copilot_token",
+    "load_copilot_token_cache",
+    "save_copilot_token_cache",
+]

@@ -14,7 +14,7 @@ _log = logging.getLogger("lingzhou.tools.file")
 
 # 核心文件列表 — 修改这些文件需要额外验证
 _CORE_FILES = frozenset({
-    "core/loop.py", "core/judgment.py", "core/execution.py",
+    "core/loop/__init__.py", "core/loop/runtime.py", "core/loop/logging.py", "core/loop/progress.py", "core/loop/postprocess.py", "core/judgment/__init__.py", "core/judgment/runtime.py", "core/judgment/context.py", "core/execution.py",
     "core/perception.py", "core/config.py", "core/evolution.py",
     "memory/task_store.py", "memory/working.py", "memory/episodic.py",
     "provider/openai_compat.py", "tools/registry.py",
@@ -69,7 +69,7 @@ import re
 def _fuzzy_find(content: str, old_text: str) -> int:
     """模糊匹配链：依次尝试宽松策略找到 old_text 在 content 中的位置。
     
-    策略（对齐 hermes fuzzy_match）：
+    策略：
     1. 行去空格匹配 — 每行 strip 后比较
     2. 空白归一化 — 多空格/Tab 坍塌为单空格
     3. 换行归一化 — 字面 \\n 转为实际换行
@@ -549,10 +549,10 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             if not old_text:
                 return ToolResult(summary=f"edits[{i}]: oldText 不能为空", error="EmptyOldText", skipped=True)
 
-            # 对齐 OpenClaw：所有 edit 都基于原始文件匹配，而不是增量匹配修改后的内容。
+            # 所有 edit 都基于原始文件匹配，而不是增量匹配修改后的内容。
             first_idx = original.find(old_text)
             if first_idx == -1:
-                # 模糊匹配链（对齐 hermes fuzzy_match）：依次尝试宽松策略
+                # 模糊匹配链：依次尝试宽松策略
                 fuzzy_idx = _fuzzy_find(original, old_text)
                 if fuzzy_idx != -1:
                     first_idx = fuzzy_idx

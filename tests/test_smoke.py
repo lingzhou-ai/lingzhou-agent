@@ -193,7 +193,7 @@ def test_chat_parse_user_title_from_llm_output_supports_plain_and_json():
     assert _parse_user_title_from_llm_output("NONE") == ""
 
 
-def test_chat_input_prompt_prefers_user_title_then_session_id():
+def test_chat_input_prompt_prefers_user_title_then_chat_id():
     from cli.chat import _chat_input_prompt
 
     assert _chat_input_prompt("爸爸", "chat-42") == "爸爸> "
@@ -420,6 +420,55 @@ async def _task_store_fact_listing_and_delete():
         value, found = await store.get_fact("evolution:verify:file.read")
         assert not found
         assert value == ""
+        await store.close()
+
+
+def test_task_store_signal_lifecycle():
+    asyncio.run(_task_store_signal_lifecycle())
+
+
+async def _task_store_signal_lifecycle():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "signals.db")
+        await store.open()
+
+        once_id = await store.add_signal(
+            "一次性提醒",
+            "2000-01-01 00:00:00",
+            payload={"note": "ping"},
+        )
+        repeat_id = await store.add_signal(
+            "循环提醒",
+            "2000-01-01 00:00:00",
+            repeat_secs=60,
+            payload={"source": "heartbeat"},
+        )
+
+        due = await store.due_signals()
+        assert [sig["id"] for sig in due] == [once_id, repeat_id]
+
+        await store.ack_signal(once_id)
+        once_signal = await store.get_signal(once_id)
+        assert once_signal is not None
+        assert once_signal["status"] == "done"
+
+        repeat_before = await store.get_signal(repeat_id)
+        assert repeat_before is not None
+        await store.ack_signal(repeat_id)
+        repeat_after = await store.get_signal(repeat_id)
+        assert repeat_after is not None
+        assert repeat_after["status"] == "pending"
+        assert repeat_after["run_at"] != repeat_before["run_at"]
+
+        pending = await store.list_signals(limit=10)
+        assert [sig["id"] for sig in pending] == [repeat_id]
+
+        await store.cancel_signal(repeat_id)
+        cancelled = await store.get_signal(repeat_id)
+        assert cancelled is not None
+        assert cancelled["status"] == "cancelled"
         await store.close()
 
 
@@ -1024,7 +1073,7 @@ def test_file_list_and_memory_search():
 
 
 def test_image_source_helpers():
-    from tools.image import _collect_image_sources, _image_part_from_source
+    from tools.image import _collect_image_sources, _image_part_from_source, _resolve_multimodal_model_ref
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -1044,6 +1093,18 @@ def test_image_source_helpers():
         remote_part = _image_part_from_source("https://example.com/demo.jpg", "high")
         assert remote_part["image_url"]["url"] == "https://example.com/demo.jpg"
         assert remote_part["image_url"]["detail"] == "high"
+
+        ctx = cast(Any, SimpleNamespace(config=SimpleNamespace(model="bailian/qwen3.6-plus", active_provider_name="bailian")))
+        assert _resolve_multimodal_model_ref(ctx, capability="vision", input_modality="image") == "bailian/qwen3.6-plus"
+
+
+def test_image_model_routing_falls_back_to_vision_model():
+    from tools.image import _resolve_multimodal_model_ref
+
+    ctx = cast(Any, SimpleNamespace(config=SimpleNamespace(model="deepseek/deepseek-v4-pro", active_provider_name="deepseek")))
+    routed = _resolve_multimodal_model_ref(ctx, capability="vision", input_modality="image")
+    assert routed != "deepseek/deepseek-v4-pro"
+    assert routed == "bailian/qwen3.6-plus"
 
 
 async def _file_list_and_memory_search():
@@ -1076,17 +1137,17 @@ async def _file_list_and_memory_search():
         semantic.upsert(MemoryNode(
             id='task-note-1',
             kind='fact',
-            title='openclaw primary carrier',
-            body='/root/.openclaw/memory/main.sqlite',
-            tags=['task:33', 'path:/root/.openclaw/memory'],
+            title='legacy runtime primary carrier',
+            body='/root/.legacy-runtime/memory/main.sqlite',
+            tags=['task:33', 'path:/root/.legacy-runtime/memory'],
         ))
         found = await memory_search({'query': 'bug'}, ctx)
         assert 'bug fix note' in found.summary
 
-        filtered = await memory_search({'query': 'openclaw', 'task_id': '33', 'path_prefix': '/root/.openclaw/memory'}, ctx)
-        assert 'openclaw primary carrier' in filtered.summary
+        filtered = await memory_search({'query': 'legacy runtime', 'task_id': '33', 'path_prefix': '/root/.legacy-runtime/memory'}, ctx)
+        assert 'legacy runtime primary carrier' in filtered.summary
 
-        excluded = await memory_search({'query': 'openclaw', 'task_id': '34'}, ctx)
+        excluded = await memory_search({'query': 'legacy runtime', 'task_id': '34'}, ctx)
         assert excluded.skipped is True
 
 
@@ -2715,7 +2776,7 @@ async def _chat_reply_is_persisted_before_post_tick_cleanup():
             loop._post_tick_memory = _boom
 
             with pytest.raises(RuntimeError, match="post tick cleanup failed"):
-                await loop._tick(1, user_message="你好", chat_session_id="chat-1")
+                await loop._tick(1, user_message="你好", chat_id="chat-1")
 
             msgs = await loop.task_store.get_chat_messages_since(0, "chat-1")
             assert len(msgs) == 1
@@ -2726,8 +2787,84 @@ async def _chat_reply_is_persisted_before_post_tick_cleanup():
             await loop.provider.close()
 
 
+def test_autonomous_followup_reply_uses_bound_chat_session():
+    asyncio.run(_autonomous_followup_reply_uses_bound_chat_session())
+
+
+async def _autonomous_followup_reply_uses_bound_chat_session():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            task_id = await loop.task_store.add_task(
+                "继续向用户确认",
+                goal="等待用户回复后继续",
+                source="external",
+                next_step="追问用户缺失信息",
+            )
+            await loop.task_store.update_status(task_id, "in_progress", "追问用户缺失信息")
+            await loop.task_store.set_fact(f"task:{task_id}:chat_id", "wechat:user-1", scope="task")
+
+            async def _sense(*args, **kwargs):
+                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+
+            loop._perception.sense = _sense
+            loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
+                Any,
+                SimpleNamespace(
+                    repeat_action_count=0,
+                    repeat_action_tool="",
+                    repeat_action_key="",
+                    repeat_read_count=0,
+                    repeat_read_path="",
+                    loop_probe_version=0,
+                ),
+            )
+
+            async def _decide(*args, **kwargs):
+                return _judgment_output(
+                    decision="pause",
+                    rationale="需要用户补充一个关键参数",
+                    reply_to_user="我还缺一个参数，麻烦补充一下。",
+                )
+
+            loop._judgment.decide = _decide
+            loop._judgment._last_call_meta = {
+                "model_ref": cfg.model,
+                "thinking": cfg.thinking,
+                "tier": "reasoner",
+                "phase": "initial",
+            }
+
+            reply = await loop._tick(1)
+
+            assert reply == "我还缺一个参数，麻烦补充一下。"
+            msgs = await loop.task_store.get_chat_messages_since(0, "wechat:user-1")
+            assert len(msgs) == 1
+            assert msgs[0]["role"] == "assistant"
+            assert msgs[0]["content"] == "我还缺一个参数，麻烦补充一下。"
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
 def test_auth_store_profile_roundtrip(tmp_path):
-    from auth_store import load_auth_profiles, set_token_profile
+    from store.auth import load_auth_profiles, set_token_profile
 
     path = tmp_path / "auth-profiles.json"
     set_token_profile(profile_id="copilot:default", provider="copilot", token="tok-123456", path=path)
@@ -2738,7 +2875,7 @@ def test_auth_store_profile_roundtrip(tmp_path):
 
 
 def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
-    from auth_store import resolve_copilot_token, set_token_profile, save_legacy_credentials
+    from store.auth import resolve_copilot_token, set_token_profile, save_legacy_credentials
 
     monkeypatch.setenv("GH_TOKEN", "env-gh-token")
     monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
@@ -2747,7 +2884,7 @@ def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
     set_token_profile(profile_id="copilot:default", provider="copilot", token="profile-token", path=tmp_path / "auth-profiles.json")
     save_legacy_credentials({"GITHUB_TOKEN": "legacy-token"}, path=tmp_path / "credentials.json")
 
-    import auth_store as auth_mod
+    import store.auth as auth_mod
     monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
     monkeypatch.setattr(auth_mod, "LEGACY_CREDENTIALS_PATH", tmp_path / "credentials.json")
 
@@ -2759,7 +2896,7 @@ def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
 
 def test_github_device_client_id_prefers_env(monkeypatch, tmp_path):
     import json
-    import auth_store as auth_mod
+    import store.auth as auth_mod
 
     state_file = tmp_path / "github-device.json"
     state_file.write_text(json.dumps({"client_id": "Iv1.file-client"}), encoding="utf-8")
@@ -2768,6 +2905,226 @@ def test_github_device_client_id_prefers_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LINGZHOU_GITHUB_CLIENT_ID", "Iv1.env-client")
 
     assert auth_mod.load_github_device_client_id() == "Iv1.env-client"
+
+
+def _write_hot_reload_config(
+    path: Path,
+    *,
+    model: str,
+    mtime: float,
+    embedding_model: str | None = "text-embedding-v3",
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "bailian": {
+                        "type": "openai_compat",
+                        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "api_key_env": "DASHSCOPE_API_KEY",
+                    },
+                    "copilot": {
+                        "type": "openai_compat",
+                        "mode": "copilot",
+                        "base_url": "https://api.githubcopilot.com",
+                        "api_key_env": "GITHUB_TOKEN",
+                    },
+                },
+                "model": model,
+                "routing": {"reader": "bailian/qwen-plus"},
+                "loop": {
+                    "db_path": str(path.parent / "state" / "runtime.db"),
+                    "memory_dir": str(path.parent / "memory"),
+                    "state_dir": str(path.parent / "state"),
+                    "workspace_dir": str(path.parent / "workspace"),
+                },
+                "memory": {
+                    "embedding_model": embedding_model,
+                    "embedding_weight": 0.45,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    os.utime(path, (mtime, mtime))
+
+
+class _ReloadClosable:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.closed = False
+
+    def embed(self, text: str) -> list[float]:
+        return [float(len(text) or 1)]
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _ReloadSelfModel:
+    def __init__(self) -> None:
+        self.last_cfg = None
+
+    def set_routing(self, cfg: Any) -> None:
+        self.last_cfg = cfg
+
+
+class _ReloadJudgment:
+    def __init__(self, provider: Any, registry: Any, cfg: Any) -> None:
+        self.provider = provider
+        self.registry = registry
+        self.cfg = cfg
+        self.self_model = _ReloadSelfModel()
+        self.routing_providers: dict[str, Any] = {}
+
+    def set_routing_providers(self, providers: dict[str, Any]) -> None:
+        self.routing_providers = providers
+
+
+class _ReloadExecution:
+    def __init__(self, registry: Any, cfg: Any) -> None:
+        self.registry = registry
+        self.cfg = cfg
+
+
+class _ReloadEvolution:
+    def __init__(self, cfg: Any, provider: Any, registry: Any) -> None:
+        self.cfg = cfg
+        self.provider = provider
+        self.registry = registry
+
+
+class _ReloadPerception:
+    def __init__(self, cfg: Any) -> None:
+        self.cfg = cfg
+
+
+class _ReloadSoul:
+    def __init__(self, cfg: Any) -> None:
+        self._cfg = cfg
+        self.refresh_calls = 0
+
+    async def refresh_identity(self, judgment: Any = None) -> None:
+        self.refresh_calls += 1
+
+
+def test_hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
+    asyncio.run(_hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path))
+
+
+async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
+    from core.config import Config
+    import core.loop.reload as reload_mod
+
+    cfg_path = tmp_path / "lingzhou.json"
+    old_mtime = time.time() - 10
+    new_mtime = old_mtime + 5
+    _write_hot_reload_config(cfg_path, model="bailian/qwen-plus", mtime=old_mtime)
+    old_cfg = Config.load(cfg_path)
+    _write_hot_reload_config(cfg_path, model="copilot/gpt-5.4", mtime=new_mtime)
+
+    old_provider = _ReloadClosable("old-main")
+    old_reader = _ReloadClosable("old-reader")
+    self_model = _ReloadSelfModel()
+    loop = cast(
+        Any,
+        SimpleNamespace(
+            _cfg=old_cfg,
+            _cfg_file=cfg_path,
+            _cfg_mtime=old_mtime,
+            _auth_profiles_path=tmp_path / "auth-profiles.json",
+            _auth_profiles_mtime=0.0,
+            _provider=old_provider,
+            _routing_providers={"reader": old_reader},
+            _registry=object(),
+            _judgment=SimpleNamespace(self_model=self_model),
+            _execution=object(),
+            _evolution=object(),
+            _perception=object(),
+            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _soul=_ReloadSoul(old_cfg),
+        ),
+    )
+
+    monkeypatch.setattr(reload_mod, "create_provider", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    await reload_mod._maybe_hot_reload_provider_impl(loop)
+
+    assert loop._cfg is old_cfg
+    assert loop._provider is old_provider
+    assert loop._routing_providers["reader"] is old_reader
+    assert loop._cfg_mtime == old_mtime
+    assert loop._auth_profiles_mtime == 0.0
+    assert old_provider.closed is False
+    assert old_reader.closed is False
+    assert loop._soul._cfg is old_cfg
+
+
+def test_hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path):
+    asyncio.run(_hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path))
+
+
+async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path):
+    from core.config import Config
+    import core.loop.reload as reload_mod
+
+    cfg_path = tmp_path / "lingzhou.json"
+    old_mtime = time.time() - 10
+    new_mtime = old_mtime + 5
+    _write_hot_reload_config(cfg_path, model="bailian/qwen-plus", mtime=old_mtime)
+    old_cfg = Config.load(cfg_path)
+    _write_hot_reload_config(cfg_path, model="copilot/gpt-5.4", mtime=new_mtime)
+
+    old_provider = _ReloadClosable("old-main")
+    old_reader = _ReloadClosable("old-reader")
+    new_provider = _ReloadClosable("new-main")
+    new_reader = _ReloadClosable("new-reader")
+    self_model = _ReloadSelfModel()
+    loop = cast(
+        Any,
+        SimpleNamespace(
+            _cfg=old_cfg,
+            _cfg_file=cfg_path,
+            _cfg_mtime=old_mtime,
+            _auth_profiles_path=tmp_path / "auth-profiles.json",
+            _auth_profiles_mtime=0.0,
+            _provider=old_provider,
+            _routing_providers={"reader": old_reader},
+            _registry=object(),
+            _judgment=SimpleNamespace(self_model=self_model),
+            _execution="old-execution",
+            _evolution="old-evolution",
+            _perception="old-perception",
+            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _soul=_ReloadSoul(old_cfg),
+        ),
+    )
+
+    monkeypatch.setattr(reload_mod, "create_provider", lambda cfg: new_provider)
+    monkeypatch.setattr(reload_mod, "_build_routing_providers", lambda cfg: {"reader": new_reader})
+    monkeypatch.setattr(reload_mod, "JudgmentLayer", _ReloadJudgment)
+    monkeypatch.setattr(reload_mod, "ExecutionLayer", _ReloadExecution)
+    monkeypatch.setattr(reload_mod, "EvolutionEngine", _ReloadEvolution)
+    monkeypatch.setattr(reload_mod, "PerceptionLayer", _ReloadPerception)
+
+    await reload_mod._maybe_hot_reload_provider_impl(loop)
+
+    assert loop._cfg.model == "copilot/gpt-5.4"
+    assert loop._provider is new_provider
+    assert loop._routing_providers["reader"] is new_reader
+    assert isinstance(loop._judgment, _ReloadJudgment)
+    assert isinstance(loop._execution, _ReloadExecution)
+    assert isinstance(loop._evolution, _ReloadEvolution)
+    assert isinstance(loop._perception, _ReloadPerception)
+    assert loop._cfg_mtime == new_mtime
+    assert old_provider.closed is True
+    assert old_reader.closed is True
+    assert loop._soul._cfg is loop._cfg
+    assert loop._soul.refresh_calls == 1
+    assert callable(loop._semantic._embed_fn)
+    assert loop._semantic._embedding_weight == loop._cfg.memory.embedding_weight
+    assert self_model.last_cfg is loop._cfg
 
 
 def test_copilot_gpt5_does_not_auto_inject_max_completion_tokens():
@@ -3098,7 +3455,7 @@ def test_copilot_base_url_derives_from_proxy_ep():
     assert _derive_copilot_api_base_url_from_token(token) == "https://api.business.githubcopilot.com"
 
 
-def test_copilot_normalize_base_url_uses_openclaw_default():
+def test_copilot_normalize_base_url_uses_default_base_url():
     from provider.openai_compat import _normalize_copilot_api_base_url, DEFAULT_COPILOT_API_BASE_URL
 
     assert _normalize_copilot_api_base_url("") == DEFAULT_COPILOT_API_BASE_URL
@@ -3293,7 +3650,7 @@ def test_behavior_gate_passthrough_and_logs_observation(caplog):
     class _Signals:
         repeat_action_count = 3
         repeat_action_tool = "memory.search"
-        repeat_action_key = "openclaw"
+        repeat_action_key = "legacy runtime"
         repeat_read_count = 0
         repeat_read_path = ""
         loop_probe_version = 5
@@ -3301,7 +3658,7 @@ def test_behavior_gate_passthrough_and_logs_observation(caplog):
     action = _judgment_output(
         decision="act",
         chosen_action_id="memory.search",
-        params={"query": "openclaw"},
+        params={"query": "legacy runtime"},
         rationale="再搜一次",
     )
     gated = tracker.apply_execution_gate(action, _Signals())
@@ -3348,22 +3705,22 @@ def test_cognitive_signals_include_last_action_feedback_and_repeat_list():
     text = CognitiveSignals(
         repeat_action_count=3,
         repeat_action_tool="memory.search",
-        repeat_action_key="openclaw sqlite",
+        repeat_action_key="legacy runtime sqlite",
         repeat_read_count=0,
         repeat_read_path="",
         repeat_list_count=3,
-        repeat_list_path="/root/.openclaw/memory",
+        repeat_list_path="/root/.legacy-runtime/memory",
         loop_probe_version=9,
         last_action_tool="shell.run",
-        last_action_key="find /root/.openclaw",
+        last_action_key="find /root/.legacy-runtime",
         last_action_status="ok",
         last_action_summary="找到了 main.sqlite，但没有进一步推进 next_step",
         last_action_error="",
         last_action_state_delta="process=finished; exit_code=0",
         last_action_progressful=False,
         recent_action_history=[
-            "tool=file.list | key=/root/.openclaw | status=ok | progressful=True",
-            "tool=memory.search | key=openclaw sqlite | status=ok | progressful=False",
+            "tool=file.list | key=/root/.legacy-runtime | status=ok | progressful=True",
+            "tool=memory.search | key=legacy runtime sqlite | status=ok | progressful=False",
         ],
     ).to_text()
 
@@ -3371,7 +3728,7 @@ def test_cognitive_signals_include_last_action_feedback_and_repeat_list():
     assert "repeat_list_count=3" in text
     assert "被系统判定为未推进" in text
     assert "recent_actions:" in text
-    assert "tool=memory.search | key=openclaw sqlite" in text
+    assert "tool=memory.search | key=legacy runtime sqlite" in text
 
 
 def test_skill_registry_logs_selected_skills(caplog):
@@ -3826,8 +4183,8 @@ async def _write_success_stall_meta_reflection_records_task_hint():
         task = await store.get_task_by_id(task_id)
         assert task is not None
 
-        action = _judgment_output(decision="act", chosen_action_id="memory.search", params={"query": "openclaw"})
-        result = ToolResult(summary="命中旧记忆：/root/.openclaw/memory/main.sqlite")
+        action = _judgment_output(decision="act", chosen_action_id="memory.search", params={"query": "legacy runtime"})
+        result = ToolResult(summary="命中旧记忆：/root/.legacy-runtime/memory/main.sqlite")
         await _write_success_stall_meta_reflection(store, task, action, result, streak=2, cycle=12)
 
         raw, found = await store.get_fact(f"task:{task_id}:meta_reflection")
@@ -3863,7 +4220,7 @@ def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
     from tools.registry import ToolResult
 
     action = _judgment_output(decision="pause", rationale="源路径证据不存在，需要用户补充。")
-    result = ToolResult(summary="路径不存在: /root/.openclaw/source", error="FileNotFound")
+    result = ToolResult(summary="路径不存在: /root/.legacy-runtime/source", error="FileNotFound")
 
     reply = _fallback_reply_for_user(action, result, None)
     assert reply.startswith("状态: error")
@@ -3938,19 +4295,19 @@ async def test_sync_task_progress_state_preserves_explicit_current_step_from_sta
         task = await store.get_task_by_id(task_id)
         assert task is not None
 
-        await store.sync_task_progress(task_id, current_step="收到新迁移指令", next_step="开始盘点 openclaw 记忆")
+        await store.sync_task_progress(task_id, current_step="收到新迁移指令", next_step="开始盘点旧运行时记忆")
         updated = await _sync_task_progress_state(
             store,
             task,
             previous_next_step="继续旧技能",
-            action=_judgment_output(decision="act", chosen_action_id="task.update", next_step="开始盘点 openclaw 记忆"),
+            action=_judgment_output(decision="act", chosen_action_id="task.update", next_step="开始盘点旧运行时记忆"),
             progressful=True,
-            state_delta={"current_step": "收到新迁移指令", "next_step": "开始盘点 openclaw 记忆"},
+            state_delta={"current_step": "收到新迁移指令", "next_step": "开始盘点旧运行时记忆"},
         )
 
         assert updated is not None
         assert updated.current_step == "收到新迁移指令"
-        assert updated.next_step == "开始盘点 openclaw 记忆"
+        assert updated.next_step == "开始盘点旧运行时记忆"
         await store.close()
 
 
@@ -3988,19 +4345,19 @@ async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / 'facts.db')
         await store.open()
-        task_id = await store.add_task('分析 openclaw 记忆', goal='确认 carrier')
+        task_id = await store.add_task('分析旧运行时记忆', goal='确认 carrier')
         task = await store.get_task_by_id(task_id)
         assert task is not None
 
         await store.set_fact(f'task:{task_id}:progress', '已确认 sqlite 为主载体', scope='task')
-        await store.set_fact('openclaw.workspace_memory.primary_carrier', '/root/.openclaw/memory/main.sqlite')
+        await store.set_fact('legacy_runtime.workspace_memory.primary_carrier', '/root/.legacy-runtime/memory/main.sqlite')
         await store.set_fact('pref:routing_overrides', '{"reader":"demo"}', scope='system')
 
         facts = await _load_context_facts_snapshot(store, task)
         text = _fmt_context_facts(facts)
 
         assert f'task:{task_id}:progress' in text
-        assert 'openclaw.workspace_memory.primary_carrier' in text
+        assert 'legacy_runtime.workspace_memory.primary_carrier' in text
         assert 'pref:routing_overrides' not in text
         await store.close()
 

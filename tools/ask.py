@@ -1,4 +1,4 @@
-"""tools/ask.py — task.ask 工具（对齐 hermes clarify_tool）。
+"""tools/ask.py — task.ask 工具。
 
 LLM 可通过此工具向用户提问，获取澄清或额外信息。
 在微信/webchat 通道中表现为文本提问，在 CLI 中表现为终端提示。

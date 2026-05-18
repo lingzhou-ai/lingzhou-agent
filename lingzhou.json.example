@@ -83,7 +83,7 @@
   },
 
   "_doc_model_fallbacks": [
-    "OpenClaw 风格显式回退链：每个 tier 按顺序尝试模型（超时/401/429 时自动切换）。",
+    "显式回退链：每个 tier 按顺序尝试模型（超时/401/429 时自动切换）。",
     "可用 key：reader/reasoner/repair（兼容 simple/complex）。"
   ],
   "model_fallbacks": {
@@ -116,6 +116,7 @@
 
   "loop": {
     "_comment": "事件驱动时序：认知唤醒由事件/预测误差驱动，而非固定时钟节拍（Active Inference）",
+    "_comment_runtime_root": "运行时目录硬规则：db_path / memory_dir / state_dir / workspace_dir 必须位于 ~/.lingzhou/ 下，源码仓目录不承载 runtime data",
     "min_act_gap": 2.0,
     "max_idle_gap": 60,
     "wake_poll_interval": 0.5,

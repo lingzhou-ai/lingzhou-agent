@@ -10,6 +10,7 @@ build/
 *.egg-info/
 .DS_Store
 *.bak
+*.lingzhou-backup
 .github/
 
 # 运行时工作区文件（由 lingzhou init 生成到 ~/.lingzhou/workspace/，不属于代码库）
@@ -33,3 +34,12 @@ _migration_out/
 *.shm
 *.tmp-*
 *.trajectory.jsonl
+
+# 不应把运行期语义记忆节点写进源码包目录
+memory/nodes/
+
+# 本地运行目录 / 调试产物
+logs/
+generated/
+workspace/
+output.json

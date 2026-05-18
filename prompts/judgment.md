@@ -201,7 +201,7 @@
 
 **进化安全原则（自我修改铁律）**：
 - 修改任何 Python 文件后，**必须立即用 shell.run 验证**（如 `python -c "from module import Class"` 或跑相关测试）
-- 修改核心文件（core/loop.py、memory/task_store.py 等）后，必须验证系统能启动——跑 `python -c "from core.loop import CognitionLoop"`
+- 修改核心文件（core/loop/runtime.py、core/loop/__init__.py、memory/task_store.py 等）后，必须验证系统能启动——跑 `python -c "from core.loop import CognitionLoop"`
 - 不要在一次编辑中做多个不相关的改动；每次改动后验证，验证通过再继续
 - 如果验证失败，用 file.edit 回退或用备份恢复（.lingzhou-backup 文件自动生成）
 - 语法错误会在 file.edit/file.write 的返回中标注 ⚠️，请立即修复

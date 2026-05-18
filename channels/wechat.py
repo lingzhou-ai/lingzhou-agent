@@ -1,11 +1,4 @@
-"""core/wechat_channel.py — lingzhou 独立的微信 bot 通道 (iLink long-poll)。
-
-独立于 OpenClaw 和 hermes，lingzhou 自己的微信入口。
-工作方式：
-  - iLink long-poll 拉取消息 → 写入 chat_messages 表（user/pending）
-  - Loop 自动消费 pending chat message → 产生 assistant 回复
-  - 回复监控轮询 chat_messages → 通过 iLink sendMessage 发送
-"""
+"""channels/wechat.py — 灵舟微信 iLink 通道。"""
 
 from __future__ import annotations
 
@@ -16,13 +9,15 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-import requests  # type: ignore[import]
+try:
+    import requests  # type: ignore[import]
+except ImportError:
+    requests = None  # type: ignore[assignment]
 
 log = logging.getLogger("lingzhou.wechat")
 
-# ── iLink 常量 ──────────────────────────────────────────────────────────────
 T = 1
 VO = 3
 ILINK_VER = "2.1.7"
@@ -33,15 +28,18 @@ DEFAULT_REPLY_POLL = 3
 MAX_REPLY_RETRIES = 3
 
 
+def _requests_module() -> Any:
+    if requests is None:
+        raise RuntimeError("微信通道依赖 requests，请先安装 requests 后再启用 wechat channel")
+    return requests
+
+
 @dataclass
 class WechatConfig:
     base_url: str = DEFAULT_BASE_URL
     token: str = ""
     poll_sec: int = DEFAULT_POLL_SEC
     reply_poll_sec: int = DEFAULT_REPLY_POLL
-
-
-# ── iLink HTTP helpers ─────────────────────────────────────────────────────
 
 
 def _hdrs(token: str, body: str = "") -> dict[str, str]:
@@ -56,14 +54,16 @@ def _hdrs(token: str, body: str = "") -> dict[str, str]:
 
 
 def _ilink_post(base_url: str, ep: str, bd: dict, token: str, timeout: int = 30) -> dict:
+    req = _requests_module()
     url = base_url.rstrip("/") + "/" + ep.lstrip("/")
     bs = json.dumps(bd)
-    r = requests.post(url, headers=_hdrs(token, bs), data=bs.encode(), timeout=timeout)
+    r = req.post(url, headers=_hdrs(token, bs), data=bs.encode(), timeout=timeout)
     r.raise_for_status()
     return r.json()
 
 
 def get_updates(base_url: str, token: str, buf: str = "", timeout: int | None = None) -> dict:
+    req = _requests_module()
     if timeout is None:
         timeout = DEFAULT_POLL_SEC
     try:
@@ -74,7 +74,7 @@ def get_updates(base_url: str, token: str, buf: str = "", timeout: int | None = 
             token,
             timeout + 5,
         )
-    except requests.exceptions.Timeout:
+    except req.exceptions.Timeout:
         return {"ret": 0, "msgs": [], "get_updates_buf": buf}
     except Exception as e:
         log.warning("getUpdates error: %s", e)
@@ -100,9 +100,6 @@ def send_text(base_url: str, token: str, to_user: str, text: str, ctx: str | Non
     )
 
 
-# ── 消息提取 ────────────────────────────────────────────────────────────────
-
-
 def extract_text(items: list[dict]) -> str:
     parts = []
     for it in items:
@@ -123,7 +120,10 @@ def extract_text(items: list[dict]) -> str:
             full_url = media.get("full_url", "")
             if aeskey and (encrypt_param or full_url):
                 import json as _json
-                img_data = _json.dumps({"aeskey": aeskey, "encrypt_query_param": encrypt_param, "full_url": full_url})
+
+                img_data = _json.dumps(
+                    {"aeskey": aeskey, "encrypt_query_param": encrypt_param, "full_url": full_url}
+                )
                 parts.append(f"[图片消息] {img_data}")
             elif full_url:
                 parts.append(f"[图片消息] {full_url}")
@@ -132,32 +132,27 @@ def extract_text(items: list[dict]) -> str:
     return "\n".join(parts).strip()
 
 
-# ── WechatChannel ──────────────────────────────────────────────────────────
-
-
 class WechatChannel:
-    """lingzhou 微信通道 — daemon 线程，与主 loop 并行运行。
+    """微信通道守护线程。
 
-    poll_loop:    iLink long-poll → chat_messages (user/pending)
-    reply_loop:   轮询 chat_messages → iLink sendMessage
+    poll_loop:  iLink long-poll -> chat_messages (user/pending)
+    reply_loop: chat_messages -> iLink sendMessage
     """
 
     def __init__(self, wc_cfg: WechatConfig, db_path: str):
         self._cfg = wc_cfg
         self._db_path = db_path
         self._stop = threading.Event()
-        self._replied: set[int] = set()  # 已回复的 chat_message id
-        self._user_msg_ids: dict[str, int] = {}  # from_user → 最近的 user msg id
-        self._conn = None  # shared sqlite connection
+        self._replied: set[int] = set()
+        self._user_msg_ids: dict[str, int] = {}
+        self._conn = None
 
     def _get_db(self):
-        """Shared connection, thread-safe."""
         import sqlite3
+
         if self._conn is None:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         return self._conn
-
-    # ── poll: iLink → chat_messages ─────────────────────────────────────
 
     def run_poll(self) -> None:
         log.info("[wechat] poll 启动 base_url=%s", self._cfg.base_url)
@@ -195,6 +190,7 @@ class WechatChannel:
         short = text.replace("\n", " ")[:50]
 
         import sqlite3
+
         conn = sqlite3.connect(self._db_path)
         try:
             conn.execute(
@@ -204,7 +200,6 @@ class WechatChannel:
             )
             conn.commit()
             msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            # 记录 context_token 到 meta
             if ctx_token:
                 conn.execute(
                     "INSERT OR REPLACE INTO facts (key, value) VALUES (?,?)",
@@ -215,8 +210,6 @@ class WechatChannel:
             log.info("[wechat] chat_msg id=%d from=%s: %s", msg_id, from_user[:16], short)
         finally:
             conn.close()
-
-    # ── reply: chat_messages → iLink ────────────────────────────────────
 
     def run_reply(self) -> None:
         log.info("[wechat] reply 监控启动 interval=%ds", self._cfg.reply_poll_sec)
@@ -230,12 +223,12 @@ class WechatChannel:
 
     def _check_and_reply(self) -> None:
         import sqlite3
+
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
         try:
-            # 查找 wechat session 中未回复的 assistant 消息
             rows = conn.execute(
-                "SELECT id, content, session_id, created_at FROM chat_messages "
+                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
                 "WHERE role = 'assistant' AND session_id LIKE 'wechat:%' "
                 "AND status IN ('pending', 'processed') "
                 "ORDER BY id DESC LIMIT 20"
@@ -249,22 +242,19 @@ class WechatChannel:
                 continue
 
             content = row["content"]
-            session_id = row["session_id"] or ""
-            from_user = session_id.replace("wechat:", "", 1)
+            chat_id = row["chat_id"] or ""
+            from_user = chat_id.replace("wechat:", "", 1)
 
             if not from_user or not content:
                 continue
 
-            # 获取 context_token
             ctx_token = self._get_ctx_token(from_user)
-
-            log.info("[wechat] → iLink msg=%d to=%s len=%d", mid, from_user[:16], len(content))
+            log.info("[wechat] -> iLink msg=%d to=%s len=%d", mid, from_user[:16], len(content))
 
             for attempt in range(MAX_REPLY_RETRIES):
                 try:
                     send_text(self._cfg.base_url, self._cfg.token, from_user, content, ctx_token)
                     self._replied.add(mid)
-                    # 标记为已送达
                     self._mark_delivered(mid)
                     log.info("[wechat] 回复成功 msg=%d", mid)
                     break
@@ -274,6 +264,7 @@ class WechatChannel:
 
     def _get_ctx_token(self, from_user: str) -> str:
         import sqlite3
+
         conn = sqlite3.connect(self._db_path)
         try:
             row = conn.execute(
@@ -286,6 +277,7 @@ class WechatChannel:
 
     def _mark_delivered(self, msg_id: int) -> None:
         import sqlite3
+
         conn = sqlite3.connect(self._db_path)
         try:
             conn.execute(
@@ -297,16 +289,19 @@ class WechatChannel:
             conn.close()
 
     def _download_images(self, items: list[dict], from_user: str) -> list[dict]:
-        """Download and decrypt iLink images (AES-ECB)."""
-        import base64, hashlib
+        """下载并解密 iLink 图片（AES-ECB）。"""
+        import hashlib
+
+        req = _requests_module()
+
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes as cipher_modes  # type: ignore[import-untyped]
         except ImportError:
             return items
-        
+
         img_dir = Path.home() / ".lingzhou" / "wechat_images"
         img_dir.mkdir(parents=True, exist_ok=True)
-        
+
         new_items = []
         for it in items:
             tp = it.get("type", 0)
@@ -327,10 +322,11 @@ class WechatChannel:
                 decryptor = cipher.decryptor()
                 if encrypt_param:
                     from urllib.parse import quote
+
                     cdn_url = f"https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param={quote(encrypt_param, safe='')}"
                 else:
                     cdn_url = full_url
-                resp = requests.get(cdn_url, timeout=30)
+                resp = req.get(cdn_url, timeout=30)
                 if resp.status_code != 200:
                     new_items.append(it)
                     continue
@@ -341,8 +337,10 @@ class WechatChannel:
                         decrypted = decrypted[:-pad_len]
                 fhash = hashlib.md5(decrypted).hexdigest()[:12]
                 ext = ".jpg"
-                if decrypted[:4] == b"\x89PNG": ext = ".png"
-                elif decrypted[:4] == b"GIF8": ext = ".gif"
+                if decrypted[:4] == b"\x89PNG":
+                    ext = ".png"
+                elif decrypted[:4] == b"GIF8":
+                    ext = ".gif"
                 fname = img_dir / f"{from_user[:16]}_{fhash}{ext}"
                 fname.write_bytes(decrypted)
                 new_items.append({"type": 1, "text_item": {"text": f"[图片消息，已保存] {fname} ({len(decrypted)} bytes)"}})

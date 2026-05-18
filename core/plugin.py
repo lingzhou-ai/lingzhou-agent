@@ -1,6 +1,6 @@
 """core/plugin.py — 灵舟插件系统。
 
-对齐 OpenClaw plugin SDK 的简化版。
+面向灵舟运行时的轻量插件管理器。
 
 插件结构:
   plugins/<name>/
@@ -27,7 +27,7 @@ _log = logging.getLogger("lingzhou.plugin")
 
 @dataclass
 class PluginManifest:
-    """插件元数据（对齐 OpenClaw plugin.json）。"""
+    """插件元数据。"""
     id: str
     name: str
     version: str = "0.1.0"

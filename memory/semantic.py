@@ -1,11 +1,14 @@
 """memory/semantic.py — 语义记忆（SemanticMemory）。
 
 双层存储设计：
-  1. nodes/{id}.json  — 灵魂层（首先写入，人类可读，可 git 跟踪，数据库崩溃后可重建）
+    1. nodes/{id}.json  — 运行期语义节点源数据（首先写入，可重建）
   2. semantic.db      — 搜索索引层（由 json 派生，可完全重建，删除后无数据丢失）
 
 恼复路径： semantic.db 损坏 → 启动时自动检测 → 删除并重建 → 从 nodes/*.json 重导入。
 检索：FTS5 关键词评分（标准库，零依赖），接口稳定，内部可替换。
+
+说明：这里的 nodes/ 位于配置的 memory_dir 下（默认 ~/.lingzhou/memory/nodes），
+不是 workspace_dir，也不应该作为源码仓库的一部分提交。
 """
 from __future__ import annotations
 
@@ -147,7 +150,7 @@ class SemanticMemory:
             return conn
 
     def _migrate(self) -> None:
-        """幂等 schema 迁移（Hermes _reconcile_columns 模式）：只 ADD COLUMN，永不 DROP。
+        """幂等 schema 迁移：只 ADD COLUMN，永不 DROP。
 
         新列清单：
           embedding TEXT  — JSON float array，向量混合检索用

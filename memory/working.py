@@ -54,6 +54,7 @@ class WorkingMemory:
         # token_budget=0 表示禁用 token 压力（回退到条目数压力）
         self._token_budget = token_budget
         self._items: list[WMItem] = []
+        self._multi_item_kinds = {"meta_reflection"}
 
     @property
     def total_tokens(self) -> int:
@@ -71,7 +72,7 @@ class WorkingMemory:
         """添加条目，若超条目上限或超 token 预算则驱逐优先级最低的。
         若 item.kind 非空，先移除同 kind 旧条目（防御性去重，避免同 kind 条目累积）。
         """
-        if item.kind:
+        if item.kind and item.kind not in self._multi_item_kinds:
             self._items = [i for i in self._items if i.kind != item.kind]
             heapq.heapify(self._items)  # 修复堆损坏：过滤后重建堆，再 push
         heapq.heappush(self._items, item)

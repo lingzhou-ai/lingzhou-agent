@@ -52,6 +52,65 @@ def lookup_model(model_id: str) -> dict[str, Any] | None:
     return None
 
 
+def lookup_model_ref(model_ref: str) -> dict[str, Any] | None:
+    """通过 provider/model-id 形式查模型；provider 不匹配时返回 None。"""
+    provider_name, _, model_id = model_ref.partition("/")
+    if not provider_name or not model_id:
+        return None
+    for m in list_provider_models(provider_name):
+        if m.get("id") == model_id:
+            return m
+    return None
+
+
+def model_supports(
+    model_ref_or_id: str,
+    *,
+    capability: str | None = None,
+    input_modality: str | None = None,
+) -> bool:
+    """判断模型是否具备指定 capability / 输入模态。"""
+    spec = lookup_model_ref(model_ref_or_id) if "/" in model_ref_or_id else lookup_model(model_ref_or_id)
+    if not spec:
+        return False
+    if capability:
+        caps = spec.get("capabilities")
+        if capability not in caps if isinstance(caps, list) else True:
+            return False
+    if input_modality:
+        inputs = spec.get("input")
+        if input_modality not in inputs if isinstance(inputs, list) else True:
+            return False
+    return True
+
+
+def find_model_ref_for_capability(
+    *,
+    capability: str | None = None,
+    input_modality: str | None = None,
+    preferred_provider: str | None = None,
+) -> str | None:
+    """按 provider/model-id 返回首个满足能力要求的模型。
+
+    选择顺序：优先当前 provider，其次其它 provider；每个 provider 内保持 models.json 的声明顺序。
+    """
+    catalog = _load()
+    provider_names = [name for name in catalog if "models" in catalog[name]]
+    if preferred_provider and preferred_provider in provider_names:
+        provider_names = [preferred_provider] + [name for name in provider_names if name != preferred_provider]
+
+    for provider_name in provider_names:
+        for spec in list_provider_models(provider_name):
+            model_ref = f"{provider_name}/{spec.get('id', '')}"
+            if not model_ref.endswith("/") and model_supports(
+                model_ref,
+                capability=capability,
+                input_modality=input_modality,
+            ):
+                return model_ref
+    return None
+
+
 def list_providers() -> list[str]:
     """返回 models.json 中所有 provider 名称（过滤掉 _doc 等非 provider 键）。"""
     return [k for k, v in _load().items() if "models" in v]

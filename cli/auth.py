@@ -10,7 +10,7 @@ import typer
 from rich.panel import Panel
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
-from auth_store import (
+from store.auth import (
     AUTH_PROFILES_PATH,
     COPILOT_PROFILE_ID,
     GITHUB_DEVICE_AUTH_PATH,
@@ -210,7 +210,7 @@ def _login_copilot_impl(
             copilot_token = resp.json().get("token", "")
             if copilot_token:
                 # 缓存 Copilot token（避免 provider 首次启动再 exchange 一次）
-                from auth_store import save_copilot_token_cache
+                from store.auth import save_copilot_token_cache
                 expires_str = str(resp.json().get("expires_at", "")).strip()
                 if expires_str and expires_str.isdigit():
                     exp_ms = int(expires_str) * 1000
