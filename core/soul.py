@@ -141,14 +141,19 @@ class SoulManager:
         for fname, content in _WORKSPACE_FILES:
             fpath = workspace / fname
             if not fpath.exists():
-                fpath.write_text(content.replace("{name}", soul_name), encoding="utf-8")
-                _log.info("%s 初始化: 已写入 %s", fname, fpath)
+                # BOOTSTRAP.md 在 bootstrap 完成后不应被重建：
+                # init_files 重建会使 reconcile_bootstrap_completion 永远感知不到"已删除"，
+                # 导致每次启动都重新进入 full bootstrap 模式。
                 if fname == "BOOTSTRAP.md":
                     state = read_workspace_state(workspace)
+                    if state.setup_completed_at:
+                        continue  # bootstrap 已完成，跳过重建
                     if not state.bootstrap_seeded_at:
                         state.bootstrap_seeded_at = _now_iso()
                         write_workspace_state(workspace, state)
                         _log.debug("[workspace_state] bootstrapSeededAt 已写入")
+                fpath.write_text(content.replace("{name}", soul_name), encoding="utf-8")
+                _log.info("%s 初始化: 已写入 %s", fname, fpath)
 
     async def sync_md(self) -> None:
         """将 facts DB 中最新 EMA ethos 值同步写回 SOUL.md（人类可读镜像）。
