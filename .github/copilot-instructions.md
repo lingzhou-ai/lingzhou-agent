@@ -28,7 +28,7 @@ core/
   loop/               Main cognitive loop — runtime, tick, chat, driver, startup, reload, postprocess, logging, progress
   judgment/           JudgmentLayer (runtime), context helpers (context), stable façade (__init__)
   evolution.py        LLM code-gen + importlib hot-swap
-  perception.py       OCC emotion, Ethos, JudgmentSignals
+  perception/         OCC emotion, Ethos, JudgmentSignals（emotion/ethos/signals/layer）
   execution.py        Tool dispatch
   behavior_tracker.py Repeat action pattern detection
   self_drive.py       Intrinsic motivation engine

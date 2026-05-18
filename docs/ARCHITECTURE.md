@@ -42,11 +42,28 @@
 ### `core/judgment/runtime.py` — 判断层 (JudgmentLayer)
 LLM 决策引擎：接收 WM + 信号 → 决定 action + tool。支持多模型路由 (reader/reasoner/repair)。内层 continue 循环：多次工具调用不重装上下文。`core/judgment/__init__.py` 只保留稳定导出，context/format helper 已拆到 `core/judgment/context.py`。
 
-### `core/perception.py` — 感知层 (PerceptionLayer)
-从 WM/emotion/episodic 计算预测误差、认知信号。生成 `DerivedEthosState` 供判断层使用。
+### `core/perception/` — 感知层 (PerceptionLayer)
+从 WM/emotion/episodic 计算预测误差、认知信号。拆分为四个子模块：
+- `emotion.py` — OCC 情绪模型（Appraisal / EmotionState / 重放摘要）
+- `ethos.py` — 价值层（EthosValues / EthosState / derive_ethos_state）
+- `signals.py` — 判断信号与认知信号（JudgmentSignals / CognitiveSignals）
+- `layer.py` — 感知层入口（Percept / PerceptionLayer）
+
+`core/perception/__init__.py` 保留所有公开导出，外部调用路径不变。
 
 ### `core/self_drive.py` — 自驱力引擎 (SelfDriveEngine)
-基于 Active Inference + Intrinsic Motivation。空闲时注入好奇心驱动的探索目标到 WM。LLM 以"内心感知"叙事形式接收，自主决定是否响应。
+
+基于 **Active Inference**（Friston 2013）和 **Intrinsic Motivation**（Oudeyer & Kaplan 2007），综合三种内在驱动力：
+
+| 信号 | 含义 |
+|------|------|
+| Novelty `C_novelty(t)` | 最近 N tick 中接触的新颖知识比例 |
+| Learning Progress `C_progress(t)` | 能力提升速率（完成任务的复杂度趋势） |
+| Surprise `C_surprise(t)` | 预测误差均值 |
+
+综合信号 `C(t) = α·C_novelty + β·C_progress + γ·C_surprise`。
+
+**空闲触发逻辑**：loop 无用户消息且无活跃任务时，`C(t)` 超阈值触发自主探索，低于阈值触发自我反思 + 目标生成。LLM 以"内心感知"叙事形式接收驱动信号，自主决定是否响应。
 
 ### `core/evolution.py` — 进化引擎 (EvolutionEngine)
 检测失败模式 → LLM 生成改进代码 → 语法验证 → 热重载 → 注册验证 → 回滚。后进化验证确保系统可导入。
