@@ -11,7 +11,7 @@ from pathlib import Path
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ProviderDefinition(BaseModel):
@@ -143,6 +143,25 @@ class LoopConfig(BaseModel):
             "示例：[10.0, 600.0] 表示籺闲时 LLM 至少等 10s、最多 600s。"
         ),
     )
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> "LoopConfig":
+        for name in ("idle_with_task_bounds", "idle_no_task_bounds"):
+            val = getattr(self, name)
+            if len(val) != 2:
+                raise ValueError(
+                    f"{name} 必须是长度为 2 的列表 [min, max]，当前长度 {len(val)}"
+                )
+            if val[0] < 0 or val[1] < 0:
+                raise ValueError(
+                    f"{name} 的值不能为负数，当前 [{val[0]}, {val[1]}]"
+                )
+            if val[0] >= val[1]:
+                raise ValueError(
+                    f"{name}[0]={val[0]} 必须小于 [1]={val[1]}"
+                )
+        return self
+
     wake_poll_interval: float = Field(default=0.2, gt=0, description="事件轮询粒度（秒），越小响应越快但 CPU 开销越高")
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
     chat_reply_timeout: int = Field(

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+_log = logging.getLogger("lingzhou.judgment")
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -365,6 +368,8 @@ def _emotion_label(emotion: "EmotionState", cfg: "Config") -> str:
 def _fill_template(template: str, ctx: dict[str, Any]) -> str:
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).strip()
+        if key not in ctx:
+            _log.warning("[judgment] 模板变量缺失: %s（judgment.md 含 {{%s}} 但 ctx 无此键）", key, key)
         return str(ctx.get(key, f"[未知字段: {key}]"))
 
     return re.sub(r"\{\{([^}]+)\}\}", replace, template)

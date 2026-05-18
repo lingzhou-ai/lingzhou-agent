@@ -258,6 +258,7 @@ class CognitionLoop:
                     await _wait_after_cycle_impl(self)
                 except Exception:
                     _log.exception("[loop] _wait_after_cycle_impl 异常，跳过本次等待")
+                    await asyncio.sleep(1.0)  # 防止异常紧循环消耗 CPU
                 cfg = self._cfg  # 可能已更新
         finally:
             self._probe_manager.stop()

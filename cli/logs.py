@@ -43,33 +43,24 @@ def logs_tail(
         return
 
     if follow:
-        import subprocess
-        cmd = ["tail", "-n", str(lines), "-f", str(log_file)]
-        if filter_text:
-            cmd = ["tail", "-n", str(lines), "-f", str(log_file)]
-            subprocess.run(["stdbuf", "-oL"] + cmd, stdout=None)
-            # fallback: Python 实现
-            import time
-            with open(log_file) as f:
-                f.seek(0, 2)
+        import time
+        # 先输出最后 N 行，然后持续跟踪
+        head = _read_tail(log_file, lines)
+        for line in head:
+            if not filter_text or filter_text in line:
+                console.print(line, end="")
+        try:
+            with open(log_file, encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)  # 跳到末尾，准备接收新行
                 while True:
                     line = f.readline()
                     if line:
                         if not filter_text or filter_text in line:
                             console.print(line, end="")
                     else:
-                        time.sleep(0.5)
-        else:
-            import time
-            with open(log_file) as f:
-                f.seek(0, 2)  # 跳到文件末尾
-                while True:
-                    line = f.readline()
-                    if line:
-                        if not filter_text or filter_text in line:
-                            console.print(line, end="")
-                    else:
-                        time.sleep(0.5)
+                        time.sleep(0.3)
+        except KeyboardInterrupt:
+            pass
         return
 
     # 非 follow 模式

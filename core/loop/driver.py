@@ -25,15 +25,20 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
         act_gap = max(float(min_wait), float(cfg.loop.min_act_gap))
         await _wait_for_event_impl(loop, act_gap, after_task)
     else:
+        # 等待间隔决策树：
+        #   ① LLM 上轮主动要求 next_idle_gap_secs → 优先尊重 LLM 意图
+        #   ② 有活跃 task（上轮 decision≠act，或 act 后 task 仍在）→ active_idle_gap（较短，保持响应）
+        #   ③ bootstrap 未完成 → 同 ② 缩短间隔（避免引导阶段空等 max_idle_gap）
+        #   ④ 真正空闲（无 task、无 bootstrap）→ max_idle_gap（节省 CPU/计费）
         if loop._pending_idle_gap is not None:
-            gap = loop._pending_idle_gap
+            gap = loop._pending_idle_gap                   # ① LLM 主动调度
         elif after_task is not None:
-            gap = cfg.loop.active_idle_gap
+            gap = cfg.loop.active_idle_gap                 # ② 有活跃任务
         elif getattr(loop, '_bootstrap_mode', 'none') == "full":
             # bootstrap 未完成时，等同于有隐式未完成工作：缩短轮询间隔提升响应度
-            gap = cfg.loop.active_idle_gap
+            gap = cfg.loop.active_idle_gap                 # ③ bootstrap 阶段
         else:
-            gap = cfg.loop.max_idle_gap
+            gap = cfg.loop.max_idle_gap                    # ④ 完全空闲
         await _wait_for_event_impl(loop, gap, after_task)
     await loop._maybe_hot_reload_provider()
 

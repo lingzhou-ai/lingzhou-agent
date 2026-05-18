@@ -100,7 +100,16 @@ _GATEWAY_READY = {"local", "webhook", "wechat"}
 gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 
 # ── 日志子命令（注册在 gateway 下）─────────────────────────────────────────────
-logs_group = typer.Typer(name="logs", help="快速查看运行日志")
+logs_group = typer.Typer(name="logs", invoke_without_command=True, help="快速查看运行日志（直接调用: tail -f）")
+
+
+@logs_group.callback()
+def _logs_default(ctx: typer.Context) -> None:
+    """无子命令时默认执行 tail -f（持续输出最新日志）。"""
+    if ctx.invoked_subcommand is None:
+        logs_tail(follow=True)
+
+
 logs_group.command("tail")(logs_tail)
 logs_group.command("errors")(logs_errors)
 logs_group.command("crash")(logs_crash)
@@ -453,7 +462,10 @@ def _start_webhook_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
             if secret:
                 if self.headers.get("Authorization", "") != f"Bearer {secret}":
                     self.send_response(401); self.end_headers(); return
-            length = min(int(self.headers.get("Content-Length", 0)), 65536)
+            try:
+                length = min(int(self.headers.get("Content-Length", 0)), 65536)
+            except (ValueError, TypeError):
+                self.send_response(400); self.end_headers(); return
             body = self.rfile.read(length)
             try:
                 payload = _json.loads(body)
