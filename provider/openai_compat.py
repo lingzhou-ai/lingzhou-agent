@@ -556,7 +556,15 @@ class OpenAICompatProvider:
         _raise_for_status_with_body(resp)
         data = resp.json()
         self._record_usage(data.get("usage"))
-        msg = data["choices"][0]["message"]
+        choices = data.get("choices") or []
+        if not choices:
+            # API 以 200 返回空 choices（内容过滤 / 限流 / 上下文超长）
+            finish = (data.get("choices") or [{}])[0].get("finish_reason") if data.get("choices") else None
+            raise RuntimeError(
+                f"API 返回空 choices（可能触发内容过滤或限流）"
+                + (f"，finish_reason={finish}" if finish else "")
+            )
+        msg = choices[0]["message"]
         content: str = msg.get("content") or ""
         if msg.get("reasoning_content"):
             return content
