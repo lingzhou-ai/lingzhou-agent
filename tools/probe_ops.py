@@ -39,6 +39,7 @@ _log = logging.getLogger("lingzhou.probe")
     ),
     params=[
         ToolParam("name", "string", "探针唯一名称（字母数字下划线横线）", required=True),
+        ToolParam("purpose", "string", "部署目的/原因，如“监控磁盘使用率，防止消耗过快导致任务失败”", required=True),
         ToolParam("kind", "string", "执行方式：shell | http | python", required=True),
         ToolParam("spec", "string", "命令字符串 / URL / Python 代码（对应 kind）", required=True),
         ToolParam("trigger", "string", "调度触发器：interval:<秒> 或 manual", required=True),
@@ -79,6 +80,7 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         kind=kind,  # type: ignore[arg-type]
         spec=spec,
         trigger=trigger,
+        purpose=str(params.get("purpose") or "").strip(),
         data_back=data_back_raw,  # type: ignore[arg-type]
         alert_expr=str(params.get("alert_expr") or "") or None,
         alert_message=str(params.get("alert_message") or "") or None,

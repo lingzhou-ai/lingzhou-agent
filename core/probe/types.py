@@ -20,6 +20,9 @@ class ProbeConfig:
     ----------
     name:
         探针唯一名称（人类可读）。
+    purpose:
+        部署目的/原因（由安装探针的 LLM 填写），如"监控服务器磁盘使用率，防止磁盘满导致任务失败"。
+        在 judgment context 中始终可见，帮助下一轮 LLM 理解读数含义。
     kind:
         执行方式：
         - "shell"  — 执行 shell 命令，stdout 作为结果
@@ -32,14 +35,12 @@ class ProbeConfig:
         - "interval:<seconds>" — 每隔 N 秒执行一次，如 "interval:60"
         - "manual"             — 仅手动触发（probe.run 工具）
     data_back:
-        结果回传路径。
+        interval 探针周期结果的自动回传路径（manual 探针结果直接通过工具返回值获取）。
     alert_expr:
         Python 布尔表达式，变量 ``output`` 为结果字符串。
         表达式为 True 时触发告警，如 ``float(output.strip()) > 35.0``
     alert_message:
-        告警时发出的人类可读消息。支持 ``{output}`` 占位符。
-    chat_id:
-        data_back="chat" 时发往哪个会话。为空时使用最近活跃会话。
+        告警时注入 WM 的人类可读消息。支持 ``{output}`` 占位符。
     enabled:
         False 时探针被暂停，不自动执行。
     """
@@ -48,6 +49,7 @@ class ProbeConfig:
     kind: ProbeKind
     spec: str
     trigger: str
+    purpose: str = ""
     data_back: ProbeDataBack = "wm"
     alert_expr: str | None = None
     alert_message: str | None = None

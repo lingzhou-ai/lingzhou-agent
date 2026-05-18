@@ -631,28 +631,35 @@ def _fmt_cognitive_signals(signals: "CognitiveSignals | None") -> str:
 def _fmt_probe_sensors(probes: list[Any]) -> str:
     """将当前已部署的探针传感器网络格式化为 LLM 可读的感知面板。
 
-    每行一个探针：状态标记 / 名称 / 执行规格 / 回传策略 / 最近读数摘要。
-    让 LLM 随时知道自己的感知网络状态，无需主动查询。
+    每个探针显示：状态 / 名称 / 部署目的 / 执行规格 / 最近读数。
+    让 LLM 随时知道自己的感知网络状态及每个探针的意义。
     """
     if not probes:
-        return "（无部署的探针——可用 probe.install 工具布控传感器）"
+        return "（无部署的探针——可用 probe.install 安装探针，并填写 purpose 说明监控意图）"
     lines: list[str] = []
     for p in probes:
         mark = "✓" if p.enabled else "⊘"
-        # 触发规格
         trigger_desc = p.trigger or "manual"
-        # 数据回传策略 + 告警标记
-        back_desc = f"→{p.data_back}"
         alert_mark = " 🔔" if p.alert_expr else ""
+        # 目的说明
+        purpose_line = f"  └ 目的: {p.purpose}" if getattr(p, "purpose", "") else ""
         # 最近读数
-        reading = ""
+        reading_line = ""
         if p.last_run_at:
             t = p.last_run_at.split("T")[-1][:5] if "T" in p.last_run_at else p.last_run_at[:16]
-            result_text = (p.last_result or "").strip().replace("\n", " ")[:80]
-            reading = f" | @{t} {result_text!r}"
             if p.last_error:
-                reading += f" [err:{p.last_error[:40]}]"
-        lines.append(
-            f"  {mark} [{p.name}] {p.kind}/{trigger_desc} {back_desc}{alert_mark}{reading}"
-        )
+                reading_line = f"  └ @{t} ❌ {p.last_error[:80]}"
+            elif p.last_result:
+                result_text = p.last_result.strip().replace("\n", " ")[:120]
+                reading_line = f"  └ @{t} → {result_text}"
+            else:
+                reading_line = f"  └ @{t} (无输出)"
+        else:
+            reading_line = "  └ 尚未执行"
+        header = f"  {mark} [{p.name}] {p.kind}/{trigger_desc} →{p.data_back}{alert_mark}"
+        entry = header
+        if purpose_line:
+            entry += "\n" + purpose_line
+        entry += "\n" + reading_line
+        lines.append(entry)
     return "\n".join(lines)
