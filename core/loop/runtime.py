@@ -34,7 +34,6 @@ from core.execution import (
     ExecutionLayer,
 )
 from core.evolution import EvolutionEngine
-from core.run_refresh import _refresh_running_runs
 from .logging import (
     _clip_reply_for_log,
     _clip_signal_text,

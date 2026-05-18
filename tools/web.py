@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
-from tools.file import _workspace_candidate_path
+from tools.file import workspace_candidate_path
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 DEFAULT_UA = (

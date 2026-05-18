@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, cast
 
-from core.execution import _build_meta_reflection, _record_meta_reflection
+from core.execution import build_meta_reflection, record_meta_reflection
 from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory, MemoryNode
 from memory.task_store import TaskStore, Run
@@ -142,7 +142,7 @@ async def _finalize_refreshed_run_learning(
             "session_id": run.session_id,
         },
     )
-    meta = _build_meta_reflection(
+    meta = build_meta_reflection(
         run_id=run.id,
         task_id=run.task_id,
         tool_name=run.tool_name,
@@ -177,7 +177,7 @@ async def _finalize_refreshed_run_learning(
             self.episodic = episodic
             self.semantic = semantic
 
-    _record_meta_reflection(cast(Any, _ReflectionCtx()), meta)
+    record_meta_reflection(cast(Any, _ReflectionCtx()), meta)
 
 
 async def _refresh_run_via_fact_monitor(
@@ -356,7 +356,7 @@ async def _refresh_run_via_process_monitor(
     return {"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": session_id}
 
 
-async def _refresh_running_runs(
+async def refresh_running_runs(
     task_store: TaskStore,
     *,
     episodic: EpisodicMemory | None = None,

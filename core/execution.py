@@ -257,7 +257,7 @@ def _record_run_outcome(
     ))
 
 
-def _record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None:
+def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None:
     reflection_id = str(meta.get("reflection_id") or "")
     target_kind = str(meta.get("target_kind") or "")
     loop_level = str(meta.get("loop_level") or "")
@@ -324,7 +324,7 @@ def _should_record_run_outcome(status: str) -> bool:
     return status in {"succeeded", "failed", "cancelled"}
 
 
-def _build_meta_reflection(
+def build_meta_reflection(
     *,
     run_id: int,
     task_id: int,
@@ -612,7 +612,7 @@ class ExecutionLayer:
                     "error": result.error,
                 },
             )
-        meta = _build_meta_reflection(
+        meta = build_meta_reflection(
             run_id=run_id,
             task_id=active_task_id or 0,
             tool_name=str(result.metadata.get("tool_name") or ""),
@@ -632,4 +632,4 @@ class ExecutionLayer:
                 run_id=int(meta["run_id"]),
                 tool_name=str(meta["tool_name"]),
             )
-            _record_meta_reflection(ctx, meta)
+            record_meta_reflection(ctx, meta)

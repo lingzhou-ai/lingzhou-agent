@@ -615,7 +615,7 @@ async def test_refresh_running_runs_updates_finished_exec_runs():
     import os
     import time
 
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -645,7 +645,7 @@ async def test_refresh_running_runs_updates_finished_exec_runs():
         _MANAGER.register(info)
         _MANAGER.mark_finished("exec-test-1", 0)
 
-        updates = await _refresh_running_runs(store)
+        updates = await refresh_running_runs(store)
         assert updates
         assert updates[0]["status"] == "succeeded"
 
@@ -666,7 +666,7 @@ async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
     import os
     import time
 
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -696,7 +696,7 @@ async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
         _MANAGER.register(info)
         _MANAGER.mark_finished("proc-unified-1", 0)
 
-        updates = await _refresh_running_runs(store)
+        updates = await refresh_running_runs(store)
         assert updates
         assert updates[0]["status"] == "succeeded"
 
@@ -711,7 +711,7 @@ async def test_refresh_running_runs_crystallizes_progress():
     import os
     import time
 
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -745,7 +745,7 @@ async def test_refresh_running_runs_crystallizes_progress():
         )
         _MANAGER.register(info)
 
-        updates = await _refresh_running_runs(store)
+        updates = await refresh_running_runs(store)
         assert updates
         assert updates[0]["status"] == "running"
         assert updates[0]["crystal"]
@@ -762,7 +762,7 @@ async def test_refresh_running_runs_crystallizes_progress():
 
 
 async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -799,7 +799,7 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
             },
         )
 
-        first = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        first = await refresh_running_runs(store, episodic=episodic, semantic=semantic)
         assert first
         assert first[0]["status"] == "running"
         assert "phase-1" in first[0]["crystal"]
@@ -814,7 +814,7 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
             json.dumps({"status": "succeeded", "progress": "final answer ready", "summary": "done"}, ensure_ascii=False),
             scope="task",
         )
-        second = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        second = await refresh_running_runs(store, episodic=episodic, semantic=semantic)
         assert second
         assert second[0]["status"] == "succeeded"
 
@@ -838,7 +838,7 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
 
 
 async def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -875,7 +875,7 @@ async def test_refresh_running_runs_failed_fact_monitored_run_records_learning()
             },
         )
 
-        updates = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        updates = await refresh_running_runs(store, episodic=episodic, semantic=semantic)
         assert updates
         assert updates[0]["status"] == "failed"
 
@@ -901,7 +901,7 @@ async def test_refresh_running_runs_failed_fact_monitored_run_records_learning()
 async def test_refresh_running_runs_failed_exec_run_records_learning():
     import time
 
-    from core.run_refresh import _refresh_running_runs
+    from core.run_refresh import refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -937,7 +937,7 @@ async def test_refresh_running_runs_failed_exec_run_records_learning():
         )
         _MANAGER.register(info)
 
-        updates = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        updates = await refresh_running_runs(store, episodic=episodic, semantic=semantic)
         assert updates
         assert updates[0]["status"] == "failed"
 

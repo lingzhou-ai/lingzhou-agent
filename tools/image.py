@@ -11,7 +11,7 @@ from typing import Any
 from provider import create_provider, create_provider_with_model
 from provider.base import Message
 from provider.catalog import find_model_ref_for_capability, model_supports
-from tools.file import _resolve_read_path
+from tools.file import resolve_read_path
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 
 
@@ -64,7 +64,7 @@ def _image_part_from_source(source: str, detail: str) -> dict[str, Any]:
             "image_url": {"url": raw, "detail": detail},
         }
 
-    path = _resolve_read_path(Path(raw).expanduser())
+    path = resolve_read_path(Path(raw).expanduser())
     if not path.exists():
         raise FileNotFoundError(f"图片不存在: {path}")
     if not path.is_file():

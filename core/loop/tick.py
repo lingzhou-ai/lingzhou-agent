@@ -18,7 +18,7 @@ from core.perception import (
     compute_judgment_signals,
     derive_ethos_state,
 )
-from core.run_refresh import _refresh_running_runs
+from core.run_refresh import refresh_running_runs
 from core.task_runtime import (
     _VALID_MODEL_TIERS,
     _consume_task_runtime_hints,
@@ -85,7 +85,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     loop._maybe_inject_budget_warning()
 
-    running_updates = await _refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic)
+    running_updates = await refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic)
     active_task = await loop._task_store.get_active()
     await _ingest_actionable_meta_reflections(loop._task_store, loop._wm)
     active_task = await _consume_task_runtime_hints(loop._task_store, active_task, loop._wm)

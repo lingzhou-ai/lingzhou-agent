@@ -231,7 +231,7 @@ def _candidate_paths(path: Path, bases: list[Path]) -> list[Path]:
     return candidates
 
 
-def _resolve_read_path(path: Path, ctx: ToolContext | None = None) -> Path:
+def resolve_read_path(path: Path, ctx: ToolContext | None = None) -> Path:
     if path.exists():
         return path
 
@@ -263,7 +263,7 @@ def _workspace_dir(ctx: ToolContext) -> Path | None:
         return None
 
 
-def _workspace_candidate_path(path: Path, ctx: ToolContext) -> Path | None:
+def workspace_candidate_path(path: Path, ctx: ToolContext) -> Path | None:
     workspace = _workspace_dir(ctx)
     if workspace is None:
         return None
@@ -279,11 +279,11 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     if path.exists():
         return path
 
-    resolved = _resolve_read_path(path, ctx)
+    resolved = resolve_read_path(path, ctx)
     if resolved.exists():
         return resolved
 
-    workspace_candidate = _workspace_candidate_path(path, ctx)
+    workspace_candidate = workspace_candidate_path(path, ctx)
     if workspace_candidate is not None:
         return workspace_candidate
 
@@ -301,7 +301,7 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     ],
 ))
 async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_read_path(Path(params.get("path") or "").expanduser(), ctx)
+    path = resolve_read_path(Path(params.get("path") or "").expanduser(), ctx)
     limit = int(params.get("limit") or 200)
     include_hidden = bool(params.get("include_hidden", False))
 
@@ -360,7 +360,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not raw_path:
         return ToolResult(summary="path 不能为空", error="EmptyPath", skipped=True)
 
-    path = _resolve_read_path(Path(raw_path).expanduser(), ctx)
+    path = resolve_read_path(Path(raw_path).expanduser(), ctx)
     max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)

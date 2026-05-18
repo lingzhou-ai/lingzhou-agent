@@ -43,3 +43,4 @@ logs/
 generated/
 workspace/
 output.json
+core/loop.py
