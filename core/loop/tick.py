@@ -70,6 +70,42 @@ console = Console()
 _log = logging.getLogger("lingzhou.loop")
 
 
+async def _maybe_reconcile_bootstrap(loop: Any) -> None:
+    """如果 BOOTSTRAP.md 已被本 tick 删除，写入 setupCompletedAt 并切换到正常模式。"""
+    if loop._bootstrap_mode != "full":
+        return
+    bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
+    if bootstrap_path.exists():
+        return
+    from core.workspace.state import reconcile_bootstrap_completion
+    reconcile_bootstrap_completion(loop._cfg.workspace_dir)
+    await loop._soul.refresh_identity(loop._judgment)
+    loop._bootstrap_mode = "none"
+    _log.info("[bootstrap] BOOTSTRAP.md 已删除，切换到正常运行模式")
+
+
+def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
+    """bootstrap_mode=full 且无活跃任务时，向 WM 注入引导待完成感知信号。
+
+    BOOTSTRAP.md 以静态 identity 前缀注入系统提示词，LLM 倾向于将其视为"背景说明"
+    而非"当前待办工作"。此函数在动态感知层（WM）补充一条高优先级条目，
+    将引导任务拉入 LLM 每轮的主动注意焦点——不是命令，是感知。
+    LLM 依然可以基于整体判断决定此刻是否行动。
+    """
+    if loop._bootstrap_mode != "full" or active_task is not None:
+        return
+    loop._wm.add(WMItem(
+        kind="bootstrap",
+        content=(
+            "[初始化待完成] BOOTSTRAP.md 仍然存在，说明初始化检查项尚未全部完成并确认。"
+            "当前无活跃任务，这是推进初始化的自然时机："
+            "逐项确认 IDENTITY / SOUL / USER / TOOLS 的内容是否已具体落实，"
+            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
+        ),
+        priority=0.90,
+    ))
+
+
 async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str | None = None) -> str:
     """执行一轮完整认知 tick,返回 reply_to_user(interact 模式时非空)。"""
     cfg = loop._cfg
@@ -93,6 +129,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     if not user_message:
         loop._maybe_inject_self_drive()
+        _maybe_inject_bootstrap_signal(loop, active_task)
     loop._wm.clear(kinds={"run_monitor"})
     if running_updates:
         running_count = sum(1 for item in running_updates if item.get("status") == "running")
@@ -378,17 +415,8 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             for item in loop._behavior.on_edit_failure(result.error or ""):
                 loop._wm.add(item)
 
-    # ① in-session bootstrap 完成检测
-    # 当本次运行为“full” 模式时，如果工具将 BOOTSTRAP.md 删除，说明初始化已完成；
-    # 立即 reconcile（写入 setupCompletedAt）并刷新 identity 前缀（移除 BOOTSTRAP.md 内容）。
-    if loop._bootstrap_mode == "full":
-        bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
-        if not bootstrap_path.exists():
-            from core.workspace.state import reconcile_bootstrap_completion
-            reconcile_bootstrap_completion(loop._cfg.workspace_dir)
-            await loop._soul.refresh_identity(loop._judgment)
-            loop._bootstrap_mode = "none"
-            _log.info("[bootstrap] BOOTSTRAP.md 已删除，切换到正常运行模式")
+    # ① in-session bootstrap 完成检测（主工具执行后）
+    await _maybe_reconcile_bootstrap(loop)
 
     if _should_continue_within_tick(
         action,
@@ -470,14 +498,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 break
 
         # ② continue 循环结束后同步检测（兜底 inner 轮删除 BOOTSTRAP.md 的场景）
-        if loop._bootstrap_mode == "full":
-            bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
-            if not bootstrap_path.exists():
-                from core.workspace.state import reconcile_bootstrap_completion
-                reconcile_bootstrap_completion(loop._cfg.workspace_dir)
-                await loop._soul.refresh_identity(loop._judgment)
-                loop._bootstrap_mode = "none"
-                _log.info("[bootstrap] BOOTSTRAP.md 已删除（inner），切换到正常运行模式")
+        await _maybe_reconcile_bootstrap(loop)
 
     if user_message and not action.reply_to_user:
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)

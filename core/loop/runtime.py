@@ -254,7 +254,10 @@ class CognitionLoop:
                         )
                         break
 
-                await _wait_after_cycle_impl(self)
+                try:
+                    await _wait_after_cycle_impl(self)
+                except Exception:
+                    _log.exception("[loop] _wait_after_cycle_impl 异常，跳过本次等待")
                 cfg = self._cfg  # 可能已更新
         finally:
             self._probe_manager.stop()

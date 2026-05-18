@@ -29,6 +29,9 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
             gap = loop._pending_idle_gap
         elif after_task is not None:
             gap = cfg.loop.active_idle_gap
+        elif getattr(loop, '_bootstrap_mode', 'none') == "full":
+            # bootstrap 未完成时，等同于有隐式未完成工作：缩短轮询间隔提升响应度
+            gap = cfg.loop.active_idle_gap
         else:
             gap = cfg.loop.max_idle_gap
         await _wait_for_event_impl(loop, gap, after_task)
