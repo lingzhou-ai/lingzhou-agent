@@ -42,6 +42,16 @@
 ### `core/judgment/runtime.py` — 判断层 (JudgmentLayer)
 LLM 决策引擎：接收 WM + 信号 → 决定 action + tool。支持多模型路由 (reader/reasoner/repair)。内层 continue 循环：多次工具调用不重装上下文。`core/judgment/__init__.py` 只保留稳定导出，context/format helper 已拆到 `core/judgment/context.py`。
 
+**工具元数据**：工具通过 `ToolManifest` 自声明 tier 偏好，减少硬编码：
+
+```python
+@tool(ToolManifest(name="file.read", progress_category="info", prefer_tier="reader"))
+```
+
+**tier 路由**：`tool_tier(tool_id, registry)` 优先读 manifest.prefer_tier，回退到硬编码集合。`model_strategy` 还支持 `next_phase_tier` / `thinking_override` / `routing_overrides` 在 tick 间调整推理姿态。
+
+**演进方向**：从 tool-level routing 升级到 task-level routing；Judgment 未来需要能选择"创建 Run"而非永远在主循环内串行推进；双环反思应拆到独立 MetaReflection，不在 Judgment 内做。
+
 ### `core/perception/` — 感知层 (PerceptionLayer)
 从 WM/emotion/episodic 计算预测误差、认知信号。拆分为四个子模块：
 - `emotion.py` — OCC 情绪模型（Appraisal / EmotionState / 重放摘要）

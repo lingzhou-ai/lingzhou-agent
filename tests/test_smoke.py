@@ -615,7 +615,7 @@ async def test_refresh_running_runs_updates_finished_exec_runs():
     import os
     import time
 
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -666,7 +666,7 @@ async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
     import os
     import time
 
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -711,7 +711,7 @@ async def test_refresh_running_runs_crystallizes_progress():
     import os
     import time
 
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.task_store import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
@@ -762,7 +762,7 @@ async def test_refresh_running_runs_crystallizes_progress():
 
 
 async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -838,7 +838,7 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
 
 
 async def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -901,7 +901,7 @@ async def test_refresh_running_runs_failed_fact_monitored_run_records_learning()
 async def test_refresh_running_runs_failed_exec_run_records_learning():
     import time
 
-    from core.loop import _refresh_running_runs
+    from core.run_refresh import _refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
@@ -1542,7 +1542,7 @@ def test_ingest_actionable_meta_reflections_dedupes():
 
 
 async def _ingest_actionable_meta_reflections_dedupes():
-    from core.loop import _ingest_actionable_meta_reflections
+    from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -1621,7 +1621,7 @@ def test_meta_reflection_threshold_apply_changes_runtime_policy():
 
 async def _meta_reflection_threshold_apply_changes_runtime_policy():
     from core.judgment import JudgmentOutput
-    from core.loop import _ingest_actionable_meta_reflections
+    from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
@@ -1678,7 +1678,7 @@ def test_consume_task_runtime_hints_updates_task_state_once():
 
 
 async def _consume_task_runtime_hints_updates_task_state_once():
-    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -1741,7 +1741,7 @@ def test_meta_reflection_threshold_apply_uses_explicit_policy_hint():
 
 
 async def _meta_reflection_threshold_apply_uses_explicit_policy_hint():
-    from core.loop import _ingest_actionable_meta_reflections
+    from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -1774,7 +1774,7 @@ def test_consume_task_runtime_hints_uses_preferred_tier_hint():
 
 
 async def _consume_task_runtime_hints_uses_preferred_tier_hint():
-    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -1812,7 +1812,7 @@ def test_consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
 
 
 async def _consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
-    from core.loop import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
+    from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -1852,7 +1852,7 @@ def test_ingest_actionable_meta_reflections_queues_generic_control_hint():
 
 
 async def _ingest_actionable_meta_reflections_queues_generic_control_hint():
-    from core.loop import _ingest_actionable_meta_reflections
+    from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
 
@@ -3620,7 +3620,7 @@ def test_select_tier_logic():
 
 
 def test_prefer_tier_for_task_uses_pending_then_task_default():
-    from core.loop import _prefer_tier_for_task
+    from core.loop.common import _prefer_tier_for_task
     from memory.task_store import Task
 
     task = Task(
@@ -3796,7 +3796,7 @@ def test_behavior_explore_awareness_requires_task_context():
 
 
 def test_next_thinking_override_is_one_shot_and_strict():
-    from core.loop import _next_thinking_override
+    from core.loop.common import _next_thinking_override
 
     assert _next_thinking_override({"thinking_override": "low"}) == "low"
     assert _next_thinking_override({"thinking_override": "invalid"}) is None
@@ -3805,7 +3805,7 @@ def test_next_thinking_override_is_one_shot_and_strict():
 
 
 def test_resolve_thinking_override_uses_mode_defaults_and_strategy():
-    from core.loop import _resolve_thinking_override
+    from core.loop.common import _resolve_thinking_override
 
     cfg = cast(Any, SimpleNamespace(
         thinking="off",
@@ -3819,7 +3819,7 @@ def test_resolve_thinking_override_uses_mode_defaults_and_strategy():
 
 
 def test_thinking_floor_respects_chat_minimum_for_user_message():
-    from core.loop import _thinking_floor
+    from core.loop.common import _thinking_floor
 
     assert _thinking_floor("off", "low") == "low"
     assert _thinking_floor("minimal", "low") == "low"
@@ -3828,7 +3828,7 @@ def test_thinking_floor_respects_chat_minimum_for_user_message():
 
 
 def test_recent_runs_summary_prefers_output_and_progress():
-    from core.judgment import _fmt_recent_runs
+    from core.judgment.context import _fmt_recent_runs
     from memory.task_store import Run
 
     runs = [
@@ -3854,7 +3854,7 @@ def test_recent_runs_summary_prefers_output_and_progress():
 
 
 def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
-    from core.judgment import _fmt_waiting_tasks
+    from core.judgment.context import _fmt_waiting_tasks
     from memory.task_store import Task
 
     tasks = [
@@ -4014,7 +4014,7 @@ def test_model_routing_section_exposes_implicit_reader_default():
 
 
 def test_fmt_durable_failures_exposes_policy_and_muted_actions():
-    from core.judgment import _fmt_durable_failures
+    from core.judgment.context import _fmt_durable_failures
 
     text = _fmt_durable_failures({
         "threshold": 3,
@@ -4037,7 +4037,7 @@ def test_fmt_durable_failures_exposes_policy_and_muted_actions():
 
 
 async def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
-    from core.judgment import _load_durable_failure_snapshot
+    from core.judgment.context import _load_durable_failure_snapshot
     from memory.task_store import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -4129,7 +4129,7 @@ async def test_decide_continue_uses_passed_thinking_override():
 
 def test_action_made_progress_result_aware():
     from core.judgment import JudgmentOutput
-    from core.loop import _action_made_progress, _result_fingerprint
+    from core.loop.progress import _action_made_progress, _result_fingerprint
     from tools.registry import ToolResult
 
     list_action = _judgment_output(decision="act", chosen_action_id="file.list", params={"path": "/tmp"})
@@ -4172,7 +4172,7 @@ def test_write_success_stall_meta_reflection_records_task_hint():
 
 
 async def _write_success_stall_meta_reflection_records_task_hint():
-    from core.loop import _write_success_stall_meta_reflection
+    from core.loop.postprocess import _write_success_stall_meta_reflection
     from memory.task_store import TaskStore
     from tools.registry import ToolResult
 
@@ -4197,7 +4197,7 @@ async def _write_success_stall_meta_reflection_records_task_hint():
 
 
 def test_fallback_reply_for_user_describes_waiting_state():
-    from core.loop import _fallback_reply_for_user
+    from core.loop.logging import _fallback_reply_for_user
     from tools.registry import ToolResult
     from memory.task_store import Task
 
@@ -4216,7 +4216,7 @@ def test_fallback_reply_for_user_describes_waiting_state():
 
 
 def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
-    from core.loop import _fallback_reply_for_user
+    from core.loop.logging import _fallback_reply_for_user
     from tools.registry import ToolResult
 
     action = _judgment_output(decision="pause", rationale="源路径证据不存在，需要用户补充。")
@@ -4232,7 +4232,7 @@ def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
 
 def test_should_continue_within_tick_for_autonomous_act():
     from core.judgment import JudgmentOutput
-    from core.loop import _should_continue_within_tick
+    from core.loop.common import _should_continue_within_tick
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="task.complete")) is False
@@ -4250,7 +4250,7 @@ def test_should_continue_within_tick_for_autonomous_act():
 
 
 async def test_sync_task_progress_state_promotes_previous_next_step():
-    from core.loop import _sync_task_progress_state
+    from core.task_runtime import _sync_task_progress_state
     from memory.task_store import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -4285,7 +4285,7 @@ async def test_sync_task_progress_state_promotes_previous_next_step():
 
 
 async def test_sync_task_progress_state_preserves_explicit_current_step_from_state_delta():
-    from core.loop import _sync_task_progress_state
+    from core.task_runtime import _sync_task_progress_state
     from memory.task_store import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -4312,7 +4312,7 @@ async def test_sync_task_progress_state_preserves_explicit_current_step_from_sta
 
 
 def test_fmt_task_exposes_runtime_state_to_llm():
-    from core.judgment import _fmt_task
+    from core.judgment.context import _fmt_task
     from memory.task_store import Task
 
     task = Task(
@@ -4339,7 +4339,7 @@ def test_fmt_context_facts_surfaces_task_and_recent_general_facts():
 
 
 async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
-    from core.judgment import _fmt_context_facts, _load_context_facts_snapshot
+    from core.judgment.context import _fmt_context_facts, _load_context_facts_snapshot
     from memory.task_store import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -4394,7 +4394,7 @@ def test_tool_result_log_fields_prefer_log_summary_over_raw_text():
 
 
 def test_clip_reply_for_log_strips_memory_context():
-    from core.loop import _clip_reply_for_log
+    from core.loop.logging import _clip_reply_for_log
 
     clipped = _clip_reply_for_log("<memory-context>hidden</memory-context>\n用户可见回复")
     assert clipped == "用户可见回复"

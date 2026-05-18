@@ -11,7 +11,7 @@ from typing import Any
 
 from rich.console import Console
 
-from core.judgment import JudgmentOutput, _tool_tier
+from core.judgment import JudgmentOutput, tool_tier
 from core.perception import (
     build_emotion_replay,
     build_perception_replay,
@@ -586,7 +586,7 @@ async def _tick_finalize_impl(
         loop._pending_tier = next_tier
     else:
         tool_id = action.chosen_action_id or ""
-        if action.decision == "act" and _tool_tier(tool_id, loop._registry) == "reader":
+        if action.decision == "act" and tool_tier(tool_id, loop._registry) == "reader":
             loop._pending_tier = "reader"
         else:
             loop._pending_tier = None

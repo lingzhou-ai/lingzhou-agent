@@ -29,7 +29,7 @@ from core.perception import (
     build_perception_replay, build_emotion_replay,
     derive_ethos_state, compute_judgment_signals,
 )
-from core.judgment import JudgmentLayer, JudgmentOutput, READER_TOOLS, _tool_tier
+from core.judgment import JudgmentLayer, JudgmentOutput
 from core.execution import (
     ExecutionLayer,
 )

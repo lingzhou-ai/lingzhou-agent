@@ -104,7 +104,7 @@ def _build_team_view_from_cfg(cfg) -> str:
     return "\n".join(lines)
 
 
-def _tool_tier(tool_id: str, registry = None) -> str:
+def tool_tier(tool_id: str, registry = None) -> str:
     """判断工具应该用哪个 tier。
 
     优先级：manifest.prefer_tier → 硬编码集合 → 默认 reasoner。
