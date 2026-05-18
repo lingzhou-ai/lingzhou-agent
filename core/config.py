@@ -11,7 +11,7 @@ from pathlib import Path
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProviderDefinition(BaseModel):
@@ -376,6 +376,8 @@ class ThresholdsConfig(BaseModel):
 
 class Config(BaseModel):
     """所有配置的统一入口。改行为 = 改 lingzhou.json，不改代码。"""
+
+    model_config = ConfigDict(extra="ignore")  # 忽略 lingzhou.json 中未知字段，拼写错误不会静默生效
 
     # ── Provider 层 ─────────────────────────────────────────────────────────
     providers: dict[str, ProviderDefinition]

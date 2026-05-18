@@ -135,8 +135,7 @@
     "max_consecutive_errors": 5,
     "heartbeat_interval": 1800,
     "judge_every": 1,
-    "max_tool_rounds": 8,
-    "wait_llm_skip_max": 3
+    "max_tool_rounds": 8
   },
 
   "prompts": {
