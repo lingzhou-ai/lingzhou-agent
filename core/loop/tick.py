@@ -384,7 +384,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     if loop._bootstrap_mode == "full":
         bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
         if not bootstrap_path.exists():
-            from core.workspace_state import reconcile_bootstrap_completion
+            from core.workspace.state import reconcile_bootstrap_completion
             reconcile_bootstrap_completion(loop._cfg.workspace_dir)
             await loop._soul.refresh_identity(loop._judgment)
             loop._bootstrap_mode = "none"
@@ -473,7 +473,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         if loop._bootstrap_mode == "full":
             bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
             if not bootstrap_path.exists():
-                from core.workspace_state import reconcile_bootstrap_completion
+                from core.workspace.state import reconcile_bootstrap_completion
                 reconcile_bootstrap_completion(loop._cfg.workspace_dir)
                 await loop._soul.refresh_identity(loop._judgment)
                 loop._bootstrap_mode = "none"

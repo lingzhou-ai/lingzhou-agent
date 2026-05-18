@@ -151,7 +151,6 @@ def setup(
         "timeout": 60.0,
         "thinking": thinking,
         "loop": {
-            "interval": 30,
             "db_path": "~/.lingzhou/state/runtime.db",
             "memory_dir": "~/.lingzhou/memory",
             "state_dir": "~/.lingzhou/state",

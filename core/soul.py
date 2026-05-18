@@ -16,7 +16,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from core.workspace_defaults import (
+from core.workspace.defaults import (
     IDENTITY_MD,
     BOOTSTRAP_MD,
     USER_MD,
@@ -25,7 +25,7 @@ from core.workspace_defaults import (
     MEMORY_MD,
 )
 
-from core.workspace_state import (
+from core.workspace.state import (
     BootstrapMode,
     WorkspaceState,
     bootstrap_status,

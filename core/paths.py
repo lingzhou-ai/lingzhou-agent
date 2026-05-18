@@ -8,16 +8,16 @@ _GENERATED_DIR = _PROJECT_DIR / "generated"
 
 
 def project_root() -> Path:
-    """项目根目录 /root/lingzhou。"""
+    """项目根目录。"""
     return _PROJECT_DIR
 
 
 def data_dir() -> Path:
-    """数据目录 ~/.lingzhou（logs/state/gateway）。"""
+    """数据目录 ~/.lingzhou。"""
     return _DATA_DIR
 
 
 def generated_dir() -> Path:
-    """生成文件目录 /root/lingzhou/generated。"""
+    """生成文件目录（<项目根>/generated）。"""
     _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     return _GENERATED_DIR
