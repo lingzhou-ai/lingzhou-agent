@@ -64,6 +64,8 @@ _READER_TOOLS = frozenset({
     "shell.capabilities",
     "task.list",
     "failure.dismiss",
+    # 探针：只读列举，不触发执行
+    "probe.list",
 })
 READER_TOOLS = _READER_TOOLS  # 公开别名，供外部模块引用
 # 写入/推理/高风险工具 → reasoner tier
@@ -74,6 +76,8 @@ _REASONER_TOOLS = frozenset({
     "memory.add_wm", "memory.add_semantic", "memory.set_fact", "memory.snapshot",
     "reflect.structural",
     "schedule.add",
+    # 探针：安装/拆除/执行/启停均有副作用
+    "probe.install", "probe.remove", "probe.run", "probe.enable", "probe.disable",
 })
 
 _TOOL_TIER_MAPPING = {

@@ -36,9 +36,11 @@
 > **探针决策规则**
 > - 看到探针读数时，结合该探针的"目的"字段判断：读数是否符合预期？是否需要立即响应？
 > - 如果读数触发了担忧（异常值、错误、意外结果），在 `rationale` 中说明判断，并决定是否需要 `act`
-> - 可以随时用 `probe.run` 主动触发探针获取最新快照；`interval` 探针结果会自动出现在下一轮 WM 中
+> - `interval + data_back=wm` 探针：结果自动写入工作记忆，下一轮可见；`data_back=none` 探针：**不自动回传**，需主动调用 `probe.run` 获取读数
+> - 可以随时用 `probe.run` 主动触发探针获取最新快照（interval / manual / none 均适用）
 > - 决定安装探针时，**必须填写 `purpose`**（说明监控意图和预期响应方式），否则未来自己看不懂读数
-> - 探针不再需要时用 `probe.remove` 及时撤除，避免感知噪声积累
+> - 暂时不需要某个探针时用 `probe.disable` 暂停（保留配置）；彻底不需要时用 `probe.remove` 拆除
+> - `probe.list` 是 reader-tier 操作；`probe.install / remove / run / enable / disable` 是 reasoner-tier 操作
 
 ---
 
