@@ -89,126 +89,6 @@ _TOOL_TIER_MAPPING = {
     "repair": [],
 }
 
-_ASK_MIN_EVIDENCE_HITS = 2
-_ASK_IDENTIFIER_HINT_RE = re.compile(
-    r"\b(id|task|run|chat|message|ctx|token)\b|任务|编号|日志|运行|聊天|微信|上下文|消息",
-    re.IGNORECASE,
-)
-
-
-def _tool_history_evidence_stats(
-    tool_history: list[dict[str, Any]] | None,
-    *,
-    registry: Any | None = None,
-) -> tuple[int, set[str]]:
-    count = 0
-    tools: set[str] = set()
-    if not tool_history:
-        return count, tools
-    for item in reversed(tool_history):
-        tool_name = str(item.get("tool") or "")
-        if not tool_has_capability(registry, tool_name, "ask_evidence"):
-            continue
-        result_text = str(item.get("result") or "").strip()
-        if result_text and not result_text.startswith("ERROR["):
-            count += 1
-            tools.add(tool_name)
-    return count, tools
-
-
-def _rewrite_task_ask_to_evidence(
-    output: "JudgmentOutput",
-    *,
-    user_message: str,
-    tool_history: list[dict[str, Any]] | None = None,
-    registry: Any | None = None,
-) -> "JudgmentOutput":
-    if output.decision != "act" or output.chosen_action_id != "task.ask":
-        return output
-    evidence_hits, evidence_tools = _tool_history_evidence_stats(tool_history, registry=registry)
-    ask_question = str((output.params or {}).get("question") or "").strip()
-    identifier_hint = bool(_ASK_IDENTIFIER_HINT_RE.search(f"{user_message}\n{ask_question}"))
-    if evidence_hits >= _ASK_MIN_EVIDENCE_HITS:
-        return output
-
-    query_text = ask_question or (user_message or "").strip()
-    if not query_text:
-        return output
-
-    model_strategy = dict(output.model_strategy or {})
-    model_strategy["next_phase_tier"] = "reasoner"
-    model_strategy.setdefault("reason", "先完成本地取证，再由 reasoner 判断是否仍需向用户追问")
-
-    rationale_prefix = (output.rationale or "").strip()
-    if rationale_prefix:
-        rationale_prefix += " "
-
-    budget_note = f"[guard] 当前证据预算 {evidence_hits}/{_ASK_MIN_EVIDENCE_HITS}，先补齐本地证据再决定是否追问用户。"
-
-    if identifier_hint and "task.list" not in evidence_tools:
-        return JudgmentOutput(
-            decision="act",
-            chosen_action_id="task.list",
-            params={"status": "all", "limit": 10},
-            rationale=(
-                rationale_prefix
-                + budget_note
-                + " 先枚举任务与上下文，再判断是否仍需向用户索取 id。"
-            ),
-            reflection=output.reflection,
-            reply_to_user="",
-            next_step=output.next_step or "先确认本地任务与上下文，再决定是否继续追问用户",
-            model_strategy=model_strategy,
-        )
-
-    if "memory.search" not in evidence_tools:
-        return JudgmentOutput(
-            decision="act",
-            chosen_action_id="memory.search",
-            params={"query": query_text[:120]},
-            rationale=(
-                rationale_prefix
-                + budget_note
-                + " 先检索现有记忆与上下文，再由 reasoner 判断是否需要向用户追问。"
-            ),
-            reflection=output.reflection,
-            reply_to_user="",
-            next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
-            model_strategy=model_strategy,
-        )
-
-    if "task.list" not in evidence_tools:
-        return JudgmentOutput(
-            decision="act",
-            chosen_action_id="task.list",
-            params={"status": "all", "limit": 10},
-            rationale=(
-                rationale_prefix
-                + budget_note
-                + " 再补一轮任务侧证据，避免只凭单一检索结果就向用户追问。"
-            ),
-            reflection=output.reflection,
-            reply_to_user="",
-            next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
-            model_strategy=model_strategy,
-        )
-
-    return JudgmentOutput(
-        decision="act",
-        chosen_action_id="memory.search",
-        params={"query": query_text[:120]},
-        rationale=(
-            rationale_prefix
-            + budget_note
-            + " 继续补齐本地证据，再由 reasoner 判断是否需要向用户追问。"
-        ),
-        reflection=output.reflection,
-        reply_to_user="",
-        next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
-        model_strategy=model_strategy,
-    )
-
-
 def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple[str, str]:
     history_parts: list[str] = []
     structured_window: list[dict[str, Any]] = []
@@ -259,90 +139,6 @@ def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple
     return (
         json.dumps(structured_window, ensure_ascii=False, indent=2),
         "\n".join(history_parts),
-    )
-
-
-def _task_has_structured_plan(active_task: Any | None) -> bool:
-    if active_task is None:
-        return False
-    extras = getattr(active_task, "extras", None)
-    if not isinstance(extras, dict):
-        return False
-    raw_plan = extras.get("plan")
-    return isinstance(raw_plan, list) and len(raw_plan) > 0
-
-
-def _action_step_text(tool_name: str, params: dict[str, Any] | None) -> str:
-    payload = params or {}
-    key = (
-        payload.get("path")
-        or payload.get("name")
-        or payload.get("title")
-        or payload.get("key")
-        or str(payload.get("id") or "")
-        or payload.get("command")
-        or payload.get("query")
-        or ""
-    )
-    label = f"执行 {tool_name}"
-    if key:
-        return f"{label}: {str(key)[:80]}"
-    return label
-
-
-def _rewrite_complex_act_to_task_plan(
-    output: "JudgmentOutput",
-    *,
-    user_message: str,
-    active_task: Any | None,
-    registry: Any | None = None,
-) -> "JudgmentOutput":
-    if output.decision != "act":
-        return output
-    tool_name = output.chosen_action_id or ""
-    if not tool_name or tool_has_capability(registry, tool_name, "plan_bootstrap_exempt"):
-        return output
-    if active_task is None or _task_has_structured_plan(active_task):
-        return output
-
-    next_step = str(output.next_step or "").strip()
-    if not user_message.strip() or not next_step:
-        return output
-
-    current_step = str(getattr(active_task, "current_step", "") or "").strip()
-    focus_step = current_step or _action_step_text(tool_name, output.params)
-    plan = [{"step": focus_step, "status": "in_progress"}]
-    if next_step and next_step != focus_step:
-        plan.append({"step": next_step, "status": "pending"})
-    if "整理证据并回复用户" not in {item["step"] for item in plan}:
-        plan.append({"step": "整理证据并回复用户", "status": "pending"})
-
-    model_strategy = dict(output.model_strategy or {})
-    model_strategy["next_phase_tier"] = "reasoner"
-    model_strategy.setdefault("reason", "复杂任务先显式维护 task.plan，再继续执行")
-
-    rationale_prefix = (output.rationale or "").strip()
-    if rationale_prefix:
-        rationale_prefix += " "
-
-    params: dict[str, Any] = {"plan": plan}
-    task_id = int(getattr(active_task, "id", 0) or 0)
-    if task_id > 0:
-        params["task_id"] = task_id
-
-    return JudgmentOutput(
-        decision="act",
-        chosen_action_id="task.plan",
-        params=params,
-        rationale=(
-            rationale_prefix
-            + "[guard] 这是复杂用户任务，且当前已出现 next_step，但活跃任务还没有结构化计划。"
-            "先用 task.plan 固化步骤，再继续执行。"
-        ),
-        reflection=output.reflection,
-        reply_to_user="",
-        next_step=next_step or "先落结构化计划，再继续执行",
-        model_strategy=model_strategy,
     )
 
 
@@ -862,6 +658,13 @@ class JudgmentLayer:
                         and json.dumps(item.get("params", {}), ensure_ascii=False) == _last_path
                     )
 
+        ask_evidence_hits = sum(
+            1 for item in (tool_history or [])
+            if tool_has_capability(self._registry, str(item.get("tool") or ""), "ask_evidence")
+            and str(item.get("result") or "").strip()
+            and not str(item.get("result") or "").startswith("ERROR[")
+        )
+
         posture = "respond" if user_message else ("converge" if task_explore_count >= 4 else "conserve")
         implicit_next_phase_default = None
         if current_action in _READER_TOOLS:
@@ -914,6 +717,7 @@ class JudgmentLayer:
                 "task_explore_count": task_explore_count,
                 "repeat_action_count": repeat_action_count,
                 "repeat_read_count": repeat_read_count,
+                "ask_evidence_hits": ask_evidence_hits,
                 "global_cost_posture": posture,
             },
             "routing_hint": {
@@ -1061,15 +865,6 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
-        output = _rewrite_task_ask_to_evidence(output, user_message=user_message, registry=self._registry)
-        if user_message:
-            active_task = await task_store.get_active()
-            output = _rewrite_complex_act_to_task_plan(
-                output,
-                user_message=user_message,
-                active_task=active_task,
-                registry=self._registry,
-            )
 
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
@@ -1224,19 +1019,6 @@ class JudgmentLayer:
                     next_step=output.next_step,
                     model_strategy=dict(output.model_strategy or {}),
                 )
-        else:
-            output = _rewrite_task_ask_to_evidence(
-                output,
-                user_message=user_message,
-                tool_history=tool_history,
-                registry=self._registry,
-            )
-            output = _rewrite_complex_act_to_task_plan(
-                output,
-                user_message=user_message,
-                active_task=active_task,
-                registry=self._registry,
-            )
 
         _log.info(
             "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s",

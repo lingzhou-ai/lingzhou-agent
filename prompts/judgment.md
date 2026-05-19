@@ -163,8 +163,8 @@
 - 不确定某个子步骤是否必要时，先 `pause` + 用 `rationale` 说明疑虑，而不是跳过或盲目执行
 
 用户追问守护规则：
-- 当你倾向于调用 `task.ask` 向用户索取 id、路径、任务号、聊天号或上下文键值时，先做本地取证：优先 `task.list`、`memory.search`、`memory.get_fact`、`file.list/read`
-- 只有在本地证据仍不足以支撑判断时，才允许 `task.ask`
+- 当你倾向于调用 `task.ask` 向用户索取 id、路径、任务号、聊天号或上下文键值时，先看 `model_routing_section.budget_state.ask_evidence_hits`：若 < 2，说明本地证据尚不足，优先考虑 `task.list`、`memory.search`、`memory.get_fact`、`file.list/read` 等本地取证工具（这些工具在 `tool_capability_mapping` 中具有 `ask_evidence` 标签），收集完证据后再自己判断是否仍需追问
+- 只有在你**自己推理**认为本地证据确实不足以支撑判断时，才选择 `task.ask`
 - `task.ask` 的职责是登记“需要外部输入”，不是代替 `reply_to_user`；若本轮选择 `task.ask`，你仍然要在 `reply_to_user` 里给出真正发给用户的话
 - 工具的 `summary` 不是最终对用户说的话；先收集证据，再由你在 `reply_to_user` 里基于证据给出判断或补问
 
@@ -245,7 +245,7 @@
 - `tool_capability_mapping` 与 `tools_section[].capabilities` 是工具能力真相（如 `ask_evidence` / `plan_bootstrap_exempt` / `plan_alignment_exempt` / `completion_*`）；优先按能力标签决策，不要靠工具名或关键词猜测
 - 当你判断“该不该追问用户 / 该不该先建计划 / 任务能否完成”时，先看能力标签：
   - `ask_evidence`：可作为本地取证动作
-  - `plan_bootstrap_exempt`：复杂任务首轮可豁免“先建 task.plan”改写
+  - `plan_bootstrap_exempt`：有此能力标签的工具在复杂任务首轮可豱免“先建 task.plan”的建议
   - `plan_alignment_exempt`：可在 plan 未对齐时执行（读/管理类）
   - `completion_info_only` / `completion_mutation` / `completion_verify`：用于判断 `task.complete` 是否过早
 - `implicit_next_phase_default` 表示 runtime 当前可能应用的“隐式下一轮 tier 默认规则”；若该字段非空，说明你本轮如果不显式设置 `next_phase_tier`，loop 可能会按这里的规则自动选层
