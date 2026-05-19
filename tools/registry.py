@@ -40,11 +40,15 @@ class ToolManifest:
     params: list[ToolParam] = field(default_factory=list[ToolParam])
     prefer_tier: str = ""       # 推荐 tier: "reader" | "reasoner" | ""=自动推断
     progress_category: str = "" # 进展类别: "mutation" | "info" | ""=自动推断
+    capabilities: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
+            "prefer_tier": self.prefer_tier,
+            "progress_category": self.progress_category,
+            "capabilities": list(self.capabilities),
             "params": [
                 {"name": p.name, "type": p.dtype, "description": p.description, "required": p.required}
                 for p in self.params
@@ -110,6 +114,24 @@ class ToolEntry:
 # ── 全局注册表（模块级单例）────────────────────────────────────────────────────
 
 _registry: dict[str, ToolEntry] = {}
+
+
+def manifest_has_capability(manifest: ToolManifest | None, capability: str) -> bool:
+    return bool(manifest and capability and capability in manifest.capabilities)
+
+
+def tool_has_capability(registry: "ToolRegistry | None", tool_name: str, capability: str) -> bool:
+    if registry is None or not tool_name or not capability:
+        return False
+    entry = registry.get(tool_name)
+    return manifest_has_capability(entry.manifest if entry else None, capability)
+
+
+def tool_name_has_capability(tool_name: str, capability: str) -> bool:
+    if not tool_name or not capability:
+        return False
+    entry = _registry.get(tool_name)
+    return manifest_has_capability(entry.manifest if entry else None, capability)
 
 
 def tool(manifest: ToolManifest) -> Callable[[ToolHandler], ToolHandler]:

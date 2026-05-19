@@ -20,6 +20,7 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
         "至多一个步骤标记为 in_progress。适合非平凡的、多步骤工作。"
     ),
     progress_category="info",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("plan", "object", "步骤列表: [{\"step\":\"...\", \"status\":\"pending|in_progress|completed\"}]", required=True),
         ToolParam("task_id", "number", "任务 ID（可选，默认当前活跃任务）", required=False),

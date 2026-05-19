@@ -185,6 +185,7 @@ async def probe_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     params=[],
     prefer_tier="reader",
     progress_category="info",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
 ))
 async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     probe_mgr = _get_probe_manager(ctx)

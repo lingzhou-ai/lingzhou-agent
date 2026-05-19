@@ -20,6 +20,7 @@ _MANIFEST = ToolManifest(
         "返回 stdout+stderr 合并输出摘要，并受 timeout 与输出截断限制。"
     ),
     progress_category="mutation",
+    capabilities=("completion_verify",),
         params=[
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),

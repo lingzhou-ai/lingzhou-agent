@@ -293,7 +293,9 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
 @tool(ToolManifest(
     name="file.list",
     description="列出目录内容。支持 shallow list，用于替代 shell.run 的 ls/find 场景。",
+    prefer_tier="reader",
     progress_category="info",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
     params=[
         ToolParam("path", "string", "目录路径", required=True),
         ToolParam("limit", "number", "最多返回多少项，默认 200", required=False),
@@ -345,7 +347,9 @@ async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "3. start + end → 按字符下标区间读（精确控制）\n"
         "⚠️ 修改文件前先用 offset/limit 读完整函数（≥20行），避免碎片化。"
     ),
+    prefer_tier="reader",
     progress_category="info",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
     params=[
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("offset", "number", "起始行号（1-indexed），配合 limit 使用", required=False),
@@ -423,6 +427,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="file.write",
     description="写入文件内容。如果文件已存在则覆盖全部内容。创建新文件时自动创建父目录。",
     progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("content", "string", "要写入的内容", required=True),
@@ -492,6 +497,7 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "这是修改文件的首选工具——相比全量覆盖的 file.write，edit 只改需要改的部分，安全且节省 token。"
     ),
     progress_category="mutation",
+    capabilities=("completion_mutation",),
         params=[
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("edits", "object",
@@ -661,6 +667,7 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "主要用途：初始化完成后删除 BOOTSTRAP.md，或清理临时文件。"
     ),
     progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("path", "string", "要删除的文件路径（相对于 workspace 或绝对路径）", required=True),
     ],

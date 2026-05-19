@@ -36,25 +36,28 @@ async def _resolve_reply_chat_id(
     active_task: Task | None,
     chat_id: str | None,
 ) -> str | None:
-    resolved_chat_id = (chat_id or "").strip()
-    if resolved_chat_id:
+    if chat_id is not None:
+        resolved_chat_id = str(chat_id or "").strip()
         return resolved_chat_id
-    if active_task is None:
-        return None
 
-    task_source = str(getattr(active_task, "source", "") or "").strip()
-    if task_source.startswith(("wechat:", "chat:")):
-        return task_source
+    if active_task is not None:
+        task_source = str(getattr(active_task, "source", "") or "").strip()
+        if task_source.startswith(("wechat:", "chat:")):
+            return task_source
 
-    task_chat_id, task_chat_found = await loop._task_store.get_fact(f"task:{active_task.id}:chat_id")
-    if task_chat_found and task_chat_id.strip():
-        return task_chat_id.strip()
+        task_chat_id, task_chat_found = await loop._task_store.get_fact(f"task:{active_task.id}:chat_id")
+        if task_chat_found and task_chat_id.strip():
+            return task_chat_id.strip()
 
-    legacy_chat_id, legacy_chat_found = await loop._task_store.get_fact(
-        f"task:{active_task.id}:chat_session_id"
-    )
-    if legacy_chat_found and legacy_chat_id.strip():
-        return legacy_chat_id.strip()
+        legacy_chat_id, legacy_chat_found = await loop._task_store.get_fact(
+            f"task:{active_task.id}:chat_session_id"
+        )
+        if legacy_chat_found and legacy_chat_id.strip():
+            return legacy_chat_id.strip()
+
+    last_chat_id, last_chat_found = await loop._task_store.get_fact("chat:last_chat_id")
+    if last_chat_found and last_chat_id.strip():
+        return last_chat_id.strip()
     return None
 
 

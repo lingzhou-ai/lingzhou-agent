@@ -71,6 +71,31 @@ console = Console()
 _log = logging.getLogger("lingzhou.loop")
 
 
+def _tool_history_entry(action: JudgmentOutput, result: ToolResult) -> dict[str, Any]:
+    summary = str(result.summary or "")
+    error = str(result.error or "")
+    status = "error" if error else ("skipped" if result.skipped else "ok")
+    error_category = ""
+    if error:
+        err_lower = error.lower()
+        error_category = (
+            "transient"
+            if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
+            else "fatal"
+        )
+    return {
+        "tool": action.chosen_action_id or "",
+        "params": action.params or {},
+        "result": f"ERROR[{error_category}]: {summary}" if error else summary,
+        "summary": summary,
+        "error": error,
+        "error_category": error_category,
+        "skipped": bool(result.skipped),
+        "status": status,
+        "state_delta": dict(result.state_delta or {}) if isinstance(result.state_delta, dict) else {},
+    }
+
+
 async def _maybe_reconcile_bootstrap(loop: Any) -> None:
     """如果 BOOTSTRAP.md 已被本 tick 删除，写入 setupCompletedAt 并切换到正常模式。"""
     if loop._bootstrap_mode != "full":
@@ -413,20 +438,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     result = await loop._execution.dispatch(action, ctx)
     tool_history: list[dict[str, Any]] = []
     if action.decision == "act":
-        initial_result_text = result.summary
-        if result.error:
-            err_lower = (result.error or "").lower()
-            err_cat = (
-                "transient"
-                if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
-                else "fatal"
-            )
-            initial_result_text = f"ERROR[{err_cat}]: {result.summary}"
-        tool_history.append({
-            "tool": action.chosen_action_id or "",
-            "params": action.params or {},
-            "result": initial_result_text,
-        })
+        tool_history.append(_tool_history_entry(action, result))
 
     if action.decision == "act" and not result.error:
         tool = action.chosen_action_id or ""
@@ -467,6 +479,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             cont = await loop._judgment.decide_continue(
                 tool_history,
                 user_message=user_message,
+                active_task=active_task,
                 prefer_tier=next_tier or None,
                 thinking_override=continue_thinking,
                 routing_overrides=loop._pending_routing_overrides,
@@ -497,24 +510,10 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 )
 
             if cont.decision == "act":
-                if cont_result.error:
-                    err_lower = (cont_result.error or "").lower()
-                    err_cat = (
-                        "transient"
-                        if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
-                        else "fatal"
-                    )
-                    result_text = f"ERROR[{err_cat}]: {cont_result.summary}"
-                    if "oldtextnotfound" in err_lower:
-                        for behavior_item in loop._behavior.on_edit_failure(cont_result.error or ""):
-                            loop._wm.add(behavior_item)
-                else:
-                    result_text = cont_result.summary
-                tool_history.append({
-                    "tool": cont.chosen_action_id or "",
-                    "params": cont.params or {},
-                    "result": result_text,
-                })
+                if cont_result.error and "oldtextnotfound" in (cont_result.error or "").lower():
+                    for behavior_item in loop._behavior.on_edit_failure(cont_result.error or ""):
+                        loop._wm.add(behavior_item)
+                tool_history.append(_tool_history_entry(cont, cont_result))
 
             action = cont
             result = cont_result
@@ -528,6 +527,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         reply_only = await loop._judgment.decide_continue(
             tool_history,
             user_message=user_message,
+            active_task=active_task,
             prefer_tier="reasoner",
             thinking_override=_thinking_floor(
                 _resolve_thinking_override(

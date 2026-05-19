@@ -109,6 +109,8 @@ async def schedule_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "⚡ 表示当前已到期（需处理），⏰ 表示未来触发（无需处理）。"
         "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒，已送达的到期信号通常无需再手动 ack。"
     ),
+    prefer_tier="reader",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
     params=[
         ToolParam("include_done", "boolean", "是否包含已完成信号，默认 false", required=False),
         ToolParam("limit", "number", "最多返回条数，默认 20", required=False),
@@ -148,6 +150,8 @@ async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "一次性信号标记为 done；重复信号自动推进到下次触发时间。"
         "兼容旧流程保留；对已通过 WM delivery 自动推进/完成的到期信号，通常不需要再调用。"
     ),
+    prefer_tier="reader",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("id", "number", "信号 id（由 schedule.list 查询）", required=True),
     ],
@@ -163,6 +167,8 @@ async def schedule_ack(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="schedule.cancel",
     description="取消一条调度信号（按 id）",
+    prefer_tier="reader",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("id", "number", "信号 id（由 schedule.list 查询）", required=True),
     ],

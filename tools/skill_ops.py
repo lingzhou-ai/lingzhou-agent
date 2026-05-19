@@ -32,6 +32,8 @@ def _format_skill_line(skill) -> str:
 @tool(ToolManifest(
     name="skill.list",
     description="列出当前可用的 active skills（builtin + workspace）。当你不确定自己有哪些 skills 可用时调用。",
+    prefer_tier="reader",
+    capabilities=("completion_info_only",),
     params=[
         ToolParam("scope", "string", "all|custom|builtin，默认 all", required=False),
         ToolParam("limit", "number", "最多返回多少条，默认 50", required=False),
@@ -58,6 +60,8 @@ async def skill_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="skill.search",
     description="按关键词搜索当前可用 skills。当你怀疑有某类 skill 但当前没被激活时调用。",
+    prefer_tier="reader",
+    capabilities=("completion_info_only",),
     params=[
         ToolParam("query", "string", "搜索关键词，如 bug/refactor/提醒/交互/学习", required=True),
         ToolParam("limit", "number", "最多返回多少条，默认 20", required=False),
