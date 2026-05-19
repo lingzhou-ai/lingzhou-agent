@@ -125,17 +125,11 @@ def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
         return
     if active_task is not None:
         content = (
-            "[初始化未完成] BOOTSTRAP.md 仍然存在，初始化步骤尚未全部完成并确认。"
-            "当前有活跃任务，可在任务完成后处理初始化，"
-            "或在本轮穿插完成初始化步骤（逐项确认 IDENTITY/SOUL/USER/TOOLS 内容是否落实），"
-            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
+            "[初始化未完成] BOOTSTRAP.md 仍然存在，初始化步骤尚未全部完成。当前有活跃任务。"
         )
     else:
         content = (
-            "[初始化待完成] BOOTSTRAP.md 仍然存在，说明初始化检查项尚未全部完成并确认。"
-            "当前无活跃任务，这是推进初始化的自然时机："
-            "逐项确认 IDENTITY / SOUL / USER / TOOLS 的内容是否已具体落实，"
-            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
+            "[初始化待完成] BOOTSTRAP.md 仍然存在，初始化检查项尚未全部完成。当前无活跃任务。"
         )
     loop._wm.add(WMItem(
         kind="bootstrap",
@@ -357,10 +351,8 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 loop._wm.add(WMItem(
                     kind="self_awareness",
                     content=(
-                        f"[计划对齐] task.plan 当前进行中步骤：「{_in_progress_step}」，"
-                        f"但 task.current_step 仍是「{_current_step or '（未设置）'}」。"
-                        " 如有实质性操作，建议先用 task.advance/task.update 对齐，"
-                        " 或用 task.plan 调整计划；也可直接执行后补对齐。"
+                        f"[计划对齐] task.plan 进行中步骤「{_in_progress_step}」，"
+                        f"task.current_step 为「{_current_step or '（未设置）'}」。"
                     ),
                     priority=0.80,
                 ))
@@ -667,11 +659,7 @@ async def _tick_finalize_impl(
                     from memory.working import WMItem
                     loop._wm.add(WMItem(
                         kind="self_awareness",
-                        content=(
-                            f"[记忆压力] global.md 当前 {_lc} 行 / {_sz} 字节，已经较大。"
-                            "建议在空闲时压缩旧记录：保留最近 100 条详情，旧内容用 LLM 提炼为关键要点摘要。"
-                            "压缩方法：file.read global.md 的旧段落 → 提炼为简短摘要 → file.edit 替换。"
-                        ),
+                        content=f"[记忆压力] global.md 当前 {_lc} 行 / {_sz} 字节。",
                         priority=0.75,
                     ))
         except Exception:
@@ -756,14 +744,17 @@ async def _tick_finalize_impl(
     else:
         loop._pending_tier = None
 
-    raw_gap = (action.model_strategy or {}).get("next_idle_gap_secs")
+    _ms = (action.model_strategy or {}).get("next_idle_gap_ms")
+    _secs = (action.model_strategy or {}).get("next_idle_gap_secs")
+    # next_idle_gap_ms 优先（毫秒 → 秒）；其次 next_idle_gap_secs（秒）
+    raw_gap = (float(_ms) / 1000.0) if _ms is not None else (_secs if _secs is not None else None)
     if raw_gap is not None:
         try:
             gap_f = float(raw_gap)
             has_task = (await loop._task_store.get_active()) is not None
             if has_task:
                 bounds = cfg.loop.idle_with_task_bounds
-                lo, hi = (float(bounds[0]), float(bounds[1])) if len(bounds) >= 2 else (2.0, 30.0)
+                lo, hi = (float(bounds[0]), float(bounds[1])) if len(bounds) >= 2 else (0.1, 30.0)
             else:
                 bounds = cfg.loop.idle_no_task_bounds
                 lo, hi = (float(bounds[0]), float(bounds[1])) if len(bounds) >= 2 else (5.0, 300.0)

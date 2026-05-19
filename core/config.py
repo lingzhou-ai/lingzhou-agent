@@ -129,11 +129,11 @@ class LoopConfig(BaseModel):
         ),
     )
     idle_with_task_bounds: list[float] = Field(
-        default=[2.0, 30.0],
+        default=[0.1, 30.0],
         description=(
-            "[min, max]：LLM 通过 next_idle_gap_secs 在有活跃任务时可指定的等待时长范围（秒）。"
+            "[min, max]：LLM 通过 next_idle_gap_secs / next_idle_gap_ms 在有活跃任务时可指定的等待时长范围（秒）。"
             "对 min_act_gap 后的短等待同样起下限保护作用（防止紧循环）。"
-            "示例：[1.0, 60.0] 表示 LLM 最快 1s 最慢 60s。"
+            "示例：[0.5, 60.0] 表示 LLM 最快 500ms 最慢 60s；[0.1, 30.0] 最快 100ms。"
         ),
     )
     idle_no_task_bounds: list[float] = Field(

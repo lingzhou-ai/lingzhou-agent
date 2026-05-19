@@ -128,12 +128,7 @@ class BehaviorTracker:
             _log.warning("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
             items.append(WMItem(
                 kind="self_awareness",
-                content=(
-                    f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。"
-                    " 这可能是重复，也可能是必要的重试——请你自行判断："
-                    " (1) 这 3 次的目的相同吗？(2) 是否已获得足够信息？"
-                    " (3) 如果是循环，原因是什么？你可以继续执行，也可以改变策略。"
-                ),
+                content=f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
                 priority=0.95,
             ))
         return items
@@ -176,12 +171,7 @@ class BehaviorTracker:
             _log.warning("[self-awareness] 连续 3 次读取相同内容: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
-                content=(
-                    f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。"
-                    " 请你判断：(1) 这是必要的确认还是无效重复？"
-                    " (2) 是否已从该文件获得了所需信息？"
-                    " 你可以继续读取，也可以切换到下一步。"
-                ),
+                content=f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。",
                 priority=0.95,
             ))
 
@@ -215,14 +205,7 @@ class BehaviorTracker:
                 )
                 items.append(WMItem(
                     kind="self_awareness",
-                    content=(
-                        f"[行为信号] 已连续 {self._seq_window_count} 次按窗口分段读取 ({path})。"
-                        " 这种逐段扫描模式通常是探索而非验证。"
-                        " 请判断：(1) 是否已定位到目标代码区域？"
-                        " (2) 是否可以直接用 grep/sed 定位关键符号？"
-                        " (3) 是否已有足够信息进行下一步修改或验证？"
-                        " 建议：切换到 shell.run(grep) 或直接 file.edit 目标位置。"
-                    ),
+                    content=f"[行为信号] 已连续 {self._seq_window_count} 次按窗口分段读取 ({path})。",
                     priority=0.93,
                 ))
 
@@ -252,11 +235,7 @@ class BehaviorTracker:
             _log.warning("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
-                content=(
-                    f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。"
-                    " 这次不是仅路径相同，而是返回内容也没有变化。"
-                    " 请判断：这是必要确认，还是应切换到读取/写入/总结等下一步？"
-                ),
+                content=f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。",
                 priority=0.95,
             ))
         return items
@@ -287,15 +266,9 @@ class BehaviorTracker:
                 _max_stage = max(len(self._wait_notify_thresholds) - 1, 1)
                 _priority = round(0.85 + 0.1 * (_stage / _max_stage), 3)
                 _msg = (
-                    f"[行为汇报] 当前已连续 {self._wait_streak} 轮决策为 {decision}。"
+                    f"[行为汇报] 已连续 {self._wait_streak} 轮 {decision}。"
                     f" 任务存在：{'是' if has_active_task else '否'}。"
-                    f" 这是第 {_stage + 1}/{len(self._wait_notify_thresholds)} 级通知。"
-                    " 以下信息供参考，由你决定下一步："
-                    " (1) 当前等待条件是否仍然成立？"
-                    " (2) next_step 描述是否仍然准确？"
-                    " (3) 是否有可以立即执行的小动作推进任务？"
-                    " (4) 是否需要向用户说明当前状态？"
-                    " 你可以继续 wait，也可以行动——这只是一条状态通知。"
+                    f" 通知 {_stage + 1}/{len(self._wait_notify_thresholds)}。"
                 )
                 _log.info("[behavior] wait-streak=%d, thresh=%d, priority=%.3f",
                           self._wait_streak, thresh, _priority)
@@ -342,14 +315,7 @@ class BehaviorTracker:
             )
             items.append(WMItem(
                 kind="self_awareness",
-                content=(
-                    f"[认知警告] 我的推理结论已连续 {self._belief_stale_count} 轮基本相同。"
-                    " 这可能意味着：(1) 思路卡住，证据未变但结论反复重申；"
-                    " (2) 实际上什么都没做，只是不断地\"分析\"；"
-                    " (3) 我在回避某个让我不确定的步骤。\n"
-                    "  → 请在本轮 rationale 中回答：这个结论是否已经被行动验证过？"
-                    " 如果没有，**现在就执行一个可产生新证据的动作**，而不是再次重申结论。"
-                ),
+                content=f"[认知信号] 推理结论已连续 {self._belief_stale_count} 轮基本相同（指纹 {fp}）。",
                 priority=0.96,
             ))
         return items
@@ -365,12 +331,7 @@ class BehaviorTracker:
             if self._edit_fail_count >= 2:
                 return [WMItem(
                     kind="behavior_sense",
-                    content=(
-                        f"[感知] file.edit 已连续 {self._edit_fail_count} 次因 oldText 不匹配而失败。"
-                        f"考虑换策略：① 用 shell.run sed/python 做精确插入"
-                        f"② 用 file.read 读更大范围（≥500字符）获取完整上下文后重试"
-                        f"③ 用 file.write 全量覆写（先 file.read 全文）"
-                    ),
+                    content=f"[感知] file.edit 已连续 {self._edit_fail_count} 次因 oldText 不匹配而失败。",
                     priority=0.80,
                 )]
         else:

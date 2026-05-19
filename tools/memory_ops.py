@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
+
+_log = logging.getLogger("lingzhou.tools")
 
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 from memory.working import WMItem
@@ -143,7 +146,9 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         id_prefix=_coerce_optional_text(params.get("id_prefix")) or None,
     )
     if not hits:
+        _log.info("[memory.search] query=%r hits=0", query[:60])
         return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
+    _log.info("[memory.search] query=%r hits=%d", query[:60], len(hits))
     quality = evaluate_retrieval_quality(query, hits, ctx.semantic.decay_lambda)
     lines = []
     for i, hit in enumerate(hits, 1):

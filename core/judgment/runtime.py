@@ -699,10 +699,12 @@ class JudgmentLayer:
                 "• tool_capability_mapping：runtime 注入的工具能力真相（如 ask_evidence / plan_bootstrap_exempt / completion_verify）。"
                 "优先按能力标签推理，不要仅凭工具名字猜类别。\n"
                 "• implicit_next_phase_default：runtime 的隐式下轮 tier 默认行为。若该字段非空，表示你本轮若不显式设置 next_phase_tier，loop 可能按这里的规则自动选择下一轮 tier。\n"
-                "• next_idle_gap_secs：【必须设置！】你的生命节奏控制器（秒，整数，范围 5-600）。"
+                "• next_idle_gap_secs / next_idle_gap_ms：【必须设置其中之一！】你的生命节奏控制器。"
+                "next_idle_gap_secs 单位秒（小数可用，如 0.5 = 500ms），next_idle_gap_ms 单位毫秒（整数，如 500 = 500ms）；两者同时设置时 ms 优先。"
+                "范围由 idle_with_task_bounds / idle_no_task_bounds 决定（默认有任务时 100ms-30s，无任务时 5s-300s）。"
                 "你必须根据当前上下文主动选择一个合理值，不要依赖默认："
-                "已发起shell预计30s出结果 → 35；刚回复完用户等下一步 → 120；"
-                "任务推进中需快速追踪 → 10；完全空闲无事 → 120。"
+                "已发起shell预计30s出结果 → next_idle_gap_secs=35；刚回复完用户等下一步 → next_idle_gap_secs=120；"
+                "任务推进中需快速追踪 → next_idle_gap_ms=500；实时等待短命令结束 → next_idle_gap_ms=200。"
                 "不设置此字段则用兜底值 60 秒。控制权在你手里。\n"
                 "• routing_overrides：临时覆盖 tier→model 映射，格式 {\"reader\": \"bailian/qwen3.6-plus\"}。"
                 "可选 tier: reader / reasoner / repair。从 catalog_models 中选择可用模型。"
@@ -802,12 +804,15 @@ class JudgmentLayer:
         )
         raw: str | None = None
         for _attempt in range(2):
+            _primary = self._last_selected_skills[0] if self._last_selected_skills else None
             self._last_call_meta = {
                 "phase": selection.phase,
                 "tier": selection.tier,
                 "model_ref": selection.model_ref,
                 "thinking": selection.thinking,
                 "skills": self._skills_for_log(self._last_selected_skills),
+                "primary_skill": _primary.name if _primary else None,
+                "primary_skill_guidance": bool(_primary and getattr(_primary, "guidance", None)),
             }
             try:
                 raw = await selected_provider.chat(messages, thinking_override=thinking_override)
@@ -1127,6 +1132,8 @@ class JudgmentLayer:
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
+        _log.info("[context] episodic search=%r cross_task_hit=%s",
+                  (search_query or "")[:50], bool(episodic_search))
 
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
         entity_section = self._ref_resolver.format_section(resolved_entities)
@@ -1134,6 +1141,10 @@ class JudgmentLayer:
         anchors: list[str] = []
         if task:
             anchors.append(task.goal or task.title)
+            # 来源身份锚：wechat/chat 用户 ID 作为额外检索锚，让已存储的用户身份节点可被命中
+            task_source = str(getattr(task, "source", "") or "")
+            if task_source and task_source not in anchors:
+                anchors.append(task_source)
         if user_message and user_message not in anchors:
             anchors.append(user_message[:100])
         if failures:
@@ -1141,6 +1152,8 @@ class JudgmentLayer:
         emotion_label = _emotion_label(emotion, self._cfg)
         anchors.append(emotion_label)
         memories = semantic.retrieve_multi_anchor(anchors, self._cfg.memory.semantic_top_k)
+        _log.info("[context] semantic hits=%d anchors=%r",
+                  len(memories), [a[:40] for a in anchors[:3]])
 
         axioms_val, _ = await task_store.get_fact("soul:hard_axioms")
         ethos_val, _ = await task_store.get_fact("soul:ethos_baseline")
@@ -1169,6 +1182,17 @@ class JudgmentLayer:
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
+        if skills:
+            _log.info(
+                "[skill] 命中 %d 个: %s",
+                len(skills),
+                " | ".join(
+                    f"{s.name}(guidance={'yes' if getattr(s, 'guidance', None) else 'no'})"
+                    for s in skills
+                ),
+            )
+        else:
+            _log.debug("[skill] 本轮无命中")
 
         ctx = {
             "task_section": _fmt_task(task),

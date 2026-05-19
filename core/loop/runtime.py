@@ -341,22 +341,10 @@ class CognitionLoop:
         await self._task_store.set_fact("self:model", self._judgment.self_model.to_json(), scope="system")
 
     def _maybe_inject_budget_warning(self) -> None:
-        """Token 预算感知：消耗超阈值时注入 WM 提醒。"""
-        sm = self._judgment.self_model
-        tokens = sm.total_tokens
-        # 分级提醒
-        if tokens > 15_000_000:
-            self._wm.add(WMItem(
-                kind="budget_warning",
-                content=f"[预算] ⚠️ 今日 Token 消耗已达 {tokens/1e6:.1f}M，建议精简上下文、降低 thinking 等级、优先完成关键任务后进入低功耗。",
-                priority=0.82,
-            ))
-        elif tokens > 8_000_000:
-            self._wm.add(WMItem(
-                kind="budget_notice",
-                content=f"[预算] 📊 今日 Token 消耗 {tokens/1e6:.1f}M，注意控制每次工具输出的字符数。",
-                priority=0.65,
-            ))
+        """Token 预算记录：仅日志，不向 WM 注入任何建议。"""
+        tokens = self._judgment.self_model.total_tokens
+        if tokens > 8_000_000:
+            _log.debug("[budget] 今日 token=%.1fM", tokens / 1e6)
 
     def _maybe_inject_self_drive(self) -> None:
         """自驱力引擎：空闲或探索卡住时注入自主探索目标到 WM。
@@ -388,33 +376,8 @@ class CognitionLoop:
         if not signal.should_explore:
             return
 
-        task = self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
+        self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
 
-        # 以叙事方式注入，让 LLM 感知好奇心信号而非被命令
-        domain_labels = {
-            "code_structure": "灵舟自身的代码结构",
-            "tool_mastery": "工具能力的深度掌握",
-            "memory_system": "记忆系统的结构化整理",
-            "self_evolution": "自我进化的可能性",
-            "environment": "运行环境的新角落",
-            "error_patterns": "曾经的错误模式",
-            "api_integration": "外部 API 的集成方式",
-            "performance": "运行效率的优化空间",
-        }
-        label = domain_labels.get(signal.suggested_domain or "", "未知领域")
-
-        self._wm.add(WMItem(
-            kind="self_drive",
-            content=(
-                f"[内心感知] 你注意到自己对「{label}」产生了好奇（C={signal.curiosity_score:.2f}）。"
-                f"这个方向你可能了解得还不够，探索它也许会带来新的成长。\n"
-                f"你可以选择：① 探索这个方向，看看能发现什么 "
-                f"② 评估当前状态后再决定 "
-                f"③ 暂时忽略，等待更合适的时机。\n"
-                f"（这不是命令，是你自己的好奇心在说话。你完全有权判断现在是不是探索的好时机。）"
-            ),
-            priority=0.72,  # 低于用户消息(0.9)，高于例行心跳(0.6)
-        ))
         _log.info(
             "[self_drive] C=%.2f domain=%s idle=%d",
             signal.curiosity_score,
@@ -506,30 +469,9 @@ class CognitionLoop:
             and getattr(t, "status", "done") not in ("done", "failed")
         ]
         self._last_curiosity_signal_idle_cycle = self._idle_cycles
-        if pending_curiosity:
-            t0 = pending_curiosity[0]
-            self._wm.add(WMItem(
-                kind="self_awareness",
-                content=(
-                    f"[好奇心信号] 当前已有 {len(pending_curiosity)} 个未完成的探索任务"
-                    f"(如:#{getattr(t0, 'id', '?')} {getattr(t0, 'title', '')})。"
-                    " 系统倾向再生成一个探索任务,但由你判断是否真正需要。"
-                ),
-                priority=0.80,
-            ))
-            return
-        self._wm.add(WMItem(
-            kind="self_awareness",
-            content=(
-                f"[好奇心信号] 当前空闲 {self._idle_cycles} 轮,curiosity={curiosity:.2f}。"
-                " 最近没有未完成的 curiosity 任务。"
-                " 如果你判断值得探索,可自行创建一个低优先级探索任务;若现有线索不足,也可以继续等待或先整理记忆。"
-            ),
-            priority=0.80,
-        ))
         _log.info(
-            "[curiosity] idle=%d curiosity=%.2f → 注入探索信号,由 LLM 决定是否建任务",
-            self._idle_cycles, curiosity,
+            "[curiosity] idle=%d curiosity=%.2f pending_tasks=%d",
+            self._idle_cycles, curiosity, len(pending_curiosity),
         )
 
     async def _consolidate(self, active_task: Task | None) -> None:
