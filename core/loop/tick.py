@@ -434,7 +434,6 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         for item in loop._behavior.on_wait(action.decision, active_task is not None):
             loop._wm.add(item)
 
-    loop._behavior.observe_execution(action, cognitive_signals)
     result = await loop._execution.dispatch(action, ctx)
     tool_history: list[dict[str, Any]] = []
     if action.decision == "act":
@@ -491,7 +490,6 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 for behavior_item in loop._behavior.on_act(tool_name, key_param, str(active_task.id) if active_task else None):
                     loop._wm.add(behavior_item)
                 loop._behavior.apply_cognitive_probe(cognitive_signals)
-            loop._behavior.observe_execution(cont, cognitive_signals)
             cont_result = await loop._execution.dispatch(cont, ctx)
 
             if cont_result.summary and not cont_result.skipped:
