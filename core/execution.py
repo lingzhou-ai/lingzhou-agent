@@ -17,12 +17,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from core.worker import WorkerLayer
-from tools.registry import ToolResult, ToolContext
-try:
-    from tools.registry import tool_has_capability
-except Exception:
-    def tool_has_capability(registry: Any | None, tool_name: str, capability: str) -> bool:
-        return False
+from tools.registry import ToolResult, ToolContext, tool_has_capability
 
 _log = logging.getLogger("lingzhou.execution")
 

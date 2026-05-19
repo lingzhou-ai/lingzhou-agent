@@ -22,12 +22,8 @@ from tools.registry import (
     ToolContext,
     ToolRegistry,
     tool,
+    tool_name_has_capability,
 )
-try:
-    from tools.registry import tool_name_has_capability
-except Exception:
-    def tool_name_has_capability(tool_name: str, capability: str) -> bool:
-        return False
 from memory.semantic import MemoryNode
 
 
