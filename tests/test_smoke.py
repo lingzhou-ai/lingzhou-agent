@@ -133,6 +133,24 @@ def test_judgment_output_parse():
     assert out.model_strategy["next_phase_tier"] == "reader"
 
 
+def test_judgment_output_parse_null_text_fields_as_empty():
+    from core.judgment import JudgmentOutput
+
+    raw = (
+        '{"decision":"pause","chosen_action_id":null,"params":{},'
+        '"rationale":null,"reflection":null,"reply_to_user":null,"next_step":null}'
+    )
+
+    out = JudgmentOutput.from_llm(raw)
+
+    assert out.decision == "pause"
+    assert out.chosen_action_id == ""
+    assert out.rationale == ""
+    assert out.reflection == ""
+    assert out.reply_to_user == ""
+    assert out.next_step == ""
+
+
 def test_chat_read_line_prefers_text_input(monkeypatch):
     from cli.chat import _read_line
 

@@ -434,6 +434,12 @@ class JudgmentOutput:
     def wait(cls, reason: str = "") -> "JudgmentOutput":
         return cls(decision="wait", rationale=reason, reply_to_user="")
 
+    @staticmethod
+    def _coerce_text(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
     @classmethod
     def from_llm(cls, text: str) -> "JudgmentOutput":
         """从 LLM 输出文本解析 JudgmentOutput，容错处理。"""
@@ -485,13 +491,13 @@ class JudgmentOutput:
             return cls.wait(reason=f"LLM 输出解析失败: {text}")
 
         return cls(
-            decision=str(data.get("decision", "wait")).lower(),
-            chosen_action_id=str(data.get("chosen_action_id", "")),
+            decision=cls._coerce_text(data.get("decision", "wait")).lower(),
+            chosen_action_id=cls._coerce_text(data.get("chosen_action_id", "")),
             params=dict(data.get("params") or {}),
-            rationale=str(data.get("rationale", "")),
-            reflection=str(data.get("reflection", "")),
-            reply_to_user=str(data.get("reply_to_user", "")),
-            next_step=str(data.get("next_step", "")),
+            rationale=cls._coerce_text(data.get("rationale", "")),
+            reflection=cls._coerce_text(data.get("reflection", "")),
+            reply_to_user=cls._coerce_text(data.get("reply_to_user", "")),
+            next_step=cls._coerce_text(data.get("next_step", "")),
             model_strategy=dict(data.get("model_strategy") or {}),
         )
 
