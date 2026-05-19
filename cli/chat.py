@@ -54,13 +54,12 @@ def _normalize_user_title(raw: str) -> str:
 
 
 def _infer_user_title_from_messages(messages: list[dict[str, object]]) -> str:
-    """从当前 chat 会话历史中推断用户称谓。"""
+    """从当前 chat 会话历史中提取用户明确自报的称谓。"""
     user_patterns = (
         re.compile(r"(?:你可以)?叫我([^\s，,。.!！?？:：]{1,12})"),
         re.compile(r"我是([^\s，,。.!！?？:：]{1,12})"),
         re.compile(r"我的称呼是([^\s，,。.!！?？:：]{1,12})"),
     )
-    assistant_pattern = re.compile(r"^([^\s，,：:]{1,12})[，,:：]")
 
     for msg in reversed(messages[-50:]):
         role = str(msg.get("role") or "")
@@ -74,12 +73,6 @@ def _infer_user_title_from_messages(messages: list[dict[str, object]]) -> str:
                     title = _normalize_user_title(match.group(1))
                     if title:
                         return title
-        elif role == "assistant":
-            match = assistant_pattern.match(content)
-            if match:
-                title = _normalize_user_title(match.group(1))
-                if title:
-                    return title
     return ""
 
 
@@ -301,7 +294,7 @@ async def _interactive(
 
     async def _refresh_prompt_from_history(*, redraw: bool = False) -> None:
         inferred = _infer_user_title_from_messages(history)
-        if title_provider is not None:
+        if not inferred and title_provider is not None:
             try:
                 llm_title = await _infer_user_title_with_llm(title_provider, history)
                 if llm_title:

@@ -37,6 +37,10 @@ def _requests_module() -> Any:
 @dataclass
 class WechatConfig:
     base_url: str = DEFAULT_BASE_URL
+    # 仅用于 getUpdates 轮询的 base_url。
+    # 设置后 run_poll 走此地址（如 hermesclaw 代理），send_text 仍走 base_url。
+    # 这样只有代理进程直连 iLink，避免多进程用同一 token 竞争消息。
+    poll_base_url: str = ""
     token: str = ""
     poll_sec: int = DEFAULT_POLL_SEC
     reply_poll_sec: int = DEFAULT_REPLY_POLL
@@ -163,7 +167,8 @@ class WechatChannel:
         return self._conn
 
     def run_poll(self) -> None:
-        log.info("[wechat] poll 启动 base_url=%s", self._cfg.base_url)
+        poll_url = self._cfg.poll_base_url or self._cfg.base_url
+        log.info("[wechat] poll 启动 poll_url=%s", poll_url)
         buf = ""
         fails = 0
         _last_error_logged: float = 0.0
@@ -171,7 +176,7 @@ class WechatChannel:
 
         while not self._stop.is_set():
             try:
-                resp = get_updates(self._cfg.base_url, self._cfg.token, buf, self._cfg.poll_sec)
+                resp = get_updates(poll_url, self._cfg.token, buf, self._cfg.poll_sec)
             except Exception as e:
                 now = time.monotonic()
                 if now - _last_error_logged >= _err_cooldown:
@@ -383,6 +388,7 @@ class WechatChannel:
 def start_wechat_channel(wc_cfg: dict, db_path: str) -> WechatChannel:
     config = WechatConfig(
         base_url=wc_cfg.get("base_url", DEFAULT_BASE_URL),
+        poll_base_url=wc_cfg.get("poll_base_url", ""),
         token=wc_cfg.get("token", ""),
         poll_sec=int(wc_cfg.get("poll_sec", DEFAULT_POLL_SEC)),
         reply_poll_sec=int(wc_cfg.get("reply_poll_sec", DEFAULT_REPLY_POLL)),

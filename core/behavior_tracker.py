@@ -21,14 +21,6 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("lingzhou.behavior_tracker")
 
-_EXPLORE_TOOLS = frozenset(("file.list", "file.read"))
-_EXPLORE_THRESHOLDS = (5, 9, 13, 15)  # 递增梯度：5=提醒 9=警告 13=强警告 15=严重
-_EXPLORE_WARN_LEVELS = {
-    5: ("提醒", 0.85, "请评估是否已有足够信息推进或完成任务。继续探索的边际收益正在递减。"),
-    9: ("警告", 0.90, "已重复探索9次，强烈建议换策略：不要继续读文件，直接基于已有信息产出结论或完成任务。"),
-    13: ("严重", 0.93, "已严重超预算(13次)！几乎不可能通过继续探索获得更多价值。必须立即停止读取，切换为写入/产出模式。"),
-    15: ("紧急", 0.96, "探索已彻底失控(15次+)！这很可能是陷入死循环。请诚实评估：当前方向是否还有意义？如果无意义，立即 task.complete 并记录失败教训。"),
-}
 # 同文件连续窗口探测阈值：同一文件被分窗口读取超过此次数时触发特定警告
 _SEQ_WINDOW_WARN_AT = 3
 # 窗口连续性判断：相邻读的 start 与上一次 end 的差距在此比例内视为连续
@@ -49,9 +41,6 @@ class BehaviorTracker:
         self._list_streak_fp: tuple[str, str] | None = None
         self._list_streak_count: int = 0
         self._loop_probe_version: int = 0
-        self._explore_count: int = 0
-        self._explore_task_id: str | None = None
-        self._explore_warned: set[int] = set()
         # 同文件顺序窗口探测追踪
         self._seq_window_path: str | None = None
         self._seq_window_count: int = 0
@@ -77,52 +66,12 @@ class BehaviorTracker:
         signals.repeat_list_count = self._list_streak_count
         signals.repeat_list_path = (self._list_streak_fp or ("", ""))[0]
         signals.loop_probe_version = self._loop_probe_version
-        # 探索预算感知
-        signals.explore_count = self._explore_count
-        signals.explore_threshold = _EXPLORE_THRESHOLDS[-1] if _EXPLORE_THRESHOLDS else 0
 
     def snapshot(self) -> dict[str, Any]:
         return {
             "action_streak_sig": self._action_streak_sig,
             "action_streak_count": self._action_streak_count,
             "wait_streak": self._wait_streak,
-            "explore_task_id": self._explore_task_id,
-            "explore_count": self._explore_count,
-        }
-
-    @property
-    def is_explore_stuck(self) -> bool:
-        """探索卡住：超过硬上限需要强制终止当前任务。"""
-        return (
-            self._explore_task_id is not None
-            and self._explore_count >= _EXPLORE_HARD_LIMIT
-        )
-
-    @property
-    def stuck_task_id(self) -> str | None:
-        """返回卡住的任务 ID（当 is_explore_stuck 时）。"""
-        if self.is_explore_stuck:
-            return self._explore_task_id
-        return None
-        """返回追踪器状态快照，供 state_snapshot 使用。"""
-        _streak_tool, _streak_key = self._action_streak_sig or ("", "")
-        _read_path = (self._read_streak_fp or ("", 0, ""))[0]
-        _list_path = (self._list_streak_fp or ("", ""))[0]
-        return {
-            "action_streak": {
-                "tool": _streak_tool,
-                "key": _streak_key,
-                "count": self._action_streak_count,
-            },
-            "read_streak": {
-                "path": _read_path,
-                "count": self._read_streak_count,
-            },
-            "list_streak": {
-                "path": _list_path,
-                "count": self._list_streak_count,
-            },
-            "loop_probe_version": self._loop_probe_version,
         }
 
     # ── 追踪方法 ──────────────────────────────────────────────────────────────
@@ -135,7 +84,6 @@ class BehaviorTracker:
     ) -> list["WMItem"]:
         """追踪 act 行为（file.read 和非 file.read 均需调用）。
 
-        - 探索预算感知：file.list / file.read 累计次数超阈值时返回 WMItem
         - action streak：非 file.read / file.list 工具连续相同时返回 WMItem
         （file.read 的内容去重由 on_read 处理，file.list 的结果去重由 on_list 处理）
 
@@ -144,33 +92,6 @@ class BehaviorTracker:
         from memory.working import WMItem
 
         items: list[WMItem] = []
-
-        # 探索预算感知（file.list 和 file.read 均计入）
-        if not task_id:
-            self._explore_task_id = None
-            self._explore_count = 0
-            self._explore_warned = set()
-        else:
-            if task_id != self._explore_task_id:
-                self._explore_task_id = task_id
-                self._explore_count = 0
-                self._explore_warned = set()
-            if tool_id in _EXPLORE_TOOLS:
-                self._explore_count += 1
-            for thresh in _EXPLORE_THRESHOLDS:
-                if self._explore_count >= thresh and thresh not in self._explore_warned:
-                    self._explore_warned.add(thresh)
-                    level_name, priority, msg = _EXPLORE_WARN_LEVELS.get(
-                        thresh,
-                        ("超限", 0.96, f"探索次数已达{thresh}次，严重超预算。请立即切换模式。"),
-                    )
-                    _log.warning("[explore-awareness] 任务 %s 已探索 %d 次 [%s]", task_id, self._explore_count, level_name)
-                    items.append(WMItem(
-                        kind="self_awareness",
-                        content=f"[{level_name}] 当前任务已执行 {self._explore_count} 次文件探索（{level_name}阈值）。{msg}",
-                        priority=priority,
-                    ))
-                    break  # 每次 tick 最多触发一个梯度
 
         if tool_id in {"file.read", "file.list"}:
             return items  # file.read / file.list streak 由结果感知处理

@@ -204,13 +204,17 @@ def test_chat_infer_user_title_from_session_history_prefers_explicit_user_identi
         {"role": "user", "content": "你可以叫我老爹"},
     ]
 
+    assert _infer_user_title_from_messages(messages) == "老爹"
 
-def test_chat_infer_user_title_from_session_history_uses_assistant_address_when_available():
+
+def test_chat_infer_user_title_from_session_history_does_not_slice_assistant_opening_phrase():
     from cli.chat import _infer_user_title_from_messages
 
     messages: list[dict[str, object]] = [
-        {"role": "assistant", "content": "爸爸，我先确认一下该目录结构。"},
+        {"role": "assistant", "content": "刚看了下，hermesclaw 探针一直返回 501。"},
     ]
+
+    assert _infer_user_title_from_messages(messages) == ""
 
 
 def test_chat_parse_user_title_from_llm_output_supports_plain_and_json():
@@ -3893,7 +3897,7 @@ def test_select_tier_logic():
 
 
 def test_prefer_tier_for_task_uses_pending_then_task_default():
-    from core.loop.common import _prefer_tier_for_task
+    from core.loop.common import _next_initial_tier_hint, _prefer_tier_for_task
     from memory.task_store import Task
 
     task = Task(
@@ -3905,11 +3909,24 @@ def test_prefer_tier_for_task_uses_pending_then_task_default():
         model_tier="reader",
     )
 
-    assert _prefer_tier_for_task(None, task) == "reader"
+    assert _prefer_tier_for_task(None, task) is None
+    assert _prefer_tier_for_task("reader", task) == "reader"
     assert _prefer_tier_for_task("repair", task) == "repair"
+
+    task.model_tier = "reasoner"
+    assert _prefer_tier_for_task(None, task) == "reasoner"
 
     task.model_tier = "invalid"
     assert _prefer_tier_for_task(None, task) is None
+
+    assert _next_initial_tier_hint(_judgment_output(decision="act", chosen_action_id="file.read")) is None
+    assert _next_initial_tier_hint(
+        _judgment_output(
+            decision="act",
+            chosen_action_id="file.read",
+            model_strategy={"next_phase_tier": "reader"},
+        )
+    ) == "reader"
 
 
 def test_behavior_gate_passthrough_and_logs_observation(caplog):
@@ -4541,7 +4558,7 @@ def test_should_continue_within_tick_for_autonomous_act():
     assert _preferred_continue_tier(
         _judgment_output(decision="act", chosen_action_id="memory.search"),
         user_message="继续分析这个问题",
-    ) == "reasoner"
+    ) == "reader"
     assert _preferred_continue_tier(
         _judgment_output(
             decision="act",

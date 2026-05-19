@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import Config
-from core.judgment import JudgmentOutput
+from core.judgment import JudgmentOutput, READER_TOOLS
 from core.perception import PerceptionReplaySummary
 from core.task_runtime import VALID_MODEL_TIERS
 from memory.task_store import Task
@@ -96,8 +96,9 @@ def _preferred_continue_tier(action: JudgmentOutput, *, user_message: str = "") 
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
     if next_tier in VALID_MODEL_TIERS:
         return next_tier
-    if user_message and (action.chosen_action_id or "") in _USER_MESSAGE_EVIDENCE_TOOLS:
-        return "reasoner"
+    # 只要刚执行的工具属于读取类，续判就保持 reader tier（无论是否有 user_message）
+    if (action.chosen_action_id or "") in READER_TOOLS:
+        return "reader"
     return None
 
 
@@ -108,10 +109,16 @@ def _task_model_tier(task: Task | None) -> str | None:
     return tier if tier in VALID_MODEL_TIERS else None
 
 
+def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
+    next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+    return next_tier if next_tier in VALID_MODEL_TIERS else None
+
+
 def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | None:
     if pending_tier in VALID_MODEL_TIERS:
         return pending_tier
-    return _task_model_tier(task)
+    task_tier = _task_model_tier(task)
+    return task_tier if task_tier in {"reasoner", "repair"} else None
 
 
 def _perception_replay_fallback() -> PerceptionReplaySummary:

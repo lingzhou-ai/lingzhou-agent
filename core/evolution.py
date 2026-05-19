@@ -262,9 +262,11 @@ class EvolutionEngine:
 
         recent = [f for f in failures if _in_window(f)]
         if not recent:
+            _log.debug("[evolution] run: 时间窗内无失败，跳过")
             return results
 
         trigger_min = self._cfg.evolution.trigger_min_failures
+        _log.info("[evolution] run: 时间窗内 %d 条失败，trigger_min=%d", len(recent), trigger_min)
 
         # ── 判断模板进化：时间窗内解析失败 >= trigger_min ──────────────────────
         counts = Counter(f.kind for f in recent if f.kind)
@@ -275,6 +277,8 @@ class EvolutionEngine:
                 f"- {f.summary}" for f in recent if f.kind == "judgment_parse"
             )
             r = await self.evolve_prompt("judgment", feedback)
+            if not r.success:
+                _log.warning("[evolution] 提示词进化失败: %s", r.reason)
             results.append(r)
             # 如果提示词进化了，本轮不再进化工具（避免多重变化叠加）
             if r.success:
@@ -465,12 +469,6 @@ class EvolutionEngine:
                     prompt_path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
 
-            # Compile-time syntax check
-            try:
-                ast.parse(new_src)
-            except SyntaxError as e:
-                raise ValueError(f"Generated code contains syntax error: {e}") from e
-            
             prompt_path.write_text(new_src, encoding="utf-8")
             _log.info("[evolution] 提示词 %r 已进化", prompt_key)
             await self._update_dreams(f"调整判断模式：{prompt_key} 提示词已根据解析失败反馈重写，输出格式更稳定。")

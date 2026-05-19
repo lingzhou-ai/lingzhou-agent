@@ -11,7 +11,7 @@ from typing import Any
 
 from rich.console import Console
 
-from core.judgment import JudgmentOutput, tool_tier
+from core.judgment import JudgmentOutput
 from core.perception import (
     build_emotion_replay,
     build_perception_replay,
@@ -39,6 +39,7 @@ from .common import (
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
     _infer_valence_from_text,
+    _next_initial_tier_hint,
     _next_thinking_override,
     _perception_replay_fallback,
     _preferred_continue_tier,
@@ -690,21 +691,16 @@ async def _tick_finalize_impl(
     await _bind_chat_id(loop, active_task, chat_id)
     await _maybe_record_success_stall_reflection_impl(loop, active_task, action, result, cycle)
 
-    next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+    next_tier = _next_initial_tier_hint(action) or ""
     task_tier = _task_model_tier(active_task)
-    actual_tier = (loop._judgment.last_call_meta or {}).get("tier") or "default"
-    persist_tier = next_tier if next_tier in VALID_MODEL_TIERS else (task_tier or (actual_tier if actual_tier in VALID_MODEL_TIERS else ""))
+    persist_tier = next_tier if next_tier in {"reasoner", "repair"} else (task_tier if task_tier in {"reasoner", "repair"} else "")
     if active_task and persist_tier and persist_tier != task_tier:
         await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
         active_task.model_tier = persist_tier
     if next_tier in {"reader", "reasoner", "repair"}:
         loop._pending_tier = next_tier
     else:
-        tool_id = action.chosen_action_id or ""
-        if action.decision == "act" and tool_tier(tool_id, loop._registry) == "reader":
-            loop._pending_tier = "reader"
-        else:
-            loop._pending_tier = None
+        loop._pending_tier = None
 
     raw_gap = (action.model_strategy or {}).get("next_idle_gap_secs")
     if raw_gap is not None:
