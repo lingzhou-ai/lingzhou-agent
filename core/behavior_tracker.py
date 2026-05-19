@@ -1,12 +1,12 @@
-"""core/behavior_tracker.py — 行为模式追踪与反循环门控。
+"""core/behavior_tracker.py — 行为模式追踪与认知信号生成。
 
-检测 agent 是否陷入重复行为，并生成 WM 自我感知条目：
+检测 agent 是否陷入重复行为，并生成 WM 自我感知条目供 LLM 自主判断：
   1. action streak：连续 3 次完全相同的 (tool, key_param) 对
   2. read streak：连续 3 次 file.read 读取相同文件的相同内容（按内容 MD5 去重）
-  3. explore budget：同一任务下文件探索（file.list / file.read）次数超阈值
+  3. rationale 指纹：连续相同推理结论超阈值时触发信念固化警告
 
-原位置：CognitionLoop.__init__ 里的 10 个状态变量 + _tick 里约 100 行追踪逻辑
-       + _apply_execution_gate 方法。
+所有检测结果均以 WMItem 形式注入工作记忆，由 LLM 决定如何响应——
+不做硬阻断，不替 LLM 做决定。
 """
 from __future__ import annotations
 
@@ -354,7 +354,7 @@ class BehaviorTracker:
             ))
         return items
 
-    def apply_execution_gate(
+    def observe_execution(
         self,
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
