@@ -425,6 +425,8 @@ class ExecutionLayer:
                     priority=0.9,
                 )
             case "act":
+                if action.parallel_actions:
+                    return await self._dispatch_parallel(action, ctx)
                 return await self._dispatch_act(action, ctx)
             case _:
                 return ToolResult(
@@ -432,6 +434,45 @@ class ExecutionLayer:
                     skipped=True,
                     kind="error",
                 )
+
+    async def _dispatch_parallel(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
+        """gather 并行执行 parallel_actions 列表中的多个工具，合并结果返回。"""
+        import asyncio
+        from core.judgment import JudgmentOutput as _JO
+
+        sub_actions = [
+            _JO(
+                decision="act",
+                chosen_action_id=item["action_id"],
+                params=dict(item.get("params") or {}),
+                rationale=action.rationale,
+            )
+            for item in action.parallel_actions
+            if isinstance(item, dict) and isinstance(item.get("action_id"), str) and item["action_id"]
+        ]
+        if not sub_actions:
+            return ToolResult(summary="parallel_actions 为空，退化为 wait", skipped=True, kind="wait")
+
+        _log.info(
+            "[exec.parallel] launching %d tools: %s",
+            len(sub_actions), [a.chosen_action_id for a in sub_actions],
+        )
+        results: list[ToolResult] = list(await asyncio.gather(
+            *[self._dispatch_act(a, ctx) for a in sub_actions]
+        ))
+        merged_summary = "\n".join(
+            f"[{a.chosen_action_id}] {r.summary}"
+            for a, r in zip(sub_actions, results)
+            if r.summary
+        )
+        errors = [r.error for r in results if r.error]
+        return ToolResult(
+            summary=merged_summary,
+            error=errors[0] if errors else None,
+            kind="execute_result",
+            priority=max((r.priority for r in results), default=0.9),
+            metadata={"parallel_count": len(sub_actions), "errors": errors},
+        )
 
     async def _dispatch_act(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
         run_id: int | None = None

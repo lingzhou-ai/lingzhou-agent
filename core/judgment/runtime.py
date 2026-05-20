@@ -224,6 +224,7 @@ class JudgmentOutput:
     next_step: str = ""
     model_strategy: dict[str, Any] = field(default_factory=dict)
     applied_skills: list[str] = field(default_factory=list)  # LLM 实际应用的技能名单
+    parallel_actions: list[dict[str, Any]] = field(default_factory=list)  # [{"action_id": str, "params": dict}, ...] 非空时 gather 并行执行
 
     @classmethod
     def wait(cls, reason: str = "") -> "JudgmentOutput":
@@ -301,6 +302,10 @@ class JudgmentOutput:
             next_step=cls._coerce_text(data.get("next_step", "")),
             model_strategy=dict(data.get("model_strategy") or {}),
             applied_skills=[str(s) for s in (data.get("applied_skills") or []) if s],
+            parallel_actions=[
+                item for item in (data.get("parallel_actions") or [])
+                if isinstance(item, dict) and isinstance(item.get("action_id"), str) and item["action_id"]
+            ],
         )
 
 
@@ -1060,7 +1065,7 @@ class JudgmentLayer:
                 content=(
                     "你是一个严格的 JSON 修复器。"
                     "只输出合法 JSON，不要解释，不要使用 markdown 代码块。"
-                    "必须遵循这个 schema: {decision, chosen_action_id, params, rationale, reflection, reply_to_user, next_step, model_strategy}."
+                    "必须遵循这个 schema: {decision, chosen_action_id, params, parallel_actions, rationale, reflection, reply_to_user, next_step, model_strategy}."  # noqa: E501
                     "如果原输出被截断，请根据上下文重新生成一个完整、简短的 JSON。"
                     "如果 broken_output 是裸代码（bash/python 脚本等），将代码原文放入 reply_to_user 字段，decision 设为 pause，rationale 说明代码已封装。"
                 ),

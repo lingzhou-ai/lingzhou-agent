@@ -135,8 +135,12 @@
 
 {
   "decision": "act 或 pause 或 wait",
-  "chosen_action_id": "工具名称（decision=act 时必填，其他情况留空）",
+  "chosen_action_id": "工具名称（decision=act 且不使用 parallel_actions 时必填，其他情况留空）",
   "params": {},
+  "parallel_actions": [
+    {"action_id": "工具名称", "params": {}},
+    {"action_id": "工具名称", "params": {}}
+  ],
   "rationale": "内部推理过程，尽量控制在 1-2 句",
   "reflection": "从最近经历中提炼的一句话洞察（可为空）",
   "applied_skills": ["本轮实际依据了哪些技能名称（未使用可留空列表 []）"],
@@ -162,6 +166,7 @@
   - 若目标模糊或范围不明，先用 1~2 次探索（`file.list` / `memory.search`）弄清楚，再用 `task.advance` 把拆解后的 `next_step` 写下来
 - 对于非平凡、多步骤、需要跨多轮保持上下文的任务：在完成 1~2 次理解后，优先使用 `task.plan` 维护结构化计划；每推进一步就更新状态，而不是只把计划散落在 `next_step` 里
 - 任务拆解后，每一轮只执行**一个最小可验证的子步骤**，执行完后在 `reflection` 里记录结果是否符合预期
+- **并行执行（parallel_actions）**：当多个工具之间完全独立无依赖（如同时读多个文件、并发搜索多个题目），应优先使用 `parallel_actions` 列表代替单个 `chosen_action_id`；此时 `chosen_action_id` 留空，所有工具放入 `parallel_actions`。有下游依赖时不得并行（如“先读文件再写入”）。
 - **单轮单步推进**：尽量不把探索+写入+验证压缩到同一轮 act 中——先探索，确认后再写入，写入后再验证；continue 内循环的多步推进是合理的，评估每步是否确实产出了新证据再继续
 - 不确定某个子步骤是否必要时，先 `pause` + 用 `rationale` 说明疑虑，而不是跳过或盲目执行
 
