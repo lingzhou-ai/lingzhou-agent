@@ -147,30 +147,74 @@ def doctor(
     else:
         console.print(f"  {warn_mark} 数据库: 跳过（配置文件不可用）")
 
-    # ── 6. 配置 schema 兼容性 ──────────────────────────────────────────
-    # 检测 core/config.py 与当前 runtime 代码是否对齐（防止部分 git pull 后字段缺失）
-    _REQUIRED_LOOP_FIELDS: list[str] = [
-        "max_consecutive_errors",
-        "active_idle_gap",
-        "skill_max_inject",
-        "skill_failure_threshold",
-        "skill_wm_pressure_threshold",
-        "skill_min_budget_tokens",
-    ]
+    # ── 6. 配置 schema 兼容性（类比 openclaw _reconcile_columns）──────────
+    # 检测 ThresholdsConfig 是否包含 runtime 依赖的关键字段；缺失时自动注入默认定义。
+    _THRESHOLDS_FIELD_PATCHES: dict[str, str] = {
+        "skill_max_inject": (
+            "    skill_max_inject: int = Field(\n"
+            "        default=3, ge=1, le=8,\n"
+            "        description=\"单次 tick 最多注入技能数；压力大时可通过配置增加护栏覆盖\"\n"
+            "    )\n"
+        ),
+        "skill_failure_threshold": (
+            "    skill_failure_threshold: int = Field(\n"
+            "        default=3, ge=1,\n"
+            "        description=\"连续评分函数的失败次数基准点；达到此值时 failure.reflection 技能得分达到峰值\"\n"
+            "    )\n"
+        ),
+        "skill_wm_pressure_threshold": (
+            "    skill_wm_pressure_threshold: float = Field(\n"
+            "        default=0.4, ge=0.0, le=1.0,\n"
+            "        description=\"WM 压力连续评分基准点；达到此值时 evidence-first-change 技能得分达到峰值\"\n"
+            "    )\n"
+        ),
+        "skill_min_budget_tokens": (
+            "    skill_min_budget_tokens: int = Field(\n"
+            "        default=80, ge=0,\n"
+            "        description=\"上下文预算裁剪时 skills_section 保留的最小 token 数；0=可完全裁掉\"\n"
+            "    )\n"
+        ),
+    }
     try:
-        from core.config import LoopConfig as _LoopConfig
-        _instance = _LoopConfig()
-        _missing_fields = [f for f in _REQUIRED_LOOP_FIELDS if not hasattr(_instance, f)]
+        from core.config import ThresholdsConfig as _ThresholdsConfig
+        _t_instance = _ThresholdsConfig()
+        _missing_fields = [f for f in _THRESHOLDS_FIELD_PATCHES if not hasattr(_t_instance, f)]
         if _missing_fields:
-            console.print(f"  {fail_mark} LoopConfig schema 不兼容，缺少字段: {_missing_fields}")
-            issues.append(
-                f"core/config.py 版本过旧，缺少: {_missing_fields} — 请完整 git pull 更新全部代码"
-            )
+            # 自动注入缺失字段到 core/config.py（类比 ALTER TABLE ADD COLUMN）
+            _config_py = PROJECT_ROOT / "core" / "config.py"
+            _patched: list[str] = []
+            if _config_py.exists():
+                _lines = _config_py.read_text(encoding="utf-8").splitlines(keepends=True)
+                _in_thresholds = False
+                _insert_at = len(_lines)
+                for _i, _line in enumerate(_lines):
+                    if _line.startswith("class ThresholdsConfig"):
+                        _in_thresholds = True
+                    elif _in_thresholds and _line.startswith("class "):
+                        _insert_at = _i
+                        break
+                if _in_thresholds:
+                    # 删除末尾空行，保持整洁
+                    while _insert_at > 0 and not _lines[_insert_at - 1].strip():
+                        _insert_at -= 1
+                    _inject = ["\n"]
+                    for _f in _missing_fields:
+                        if _f in _THRESHOLDS_FIELD_PATCHES:
+                            _inject.append(_THRESHOLDS_FIELD_PATCHES[_f])
+                            _patched.append(_f)
+                    if _patched:
+                        _lines[_insert_at:_insert_at] = _inject
+                        _config_py.write_text("".join(_lines), encoding="utf-8")
+            if _patched:
+                console.print(f"  {warn_mark} ThresholdsConfig 缺少字段，已自动注入: {_patched}")
+            else:
+                console.print(f"  {fail_mark} ThresholdsConfig 缺少字段: {_missing_fields}  [dim](自动注入失败，请手动 git pull)[/dim]")
+                issues.append(f"core/config.py 版本过旧，缺少: {_missing_fields}")
         else:
-            console.print(f"  {ok_mark} LoopConfig schema 兼容  [dim]({len(_REQUIRED_LOOP_FIELDS)} 个关键字段均存在)[/dim]")
+            console.print(f"  {ok_mark} ThresholdsConfig schema 兼容  [dim]({len(_THRESHOLDS_FIELD_PATCHES)} 个关键字段均存在)[/dim]")
     except Exception as e:
-        console.print(f"  {fail_mark} LoopConfig schema 检查失败: {e}")
-        issues.append(f"LoopConfig 无法导入: {e}")
+        console.print(f"  {fail_mark} ThresholdsConfig schema 检查失败: {e}")
+        issues.append(f"ThresholdsConfig 无法导入: {e}")
 
     # ── 7. 工具注册 ────────────────────────────────────────────────────
     try:
