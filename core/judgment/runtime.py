@@ -1170,12 +1170,21 @@ class JudgmentLayer:
         soul_section = _fmt_soul(axioms_val, ethos_val)
 
         _wm_items = wm.get_top(15)
+        # 包含 WM 里的行为/错误信号，以及最近失败的错误文本，让 skill 辨别具体场景
+        _wm_signals = " ".join(
+            item.content for item in _wm_items
+            if getattr(item, "kind", "") in {"self_awareness", "tool_error", "error", "read_loop"}
+        )[:300]
+        _failure_texts = " ".join(
+            f"{f.kind} {getattr(f, 'error', '') or ''}" for f in failures[:3]
+        )
         skill_context_text = "\n".join(x for x in [
             task.goal if task else "",
             task.title if task else "",
             user_message or "",
-            failures[0].kind if failures else "",
+            _failure_texts,
             emotion_label,
+            _wm_signals,
         ] if x)
         all_skills = self._skills.all_skills()
         skills = self._skills.match_for_context(

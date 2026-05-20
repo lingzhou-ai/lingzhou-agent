@@ -312,8 +312,9 @@ class SkillRegistry:
             reasons: list[str] = []
             tags = set(skill.tags)
 
-            if skill.name == "runtime.bootstrap" and not has_active_task and failure_count == 0:
-                score += 5.0
+            if skill.name == "runtime.bootstrap" and not has_active_task:
+                # 冷启动时即使有少量失败，仍需引导身份初始化（随失败数降分）
+                score += max(5.0 - failure_count * 0.8, 1.5)
                 reasons.append("bootstrap")
             if skill.name == "task.continuity" and has_active_task and has_next_step:
                 score += 5.0
