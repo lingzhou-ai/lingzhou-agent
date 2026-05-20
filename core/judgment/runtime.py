@@ -54,6 +54,7 @@ from .context import (
     _fmt_wm,
     _load_context_facts_snapshot,
     _load_durable_failure_snapshot,
+    _validate_context_schema,
     apply_context_budget,
 )
 
@@ -1233,6 +1234,7 @@ class JudgmentLayer:
             "current_time_section": _fmt_current_time(),
             "user_message": user_message or "",
         }
+        _validate_context_schema(ctx)
         ctx = apply_context_budget(
             ctx,
             self._cfg.judgment_input_token_budget(),
