@@ -27,7 +27,7 @@
 - **打包清单缺口** — `pyproject.toml` 的 wheel 包列表补入 `channels`
 - **运行时依赖缺失** — 为微信通道补充 `requests`、`cryptography` 依赖声明，并同步安装到本地虚拟环境
 
-## [0.2.0] — 2026-05-17
+## [2026.5.17.1] — 2026-05-17
 
 ### 新增
 - **46 个工具** — 覆盖 web.fetch、web.search、browser.*、image.generate、tts.speak
@@ -50,7 +50,7 @@
 - 静默崩溃 → crash.log 捕获 stderr
 - 微信通道 → 默认 wechat，restart 保持通道
 
-## [0.1.0] — 2026-05-12
+## [2026.5.12.1] — 2026-05-12
 
 ### 初始版本
 - 认知循环 (Perception → Judgment → Execution → Reflection)
