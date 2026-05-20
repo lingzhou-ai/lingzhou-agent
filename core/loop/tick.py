@@ -20,7 +20,6 @@ from core.perception import (
 )
 from core.run_refresh import refresh_running_runs
 from core.task_runtime import (
-    VALID_MODEL_TIERS,
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
     _sync_task_progress_state,
@@ -774,10 +773,10 @@ async def _tick_finalize_impl(
             has_task = (await loop._task_store.get_active()) is not None
             if has_task:
                 bounds = cfg.loop.idle_with_task_bounds
-                lo, hi = (float(bounds[0]), float(bounds[1])) if len(bounds) >= 2 else (0.1, 30.0)
+                lo, hi = (float(bounds[0]) / 1000.0, float(bounds[1]) / 1000.0) if len(bounds) >= 2 else (0.1, 30.0)
             else:
                 bounds = cfg.loop.idle_no_task_bounds
-                lo, hi = (float(bounds[0]), float(bounds[1])) if len(bounds) >= 2 else (5.0, 300.0)
+                lo, hi = (float(bounds[0]) / 1000.0, float(bounds[1]) / 1000.0) if len(bounds) >= 2 else (5.0, 300.0)
             loop._pending_idle_gap = max(lo, min(hi, gap_f))
         except (TypeError, ValueError):
             loop._pending_idle_gap = None

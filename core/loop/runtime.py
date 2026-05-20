@@ -10,13 +10,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import time
 from collections import deque
-from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -25,57 +22,22 @@ _log = logging.getLogger("lingzhou.loop")
 
 from core.config import Config
 from core.perception import (
-    PerceptionLayer, EmotionState, PerceptionReplaySummary,
-    build_perception_replay, build_emotion_replay,
-    derive_ethos_state, compute_judgment_signals,
+    PerceptionLayer, EmotionState,
 )
 from core.judgment import JudgmentLayer, JudgmentOutput
 from core.execution import (
     ExecutionLayer,
 )
 from core.evolution import EvolutionEngine
-from .logging import (
-    _clip_reply_for_log,
-    _clip_signal_text,
-    _fallback_reply_for_user,
-    _format_action_feedback_line,
-    _strip_memory_context,
-    _summarize_state_delta,
-)
-from .postprocess import (
-    _SUCCESS_STALL_TRACK_TOOLS,
-    _write_success_stall_meta_reflection,
-)
-from .common import (
-    _infer_valence_from_text,
-    _next_thinking_override,
-    _perception_replay_fallback,
-    _prefer_tier_for_task,
-    _resolve_thinking_override,
-    _should_continue_within_tick,
-    _task_model_tier,
-    _thinking_floor,
-)
-from .progress import (
-    action_key_param,
-    _action_made_progress,
-    _result_fingerprint,
-)
 from .tick import (
     _maybe_record_success_stall_reflection_impl,
     _post_tick_memory_impl,
     _tick_finalize_impl,
     _tick_impl,
 )
-from core.task_runtime import (
-    _consume_task_runtime_hints,
-    _ingest_actionable_meta_reflections,
-    _sync_task_progress_state,
-    VALID_MODEL_TIERS,
-)
 from memory.working import WorkingMemory, WMItem
 from memory.episodic import EpisodicMemory
-from memory.semantic import SemanticMemory, MemoryNode
+from memory.semantic import SemanticMemory
 from memory.task_store import TaskStore, Task
 from provider import create_provider
 from tools.registry import ToolRegistry, ToolContext, ToolResult
@@ -232,7 +194,7 @@ class CognitionLoop:
 
         console.print(Panel(
             f"[bold green]lingzhou[/bold green] 启动\n"
-            f"provider={cfg.model}  idle_gap={cfg.loop.max_idle_gap}s  "
+            f"provider={cfg.model}  idle_gap={cfg.loop.max_idle_gap}ms  "
             f"act={'yes' if cfg.loop.act else 'dry-run'}\n"
             f"routing:\n{_routing_summary}",
             title="🌱 认知循环"

@@ -83,8 +83,8 @@ async def config_get(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     description=(
         "修改配置文件中的某个值。支持点号嵌套路径。修改后 loop 自动热重载。\n"
         "可调的常见参数:\n"
-        "  loop.max_idle_gap — 空闲等待上限(秒)\n"
-        "  loop.min_act_gap — 动作间隔(秒)\n"
+        "  loop.max_idle_gap — 空闲等待上限(毫秒)\n"
+        "  loop.min_act_gap — 动作间隔(毫秒)\n"
         "  loop.chat_reply_timeout — 聊天回复超时(秒)\n"
         "  evolution.enabled — 是否启用自进化\n"
         "  evolution.trigger_min_failures — 触发进化所需失败数\n"

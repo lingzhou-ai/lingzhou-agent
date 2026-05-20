@@ -21,8 +21,8 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
     cfg = loop._cfg
     after_task = await loop._task_store.get_active()
     if loop._last_decision == "act" and after_task is not None:
-        min_wait = cfg.loop.idle_with_task_bounds[0] if cfg.loop.idle_with_task_bounds else cfg.loop.min_act_gap
-        act_gap = max(float(min_wait), float(cfg.loop.min_act_gap))
+        min_wait = cfg.loop.idle_with_task_bounds[0] / 1000.0 if cfg.loop.idle_with_task_bounds else cfg.loop.min_act_gap / 1000.0
+        act_gap = max(float(min_wait), float(cfg.loop.min_act_gap) / 1000.0)
         await _wait_for_event_impl(loop, act_gap, after_task)
     else:
         # 等待间隔决策树：
@@ -33,12 +33,12 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
         if loop._pending_idle_gap is not None:
             gap = loop._pending_idle_gap                   # ① LLM 主动调度
         elif after_task is not None:
-            gap = cfg.loop.active_idle_gap                 # ② 有活跃任务
+            gap = cfg.loop.active_idle_gap / 1000.0        # ② 有活跃任务
         elif getattr(loop, '_bootstrap_mode', 'none') == "full":
             # bootstrap 未完成时，等同于有隐式未完成工作：缩短轮询间隔提升响应度
-            gap = cfg.loop.active_idle_gap                 # ③ bootstrap 阶段
+            gap = cfg.loop.active_idle_gap / 1000.0        # ③ bootstrap 阶段
         else:
-            gap = cfg.loop.max_idle_gap                    # ④ 完全空闲
+            gap = cfg.loop.max_idle_gap / 1000.0           # ④ 完全空闲
         await _wait_for_event_impl(loop, gap, after_task)
     await loop._maybe_hot_reload_provider()
 
@@ -46,7 +46,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
 async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> None:
     """事件驱动等待: chat 消息、task 状态变化、超时任一发生即唤醒。"""
     cfg = loop._cfg
-    poll = cfg.loop.wake_poll_interval
+    poll = cfg.loop.wake_poll_interval / 1000.0
     before_sig = (
         before_task.id if before_task else None,
         before_task.status if before_task else None,
