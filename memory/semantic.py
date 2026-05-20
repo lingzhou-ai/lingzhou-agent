@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     activation  REAL NOT NULL DEFAULT 0.5,
     valence     REAL NOT NULL DEFAULT 0.5,
     tags        TEXT NOT NULL DEFAULT '[]',
+    source      TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL
 );
 """
@@ -240,12 +241,13 @@ class SemanticMemory:
         # 取已有 embedding（若 embed_fn 可用则在 upsert() 上层写入）
         self._conn.execute(
             """INSERT OR REPLACE INTO nodes
-               (id, kind, title, body, activation, valence, tags, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, kind, title, body, activation, valence, tags, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 node.id, node.kind, node.title, node.body,
                 node.activation, node.valence,
                 tags_json,
+                getattr(node, 'source', ''),
                 node.created_at,
             ),
         )
@@ -334,6 +336,7 @@ class SemanticMemory:
         *,
         kind: str | None = None,
         tag: str | None = None,
+        source: str | None = None,
         task_id: str | int | None = None,
         path_prefix: str | None = None,
         id_prefix: str | None = None,
@@ -352,13 +355,14 @@ class SemanticMemory:
                 pass
         candidate_ids = self._fts_candidates(query, limit=100 if any((kind, tag, task_id, path_prefix, id_prefix)) else 50)
         nodes = self._load_by_ids(candidate_ids) if candidate_ids else self._load_all()
-        if any((kind, tag, task_id, path_prefix, id_prefix)):
+        if any((kind, tag, source, task_id, path_prefix, id_prefix)):
             nodes = [
                 node for node in nodes
                 if self._matches_filters(
                     node,
                     kind=kind,
                     tag=tag,
+                    source=source,
                     task_id=task_id,
                     path_prefix=path_prefix,
                     id_prefix=id_prefix,
@@ -371,6 +375,7 @@ class SemanticMemory:
                         node,
                         kind=kind,
                         tag=tag,
+                        source=source,
                         task_id=task_id,
                         path_prefix=path_prefix,
                         id_prefix=id_prefix,
@@ -397,6 +402,7 @@ class SemanticMemory:
         *,
         kind: str | None = None,
         tag: str | None = None,
+        source: str | None = None,
         task_id: str | int | None = None,
         path_prefix: str | None = None,
         id_prefix: str | None = None,
@@ -406,6 +412,11 @@ class SemanticMemory:
         if tag:
             normalized_tag = str(tag).strip()
             if normalized_tag and normalized_tag not in node.tags:
+                return False
+        if source:
+            normalized_source = str(source).strip()
+            node_source = str(getattr(node, 'source', '')).strip()
+            if normalized_source and normalized_source != node_source:
                 return False
         if task_id is not None:
             expected_task_tag = f"task:{str(task_id).strip()}"
@@ -428,7 +439,7 @@ class SemanticMemory:
         return True
 
     def retrieve_multi_anchor(
-        self, anchors: list[str], top_k: int = 5, convergence_bonus: float = 0.15
+        self, anchors: list[str], top_k: int = 5, convergence_bonus: float = 0.15, source: str | None = None
     ) -> list[dict[str, Any]]:
         """多锤点情境召回（Anderson 1983 ACT-R 收敛激活原理）。
 
@@ -447,6 +458,8 @@ class SemanticMemory:
                     seen.add(nid)
                     all_ids.append(nid)
         nodes = self._load_by_ids(all_ids) if all_ids else self._load_all()
+        if source:
+            nodes = [n for n in nodes if n.get("source") == source]
         if not nodes:
             return []
 

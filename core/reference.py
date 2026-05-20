@@ -188,6 +188,7 @@ class ReferenceResolver:
         sigs: ExtractedSignals,
         semantic: "SemanticMemory",
         episodic: "EpisodicMemory",
+        source: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """返回 {node_id: node_dict}，最多 12 个候选节点。"""
         seen: set[str] = set()
@@ -203,7 +204,7 @@ class ReferenceResolver:
 
         # 话题 + 整条消息 → 多锚点召回
         anchors = ([message[:200]] + sigs.topic_anchors)[:3]
-        _add(semantic.retrieve_multi_anchor(anchors, top_k=8), "topic")
+        _add(semantic.retrieve_multi_anchor(anchors, top_k=8, source=source), "topic")
 
         # 时间窗叙事 → 二次召回
         for _label, hours_back in sigs.time_anchors:
@@ -213,11 +214,11 @@ class ReferenceResolver:
             for row in recent:
                 content = row.get("content", "")[:200]
                 if content:
-                    _add(semantic.retrieve(content, top_k=3), "time")
+                    _add(semantic.retrieve(content, top_k=3, source=source), "time")
 
         # 自我介绍 → 直接人名召回
         if sigs.self_name:
-            _add(semantic.retrieve(sigs.self_name, top_k=3), "named")
+            _add(semantic.retrieve(sigs.self_name, top_k=3, source=source), "named")
 
         return dict(list(candidates.items())[:12])
 
