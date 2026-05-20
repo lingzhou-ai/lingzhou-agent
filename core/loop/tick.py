@@ -585,6 +585,8 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     if action.reply_to_user:
         action.reply_to_user = _strip_memory_context(action.reply_to_user)
+        if action.applied_skills:
+            action.reply_to_user += "\n\n_(技能: " + "、".join(action.applied_skills) + ")_"
         _log.info(
             "[task-reply] task=%s decision=%s reply=%s",
             active_task.id if active_task else 0,
