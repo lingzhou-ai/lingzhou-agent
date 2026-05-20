@@ -225,6 +225,21 @@ class LoopConfig(BaseModel):
             "空列表 [] 表示禁用此机制。示例：[3] 仅轻提示；[3,6,10] 三级递进。"
         ),
     )
+    behavior_streak_threshold: int = Field(
+        default=3, ge=1,
+        description=(
+            "行为重复探测窗口大小：连续 N 次相同 (action/read/list) 时向 WM 注入自我感知信号。"
+            "同时是 action_streak / read_streak / list_streak 的滑动窗口大小。"
+            "默认 3 与 wait_streak_notify 基准对齐；调大可降低多次重复的噪声，调小则更早袋扔循环。"
+        ),
+    )
+    continue_reasoner_after_n_tools: int = Field(
+        default=4, ge=1,
+        description=(
+            "continue 阶段工具历史达到 N 条后自动升级为 reasoner tier（处理更多工具历史需要更强直觉）。"
+            "LLM 已显式设置 next_phase_tier 时优先级更高。"
+        ),
+    )
     wechat_coalesce_delay: float = Field(
         default=1.5, ge=0.0,
         description=(
@@ -303,6 +318,13 @@ class EvolutionConfig(BaseModel):
         description=(
             "感知错误连击（high_error_streak）达到此值时，跳过 evolve_every 计数立即触发自进化。"
             "默认 3 = 连续 3 次高预测误差即触发修复。调大可降低进化频率；调小则更激进。"
+        ),
+    )
+    ethos_max_delta: float = Field(
+        default=0.15, ge=0.0, le=1.0,
+        description=(
+            "ethos 单次演化允许的最大变化幅度。"
+            "超过此幅度的请求会被夹住（滹透加速而非生硬跳变），防止 LLM 单轮内激进改写灵魂价値。"
         ),
     )
 

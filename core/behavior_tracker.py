@@ -37,12 +37,17 @@ _BELIEF_HASH_PREFIX = 120
 class BehaviorTracker:
     """行为模式追踪器：检测循环并把信号交给 LLM。"""
 
-    def __init__(self, wait_streak_notify: list[int] | None = None) -> None:
+    def __init__(
+        self,
+        wait_streak_notify: list[int] | None = None,
+        streak_threshold: int = 3,
+    ) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
-        self._recent_actions: deque[tuple[str, str]] = deque(maxlen=3)
-        self._recent_read_fps: deque[tuple[str, int, str]] = deque(maxlen=3)
-        self._recent_list_fps: deque[tuple[str, str]] = deque(maxlen=3)
+        self._streak_threshold: int = max(1, streak_threshold)
+        self._recent_actions: deque[tuple[str, str]] = deque(maxlen=self._streak_threshold)
+        self._recent_read_fps: deque[tuple[str, int, str]] = deque(maxlen=self._streak_threshold)
+        self._recent_list_fps: deque[tuple[str, str]] = deque(maxlen=self._streak_threshold)
         self._action_streak_sig: tuple[str, str] | None = None
         self._action_streak_count: int = 0
         self._read_streak_fp: tuple[str, int, str] | None = None
@@ -130,15 +135,16 @@ class BehaviorTracker:
             self._action_streak_count = 1
         self._loop_probe_version += 1
 
+        _n = self._streak_threshold
         if (
-            len(self._recent_actions) == 3
+            len(self._recent_actions) == _n
             and len(set(self._recent_actions)) == 1
             and tool_id
         ):
-            _log.info("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
+            _log.info("[self-awareness] 连续 %d 次相同行为: %s %s", _n, tool_id, key_param)
             items.append(WMItem(
                 kind="self_awareness",
-                content=f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
+                content=f"[行为信号] 过去 {_n} 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
                 priority=0.95,
             ))
         return items
@@ -190,11 +196,12 @@ class BehaviorTracker:
         items: list[WMItem] = []
 
         # 层 1：同内容重复
-        if len(self._recent_read_fps) == 3 and len(set(self._recent_read_fps)) == 1:
-            _log.info("[self-awareness] 连续 3 次读取相同内容: %s", path)
+        _n = self._streak_threshold
+        if len(self._recent_read_fps) == _n and len(set(self._recent_read_fps)) == 1:
+            _log.info("[self-awareness] 连续 %d 次读取相同内容: %s", _n, path)
             items.append(WMItem(
                 kind="self_awareness",
-                content=f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。",
+                content=f"[行为信号] 过去 {_n} 次均读取了相同内容 ({path})，MD5 一致。",
                 priority=0.95,
             ))
 
@@ -254,11 +261,12 @@ class BehaviorTracker:
         self._loop_probe_version += 1
 
         items: list[WMItem] = []
-        if len(self._recent_list_fps) == 3 and len(set(self._recent_list_fps)) == 1:
-            _log.info("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
+        _n = self._streak_threshold
+        if len(self._recent_list_fps) == _n and len(set(self._recent_list_fps)) == 1:
+            _log.info("[self-awareness] 连续 %d 次列出相同目录结果: %s", _n, path)
             items.append(WMItem(
                 kind="self_awareness",
-                content=f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。",
+                content=f"[行为信号] 过去 {_n} 次均列出了相同目录结果 ({path})，结果指纹一致。",
                 priority=0.95,
             ))
         return items

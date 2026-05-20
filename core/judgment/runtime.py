@@ -541,7 +541,7 @@ class JudgmentLayer:
                 return "reader"
             if user_message or self._tool_history_has_error(tool_history):
                 return "reasoner"
-            if tool_history and len(tool_history) >= 4:
+            if tool_history and len(tool_history) >= self._cfg.loop.continue_reasoner_after_n_tools:
                 return "reasoner"
             return "reader"
         if phase in {"reply", "final"}:

@@ -329,7 +329,7 @@ class EvolutionEngine:
         - 读取近期 reflection 片段（semantic memory 中 kind=reflection）
         - 让 LLM 评估：当前基线是否与近期行为模式吻合？是否需要微调？
         - LLM 输出新的基线 JSON，系统做合法性校验后写回 DB
-        - 每个维度的调整幅度限制在 ±0.15 以内（防突变）
+        - 每个维度的调整幅度限制在 ±evolution.ethos_max_delta 以内（防突变）
         - hard_axioms 限制的维度不允许被降低
         """
         if not self._cfg.evolution.enabled:
@@ -393,7 +393,7 @@ class EvolutionEngine:
 
         # ── 校验：维度完整性 + 值域 + 变化幅度 ──────────────────────────────────
         _DIMS = ("truth", "caution", "continuity", "curiosity", "care")
-        _MAX_DELTA = 0.15
+        _max_delta = self._cfg.evolution.ethos_max_delta
         validated: dict[str, float] = {}
         for dim in _DIMS:
             if dim not in proposed:
@@ -404,9 +404,9 @@ class EvolutionEngine:
                 return EvolutionResult(success=False, target="ethos_baseline",
                                        reason=f"{dim}={new_val} 超出 [0,1]")
             old_val = current_baseline.get(dim, 0.5)
-            if abs(new_val - old_val) > _MAX_DELTA:
+            if abs(new_val - old_val) > _max_delta:
                 # 超幅则夹住
-                new_val = old_val + _MAX_DELTA * (1 if new_val > old_val else -1)
+                new_val = old_val + _max_delta * (1 if new_val > old_val else -1)
             # hard_axioms：若某 hard axiom 关键词出现在维度名中，则不允许降低
             if any(dim in ax.lower() for ax in hard_axioms) and new_val < old_val:
                 new_val = old_val  # 保持不降

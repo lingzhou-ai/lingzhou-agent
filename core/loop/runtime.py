@@ -144,6 +144,7 @@ class CognitionLoop:
         self._soul = SoulManager(self._cfg, self._task_store, self._wm)
         self._behavior = BehaviorTracker(
             wait_streak_notify=list(cfg.loop.wait_streak_notify),
+            streak_threshold=cfg.loop.behavior_streak_threshold,
         )
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)
@@ -470,7 +471,7 @@ class CognitionLoop:
             and getattr(t, "status", "done") not in ("done", "failed")
         ]
         self._last_curiosity_signal_idle_cycle = self._idle_cycles
-        _log.debug(
+        _log.info(
             "[curiosity] idle=%d curiosity=%.2f pending_tasks=%d",
             self._idle_cycles, curiosity, len(pending_curiosity),
         )
