@@ -225,6 +225,7 @@ class JudgmentOutput:
     reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
     next_step: str = ""
     model_strategy: dict[str, Any] = field(default_factory=dict)
+    applied_skills: list[str] = field(default_factory=list)  # LLM 实际应用的技能名单
 
     @classmethod
     def wait(cls, reason: str = "") -> "JudgmentOutput":
@@ -301,6 +302,7 @@ class JudgmentOutput:
             reply_to_user=cls._coerce_text(data.get("reply_to_user", "")),
             next_step=cls._coerce_text(data.get("next_step", "")),
             model_strategy=dict(data.get("model_strategy") or {}),
+            applied_skills=[str(s) for s in (data.get("applied_skills") or []) if s],
         )
 
 
@@ -881,10 +883,11 @@ class JudgmentLayer:
             else:
                 output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
+        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
         _log.info(
-            "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
+            "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
-            self._last_call_meta.get("skills") or "none",
+            _applied,
             output.decision, output.chosen_action_id, output.rationale or "",
         )
 
@@ -1035,10 +1038,11 @@ class JudgmentLayer:
                     model_strategy=dict(output.model_strategy or {}),
                 )
 
+        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
         _log.info(
-            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s",
+            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
             len(tool_history), selection.phase, selection.tier, selection.model_ref,
-            self._last_call_meta["thinking"], self._last_call_meta.get("skills") or "none",
+            self._last_call_meta["thinking"], _applied,
             output.decision, output.chosen_action_id,
         )
         return output
@@ -1142,7 +1146,7 @@ class JudgmentLayer:
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
-        _log.debug("[context] episodic search=%r cross_task_hit=%s",
+        _log.info("[context] episodic search=%r cross_task_hit=%s",
                   (search_query or "")[:50], bool(episodic_search))
 
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
@@ -1162,7 +1166,7 @@ class JudgmentLayer:
         emotion_label = _emotion_label(emotion, self._cfg)
         anchors.append(emotion_label)
         memories = semantic.retrieve_multi_anchor(anchors, self._cfg.memory.semantic_top_k)
-        _log.debug("[context] semantic hits=%d anchors=%r",
+        _log.info("[context] semantic hits=%d anchors=%r",
                   len(memories), [a[:40] for a in anchors[:3]])
 
         axioms_val, _ = await task_store.get_fact("soul:hard_axioms")
@@ -1175,7 +1179,9 @@ class JudgmentLayer:
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
-        if not skills:
+        if skills:
+            _log.debug("[skill] 本轮注入 %d 个技能", len(skills))
+        else:
             _log.info("[skill] 本轮无可用技能")
 
         ctx = {

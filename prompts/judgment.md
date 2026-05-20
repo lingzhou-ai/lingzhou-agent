@@ -136,6 +136,7 @@
   "params": {},
   "rationale": "内部推理过程，尽量控制在 1-2 句",
   "reflection": "从最近经历中提炼的一句话洞察（可为空）",
+  "applied_skills": ["本轮实际依据了哪些技能名称（未使用可留空列表 []）"],
   "reply_to_user": "对用户的直接回复，尽量简短（有 user_message 时必填；无 user_message 时可留空）",
   "next_step": "执行后的下一步计划，尽量控制在 1 句",
   "model_strategy": {
