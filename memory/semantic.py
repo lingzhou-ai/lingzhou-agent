@@ -469,8 +469,15 @@ class SemanticMemory:
         best_score: dict[str, float] = {}
         hit_count: dict[str, int] = {}
         for anchor in valid_anchors:
+            # 有 embed_fn 时计算锚点向量，传入 _score 启用混合评分（与 retrieve() 对齐）
+            query_vec: list[float] | None = None
+            if self._embed_fn is not None:
+                try:
+                    query_vec = self._embed_fn(anchor)
+                except Exception:
+                    pass
             for node in nodes:
-                s = self._score(anchor, node)
+                s = self._score(anchor, node, query_vec=query_vec)
                 if s > 0:
                     if node.id not in best_score or s > best_score[node.id]:
                         best_score[node.id] = s
@@ -527,7 +534,10 @@ class SemanticMemory:
             return []
         # 只保留 unicode 字词字符，去掉 FTS5 特殊符号
         safe = re.sub(r'[^\w\s]', ' ', query, flags=re.UNICODE)
-        terms = [t for t in safe.split() if len(t) > 1]
+        # ASCII 词 ≥5 字符（过滤 "core" "loop" 等常见短词，防止 OR 泛命中）；
+        # 非 ASCII ≥2；若严格过滤后为空则回退原行为。
+        _strict = [t for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
+        terms = _strict if _strict else [t for t in safe.split() if len(t) > 1]
         if not terms:
             return []
         fts_query = " OR ".join(terms)
@@ -573,7 +583,12 @@ class SemanticMemory:
     def _row_to_node(row: sqlite3.Row) -> MemoryNode:
         d: dict[str, Any] = dict(row)
         d["tags"] = json.loads(d.get("tags") or "[]")
-        return MemoryNode.from_dict(d)
+        node = MemoryNode.from_dict(d)
+        # embedding 不在 dataclass 字段内，附加为实例属性供 _score 使用
+        emb = d.get("embedding")
+        if emb is not None:
+            node.__dict__["embedding"] = emb  # type: ignore[index]
+        return node
 
     def _score(
         self,
@@ -595,8 +610,7 @@ class SemanticMemory:
             kw_score = len(q_tokens & n_tokens) / len(q_tokens | n_tokens)
 
         # 向量混合评分（embed_fn 已配置且节点有 embedding 时生效）
-        node_dict = node.to_dict()
-        node_emb_raw = node_dict.get("embedding")
+        node_emb_raw = getattr(node, "embedding", None)
         if query_vec is not None and node_emb_raw is not None:
             try:
                 node_vec: list[float] = (

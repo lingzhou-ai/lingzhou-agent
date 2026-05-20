@@ -107,7 +107,7 @@ class LoopConfig(BaseModel):
     #   非周期轮询。SOAR / ACT-R：产生式持续激活，只在无匹配时挂起。
     #   → 灵舟应以"事件到达"而非"定时唤醒"作为认知节律的主驱动。
     min_act_gap: float = Field(
-        default=2000, ge=1,
+        default=500, ge=1,
         description=(
             "act 决策 + 有活跃任务后的最短间隔（毫秒）。让工具副作用短暂落地再进入下一认知轮，"
             "避免无限紧循环。不等固定 interval，执行中的任务可连续推进。"

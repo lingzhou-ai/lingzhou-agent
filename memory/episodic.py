@@ -466,7 +466,10 @@ class EpisodicMemory:
 
         # 1. FTS5 narrative 检索
         safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
-        terms = [t for t in safe.split() if len(t) > 1]
+        # ASCII 词 ≥5 字符（过滤 "core" "loop" "task" 等常见路径/词，防止 OR 泛命中）；
+        # 非 ASCII（中文等）词 ≥2 字符。若严格过滤后为空则回退原行为。
+        _strict = [t for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
+        terms = _strict if _strict else [t for t in safe.split() if len(t) > 1]
         if terms:
             fts_query = " OR ".join(terms)
             try:
