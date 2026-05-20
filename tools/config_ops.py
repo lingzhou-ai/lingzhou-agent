@@ -46,6 +46,41 @@ def _nested_set(d: dict, path: str, value: Any) -> None:
     current[keys[-1]] = value
 
 
+def _field_description(key: str) -> str:
+    """从 Pydantic schema 提取字段说明（含单位/约束信息），帮助 LLM 感知字段语义。"""
+    try:
+        from core.config import Config as _Config
+        schema = _Config.model_json_schema()
+        defs = schema.get("$defs", {})
+        parts = key.split(".")
+        current_props = schema.get("properties", {})
+        for i, part in enumerate(parts):
+            field_schema = current_props.get(part)
+            if field_schema is None:
+                return ""
+            if i == len(parts) - 1:
+                desc = field_schema.get("description", "")
+                extras: list[str] = []
+                minimum = field_schema.get("minimum")
+                maximum = field_schema.get("maximum")
+                if minimum is not None:
+                    extras.append(f"ge={minimum}")
+                if maximum is not None:
+                    extras.append(f"le={maximum}")
+                if extras:
+                    desc += f"  [{', '.join(extras)}]"
+                return desc
+            ref = field_schema.get("$ref", "")
+            if ref:
+                model_name = ref.rsplit("/", 1)[-1]
+                current_props = defs.get(model_name, {}).get("properties", {})
+            else:
+                current_props = field_schema.get("properties", {})
+    except Exception:
+        pass
+    return ""
+
+
 @tool(ToolManifest(
     name="config.get",
     description=(
@@ -112,6 +147,19 @@ async def config_set(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         cfg = _read_config()
         old = _nested_get(cfg, key)
         _nested_set(cfg, key, value)
+        try:
+            from core.config import Config as _Config
+            _Config.model_validate(cfg)
+        except Exception as ve:
+            field_desc = _field_description(key)
+            hint = f"\n  字段说明: {field_desc}" if field_desc else ""
+            return ToolResult(
+                summary=(
+                    f"❌ {key}: 值 {json.dumps(value, ensure_ascii=False)} 验证失败，未写入\n"
+                    f"  原因: {ve}{hint}"
+                ),
+                error="ValidationError",
+            )
         _write_config(cfg)
         return ToolResult(
             summary=f"✅ {key}: {json.dumps(old, ensure_ascii=False)} → {json.dumps(value, ensure_ascii=False)}",

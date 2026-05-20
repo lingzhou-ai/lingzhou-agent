@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2026.5.20.1] — 2026-05-20
+
 ### 重构
 - **loop 模块第二阶段拆分** — 新增 `core/loop/common.py`、`core/loop/tick.py`，将 `_tick`、`_tick_finalize` 与 post-tick memory/进度收尾从 `core/loop/runtime.py` 迁出，`runtime.py` 只保留装配与生命周期
 - **loop chat 子模块落地** — 新增 `core/loop/chat.py`，将会话绑定、reply session 恢复与 `tick_interact` 从主编排中抽出，修复“自主追问只写日志不外发”的链路缺口
@@ -17,6 +19,9 @@
 
 ### 新增
 - **图片能力路由** — `image.analyze` 在当前模型不支持 `vision + image` 时，会自动切换到可用视觉模型，而不是直接沿用纯文本模型
+- **config.set 写入前验证** — 写入前调用 `Config.model_validate()`，校验失败时返回字段描述（含单位/约束）和错误原因，不写入文件；LLM 可直接感知错误而不是在下轮 hot-reload 时才发现
+- **skill 注入上限（`skill_max_inject`）** — `match_for_context` 接受 `last_applied` + `max_inject` 参数，上轮 LLM 实际应用的技能优先保留，按 `cfg.loop.skill_max_inject`（默认 3）截断；LLM 自己的选择驱动下轮注入
+- **idle-gap 单位统一为毫秒** — `loop.max_idle_gap` 全局改为毫秒，消除 agent 因单位误判导致热重载校验失败的问题
 
 ### 修复
 - **打包清单缺口** — `pyproject.toml` 的 wheel 包列表补入 `channels`

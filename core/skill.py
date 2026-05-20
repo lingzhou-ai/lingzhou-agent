@@ -291,11 +291,29 @@ class SkillRegistry:
     def all_skills(self) -> list[Skill]:
         return list(self._skills)
 
-    def match_for_context(self, **_kwargs: Any) -> list[Skill]:
-        """返回全部已注册技能，交由 LLM 自行判断适用哪些。
+    def match_for_context(
+        self,
+        last_applied: list[str] | None = None,
+        max_inject: int = 0,
+        **_kwargs: Any,
+    ) -> list[Skill]:
+        """返回本轮应注入完整指导的技能列表。
 
-        Python 层不再打分/排序/截断——机械式评分与误导无异。
+        last_applied: 上轮 LLM 实际应用的技能名列表，优先保留（LLM 自己的选择驱动下轮注入）。
+        max_inject: 最多注入数；0 = 不限（向后兼容）。
         """
-        skills = list(self._skills)
-        _log.info("[skill.match] injecting=%d: %s", len(skills), [s.name for s in skills])
-        return skills
+        all_skills = list(self._skills)
+        if max_inject <= 0:
+            _log.info("[skill.match] injecting=%d: %s", len(all_skills), [s.name for s in all_skills])
+            return all_skills
+        applied_names = set(last_applied or [])
+        priority: list[Skill] = [s for s in all_skills if s.name in applied_names]
+        rest: list[Skill] = [s for s in all_skills if s.name not in applied_names]
+        selected = (priority + rest)[:max_inject]
+        _log.info(
+            "[skill.match] injecting=%d/%d (max=%d last_applied=%s): %s",
+            len(selected), len(all_skills), max_inject,
+            list(last_applied or []),
+            [s.name for s in selected],
+        )
+        return selected

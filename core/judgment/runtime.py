@@ -346,6 +346,8 @@ class JudgmentLayer:
             "skills": "",
         }
         self._last_selected_skills: list[Skill] = []
+        # 上轮 LLM 实际应用的技能名（用于下轮 match_for_context 优先注入）
+        self._last_applied_skill_names: list[str] = []
         # 每个模型最近一次调用错误（用于注入 model routing truth）
         self._provider_errors: dict[str, str] = {}
         # 每个模型的健康状态（429/400/timeout 触发冷却窗口，避免短时间重复打爆同一 provider）
@@ -881,6 +883,8 @@ class JudgmentLayer:
                 output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
+        if output.applied_skills:
+            self._last_applied_skill_names = list(output.applied_skills)
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
@@ -1036,6 +1040,8 @@ class JudgmentLayer:
                 )
 
         _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
+        if output.applied_skills:
+            self._last_applied_skill_names = list(output.applied_skills)
         _log.info(
             "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
             len(tool_history), selection.phase, selection.tier, selection.model_ref,
@@ -1181,7 +1187,10 @@ class JudgmentLayer:
 
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
-        skills = self._skills.match_for_context()
+        skills = self._skills.match_for_context(
+            last_applied=self._last_applied_skill_names,
+            max_inject=self._cfg.loop.skill_max_inject,
+        )
         self._last_selected_skills = list(skills)
         if skills:
             _log.debug("[skill] 本轮注入 %d 个技能", len(skills))
