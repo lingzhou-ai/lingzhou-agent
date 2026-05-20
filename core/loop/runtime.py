@@ -341,6 +341,11 @@ class CognitionLoop:
         if not signal.should_explore:
             return
 
+        # 去重：队列中已存在未完成的 self_drive 任务时跳过，防止同目标反复入队
+        runnable = await self._task_store.list_runnable_tasks(limit=20)
+        if any(t.source == "self_drive" for t in runnable):
+            return
+
         task_template = self._self_drive.generate_exploration_task(
             signal.suggested_domain or "self_evolution"
         )
