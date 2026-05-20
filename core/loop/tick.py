@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -453,6 +454,30 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         actual_skills,
         action.rationale or "",
     )
+
+    # ── 任务并行委派（delegate_tasks）──────────────────────────────────────
+    # 主 tick（reasoner）将多个独立子目标委派为真实 Task，并行执行（reader tier），
+    # 结果写回 task_store，并由 reasoner 做统一审查决策。
+    if action.delegate_tasks:
+        from .task_parallel import run_tasks_parallel
+
+        parent_task_id = active_task.id if active_task else None
+        parallel_entries = await run_tasks_parallel(action.delegate_tasks, ctx, loop, parent_task_id)
+
+        # 将并行任务结果注入 WM
+        for entry in parallel_entries:
+            loop._wm.add(WMItem(kind="task_result", content=entry.get("summary", ""), priority=0.95))
+
+        # 无论是否有结果，都由 reasoner 重新决策（原始 action 含空 chosen_action_id 不可直接 dispatch）
+        _log.info("[loop] delegate gate review: %d task results", len(parallel_entries))
+        gate = await loop._judgment.decide_continue(
+            tool_history=parallel_entries or [{"tool": "delegate", "params": {}, "result": "无有效子任务", "status": "ok", "error": ""}],
+            user_message=user_message,
+            active_task=active_task,
+            prefer_tier="reasoner",
+        )
+        action = gate
+    # ── /任务并行委派 ────────────────────────────────────────────
 
     if action.decision == "act":
         tool_id = action.chosen_action_id or ""
