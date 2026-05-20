@@ -470,7 +470,7 @@ class CognitionLoop:
             and getattr(t, "status", "done") not in ("done", "failed")
         ]
         self._last_curiosity_signal_idle_cycle = self._idle_cycles
-        _log.info(
+        _log.debug(
             "[curiosity] idle=%d curiosity=%.2f pending_tasks=%d",
             self._idle_cycles, curiosity, len(pending_curiosity),
         )

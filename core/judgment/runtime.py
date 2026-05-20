@@ -1142,7 +1142,7 @@ class JudgmentLayer:
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
-        _log.info("[context] episodic search=%r cross_task_hit=%s",
+        _log.debug("[context] episodic search=%r cross_task_hit=%s",
                   (search_query or "")[:50], bool(episodic_search))
 
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
@@ -1162,7 +1162,7 @@ class JudgmentLayer:
         emotion_label = _emotion_label(emotion, self._cfg)
         anchors.append(emotion_label)
         memories = semantic.retrieve_multi_anchor(anchors, self._cfg.memory.semantic_top_k)
-        _log.info("[context] semantic hits=%d anchors=%r",
+        _log.debug("[context] semantic hits=%d anchors=%r",
                   len(memories), [a[:40] for a in anchors[:3]])
 
         axioms_val, _ = await task_store.get_fact("soul:hard_axioms")
@@ -1175,9 +1175,7 @@ class JudgmentLayer:
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
-        if skills:
-            _log.debug("[skill] 本轮注入 %d 个技能", len(skills))
-        else:
+        if not skills:
             _log.info("[skill] 本轮无可用技能")
 
         ctx = {

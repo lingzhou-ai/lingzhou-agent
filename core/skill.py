@@ -297,5 +297,5 @@ class SkillRegistry:
         Python 层不再打分/排序/截断——机械式评分与误导无异。
         """
         skills = list(self._skills)
-        _log.info("[skill.match] injecting=%d: %s", len(skills), [s.name for s in skills])
+        _log.debug("[skill.match] injecting=%d: %s", len(skills), [s.name for s in skills])
         return skills
