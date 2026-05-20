@@ -135,6 +135,34 @@ def test_episodic_search_cross_task_returns_different_task():
         assert "衰减" in result, f"应从旧任务召回相关内容，result={result!r}"
 
 
+def test_episodic_search_exclude_task_id_blocks_self_echo():
+    """exclude_task_id 过滤：当前任务的 narrative 不应作为跨任务命中返回。
+
+    场景：同一目标被多个任务运行过（goal echo）；
+    传入 exclude_task_id 后，旧任务中 content ≈ 查询文本的条目被过滤掉。
+    """
+    from memory.episodic import EpisodicMemory
+
+    goal = "阅读 core/ 中的关键模块，理解架构和可改进点。选择你之前没细读过的文件开始。"
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+        # 旧任务写入了相同目标文本
+        ep.record("user", goal, task_id="old-task-1")
+        ep.record("assistant", "已读取 core/loop/runtime.py", task_id="old-task-1")
+        # 当前任务写入不同内容
+        ep.record("user", "继续执行下一步", task_id="cur-task")
+        ep.record("assistant", "正在分析 core/evolution.py", task_id="cur-task")
+
+        # 不传 exclude_task_id：old-task-1 的 goal echo 可能命中
+        result_no_excl = ep.search(goal, max_chars=4000)
+
+        # 传入 exclude_task_id：goal echo（content 含 goal 前 40 字符）应被过滤
+        result_excl = ep.search(goal, max_chars=4000, exclude_task_id="cur-task")
+        # goal 文本本身不应出现（被 _query_head 过滤）
+        assert goal[:30] not in result_excl, \
+            f"旧任务的目标文本回显应被过滤，实际: {result_excl!r}"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SemanticMemory — retrieve() 向量路径 & retrieve_multi_anchor 向量对齐
 # ══════════════════════════════════════════════════════════════════════════════

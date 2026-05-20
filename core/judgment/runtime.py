@@ -1285,7 +1285,7 @@ class JudgmentLayer:
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = (
-            await _el.run_in_executor(None, episodic.search, search_query, 16000)
+            await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if search_query else ""
         )
         if episodic_search and episodic_search not in episodic_text:

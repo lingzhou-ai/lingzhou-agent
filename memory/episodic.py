@@ -457,12 +457,24 @@ class EpisodicMemory:
                 v.reverse()
             return result
 
-    def search(self, query: str, max_chars: int = 2000) -> str:
-        """全文检索情节记忆：narrative FTS5（O(log n)）+ .md 文件降级扫描。"""
+    def search(
+        self,
+        query: str,
+        max_chars: int = 2000,
+        exclude_task_id: str | None = None,
+    ) -> str:
+        """全文检索情节记忆：narrative FTS5（O(log n)）+ .md 文件降级扫描。
+
+        exclude_task_id: 跳过该 task 自身的 narrative 行（避免把当前任务目标作为
+        跨任务命中反复注入）。
+        """
         if not query.strip():
             return ""
         hits: list[str] = []
         total = 0
+        # 用于检测「content 本质上就是查询文本本身」（旧任务目标被 FTS5 回显）：
+        # 条件：query 是 content 的子串，且 content 长度 < query 的 1.3 倍（即 content ≈ query，非扩展内容）
+        _q = query.strip()
 
         # 1. FTS5 narrative 检索
         safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
@@ -479,6 +491,12 @@ class EpisodicMemory:
                     (fts_query,),
                 ).fetchall()
                 for row in rows:
+                    # 跳过当前任务自身的条目（避免将自己的历史作为跨任务命中）
+                    if exclude_task_id and row['task_id'] == exclude_task_id:
+                        continue
+                    # 跳过 content 本质上就是查询文本本身（旧任务目标被 FTS5 回显）
+                    if _q and row['content'].strip() == _q:
+                        continue
                     snippet = f"[task={row['task_id'] or 'global'} role={row['role']}] {row['content'][:300]}"
                     hits.append(snippet)
                     total += len(snippet)
@@ -491,6 +509,9 @@ class EpisodicMemory:
         if total < max_chars:
             keywords = [kw.lower() for kw in query.split() if kw]
             for md_path in sorted(self._dir.glob("*.md")):
+                # 跳过当前任务自身的 .md
+                if exclude_task_id and md_path.name == f"task-{exclude_task_id}.md":
+                    continue
                 try:
                     text = md_path.read_text(encoding="utf-8")
                 except Exception:
@@ -498,6 +519,12 @@ class EpisodicMemory:
                 for block in text.split("---"):
                     block = block.strip()
                     if not block:
+                        continue
+                    # 跳过块内容本质上就是查询文本本身（剖除 markdown 元数据行后比较）
+                    _block_body = '\n'.join(
+                        l for l in block.splitlines() if l.strip() and not l.startswith('**[')
+                    ).strip()
+                    if _q and _block_body == _q:
                         continue
                     lower = block.lower()
                     if all(kw in lower for kw in keywords):
