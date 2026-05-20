@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lingzhou.skill")
 
 
 @dataclass
@@ -362,19 +362,18 @@ class SkillRegistry:
                 })
 
         scored.sort(key=lambda item: (-item[0], item[1].name))
-        selected = [skill for _, skill in scored[:max_inject]]
+        # 全量有序返回，删除 Python 层截断，让 LLM 自行选择适用的技能
+        selected = [skill for _, skill in scored]
         if not selected and not has_active_task:
             bootstrap = next((s for s in self._skills if s.name == "runtime.bootstrap"), None)
             if bootstrap:
                 selected = [bootstrap]
-        selected_names = {skill.name for skill in selected}
-        selected_debug = [item for item in diagnostics if item["name"] in selected_names]
-        if selected_debug:
+        if diagnostics:
             summary = "; ".join(
                 f"{item['name']}(score={float(item['score']):.2f}, reasons={','.join(item['reasons'][:4]) or '-'})"
-                for item in selected_debug
+                for item in diagnostics
             )
-            _log.info("[skill.match] selected=%s", summary)
+            _log.info("[skill.match] all=%s", summary)
         else:
-            _log.info("[skill.match] selected=none")
+            _log.info("[skill.match] all=none")
         return selected

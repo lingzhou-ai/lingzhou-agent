@@ -665,8 +665,10 @@ def _fmt_primary_skill(skill: "Skill | None") -> str:
 
 def _fmt_skills(skills: "list[Skill]") -> str:
     if not skills:
-        return "（除主技能外，本轮无其他补充技能；如判断受阻，可参考上方 skill catalog 或调用 skill.search/skill.list）"
-    parts: list[str] = ["（以下为本轮的补充技能，与主技能同等运用，主技能优先级略高）"]
+        return "（未加载任何技能指南）"
+    parts: list[str] = [
+        "以下是全部可用的认知框架（技能）。请根据当前情境自行判断适用哪些，多个技能可同时运用。",
+    ]
     for skill in skills:
         origin = "builtin" if not getattr(skill, "source_path", "") else skill.source_path
         guidance = getattr(skill, "guidance", "") or ""

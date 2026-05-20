@@ -1203,15 +1203,12 @@ class JudgmentLayer:
         self._last_selected_skills = list(skills)
         if skills:
             _log.info(
-                "[skill] 命中 %d 个: %s",
+                "[skill] 全量 %d 个属上权限： %s",
                 len(skills),
-                " | ".join(
-                    f"{s.name}(guidance={'yes' if getattr(s, 'guidance', None) else 'no'})"
-                    for s in skills
-                ),
+                " | ".join(s.name for s in skills),
             )
         else:
-            _log.debug("[skill] 本轮无命中")
+            _log.info("[skill] 本轮无可用技能")
 
         ctx = {
             "task_section": _fmt_task(task),
@@ -1244,8 +1241,8 @@ class JudgmentLayer:
             "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
             "perception_replay_section": _fmt_perception_replay(perception_replay),
             "skills_catalog_section": _fmt_skill_catalog(all_skills),
-            "primary_skill_section": _fmt_primary_skill(primary_skill),
-            "skills_section": _fmt_skills(secondary_skills),
+            "primary_skill_section": "",
+            "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
             "blind_spot_section": _fmt_blind_spots(probes, self.self_model.total_tokens),
