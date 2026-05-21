@@ -14,15 +14,15 @@ from typing import Any
 
 @dataclass(order=True)
 class WMItem:
-    # heapq 是最小堆，用负优先级实现最大堆
-    _neg_priority: float = field(init=False, repr=False)
+    # heapq 是最小堆；_sort_key 存正优先级，heappop 弹出最小值 = 最低优先级 = 正确驱逐方向
+    _sort_key: float = field(init=False, repr=False)
     kind: str = field(compare=False)
     content: str = field(compare=False)
     priority: float = field(compare=False, default=0.8)
     created_at: datetime = field(compare=False, default_factory=lambda: datetime.now(UTC))
 
     def __post_init__(self) -> None:
-        self._neg_priority = -self.priority
+        self._sort_key = self.priority
 
     @property
     def estimated_tokens(self) -> int:

@@ -466,9 +466,11 @@ class ExecutionLayer:
             if r.summary
         )
         errors = [r.error for r in results if r.error]
+        # 合并所有错误信息（不只暴露首个），让 behavior_tracker 和 failure 记录看到全部失败
+        combined_error = "; ".join(errors) if errors else None
         return ToolResult(
             summary=merged_summary,
-            error=errors[0] if errors else None,
+            error=combined_error,
             kind="execute_result",
             priority=max((r.priority for r in results), default=0.9),
             metadata={"parallel_count": len(sub_actions), "errors": errors},

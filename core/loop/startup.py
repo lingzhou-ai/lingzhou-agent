@@ -53,6 +53,9 @@ async def _open_runtime_impl(loop: Any) -> None:
     loop._routing_providers = _build_routing_providers(loop._cfg)
     loop._judgment.set_routing_providers(loop._routing_providers)
     loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
+    loop._judgment.self_model.record_start(name="lingzhou")
+    loop._judgment.self_model.set_routing(loop._cfg)
+    await _restore_self_model_impl(loop)
     # 探针系统：从 probes.json 加载（已在 ProbeManager.__init__ 同步完成），启动调度 Task
     await loop._probe_manager.start(loop._wm, loop_ref=loop)
     await _restore_state_from_db_impl(loop)

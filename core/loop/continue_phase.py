@@ -111,9 +111,8 @@ async def _run_continue_phase(
                 priority=cont_result.priority,
             )
             loop._wm.add(_result_item)
-            if cont_result.skipped and cont_result.error:
-                # error 类 skipped 同步追加到 wm_delta，确保本轮后续 continue 轮能感知
-                _wm_delta.append(_result_item.to_dict())
+            # 不论成功还是 error-skipped，均追加到 wm_delta，让后续 continue 轮可感知
+            _wm_delta.append(_result_item.to_dict())
         if cont.reflection and cont.reflection.strip():
             loop._wm.add(WMItem(
                 kind="synthesis",

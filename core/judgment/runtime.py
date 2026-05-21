@@ -810,6 +810,7 @@ class JudgmentLayer:
                         tool_history=tool_history,
                         prefer_tier="reasoner" if reply_only else _fallback_tier,
                         thinking_override=resolved_thinking,
+                        routing_overrides=routing_overrides,
                     )
                     if fb_selection.model_ref != selection.model_ref:
                         _log.warning(

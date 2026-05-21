@@ -470,8 +470,10 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         elif tool == "file.list":
             for item in loop._behavior.on_list(path, result.summary):
                 loop._wm.add(item)
-        elif tool == "file.edit" and result.error and "OldTextNotFound" in (result.error or ""):
-            for item in loop._behavior.on_edit_failure(result.error or ""):
+    if action.decision == "act":
+        tool = action.chosen_action_id or ""
+        if tool == "file.edit" and result.error and "OldTextNotFound" in result.error:
+            for item in loop._behavior.on_edit_failure(result.error):
                 loop._wm.add(item)
 
     # ① in-session bootstrap 完成检测（主工具执行后）

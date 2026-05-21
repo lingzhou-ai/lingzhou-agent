@@ -121,7 +121,9 @@ class SelfDriveEngine:
             p = Path(self._state_file)
             if p.exists():
                 data = json.loads(p.read_text())
-                self._state = CuriosityState(**data)
+                # 只传已知字段，防止版本演进时新旧字段不匹配导致 TypeError
+                known = set(CuriosityState.__dataclass_fields__)
+                self._state = CuriosityState(**{k: v for k, v in data.items() if k in known})
         except Exception:
             pass
 
@@ -211,11 +213,11 @@ class SelfDriveEngine:
         # 选择探索领域（跳过冷却期内的域，默认 3600s）
         _DOMAIN_COOLDOWN = 3600.0  # 同一域 60 分钟内不重复生成任务
         if should_explore:
-            now_mono = time.monotonic()
+            now_wall = time.time()  # 用 wall clock 比较，保证跨重启后冷却仍有效
             # 选兴趣最高的领域（但加一点随机性避免卡死），过滤掉冷却中的域
             ranked = sorted(
                 [(d, v) for d, v in s.interests.items()
-                 if now_mono - s.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
+                 if now_wall - s.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
                 key=lambda x: -x[1],
             )
             if not ranked:
@@ -287,7 +289,7 @@ class SelfDriveEngine:
             },
         }
 
-        # 记录本次探索的域和时间，用于冷却判断
-        self._state.last_explored_at[domain] = time.monotonic()
+        # 记录本次探索的域和时间（wall clock），用于冷却判断
+        self._state.last_explored_at[domain] = time.time()
         self._save()
         return domain_tasks.get(domain, domain_tasks["self_evolution"])
