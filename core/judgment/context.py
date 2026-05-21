@@ -94,6 +94,13 @@ def _fmt_task(task: "Task | None") -> str:
         if plan_lines:
             lines.append("当前计划:")
             lines.extend(plan_lines)
+            # 有 in_progress 步骤时注入命令式指令，避免 LLM 推断不出"应该执行"
+            in_progress_step = next(
+                (str(s.get("step") or "").strip() for s in raw_plan if isinstance(s, dict) and s.get("status") == "in_progress"),
+                None,
+            )
+            if in_progress_step:
+                lines.append(f"⚠️ 执行指令：步骤 [{in_progress_step}] 正在进行，你的下一个动作必须直接执行它，禁止调用 task.plan。")
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
     return "\n".join(lines)
