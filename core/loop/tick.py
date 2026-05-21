@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -71,6 +72,59 @@ from .progress import (
 
 console = Console()
 _log = logging.getLogger("lingzhou.loop")
+
+
+def _message_terms(text: str) -> set[str]:
+    normalized = (text or "").lower().strip()
+    if not normalized:
+        return set()
+    terms = set(re.findall(r"[a-z0-9_+\-]{3,}", normalized))
+    for seq in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
+        max_n = min(4, len(seq))
+        for n in range(2, max_n + 1):
+            for idx in range(0, len(seq) - n + 1):
+                terms.add(seq[idx:idx + n])
+    return terms
+
+
+def _should_steer_active_task_from_user_message(active_task: Any, user_message: str) -> bool:
+    message = str(user_message or "").strip()
+    if active_task is None or not message:
+        return False
+    message_terms = _message_terms(message)
+    if len(message) < 8 and len(message_terms) < 3:
+        return False
+    task_text = "\n".join([
+        str(getattr(active_task, "title", "") or ""),
+        str(getattr(active_task, "goal", "") or ""),
+        str(getattr(active_task, "current_step", "") or ""),
+        str(getattr(active_task, "next_step", "") or ""),
+    ]).strip()
+    task_terms = _message_terms(task_text)
+    if not message_terms:
+        return bool(task_text) and message != task_text
+    if not task_terms:
+        return True
+    overlap_ratio = len(message_terms & task_terms) / max(1, len(message_terms))
+    return overlap_ratio < 0.35
+
+
+async def _maybe_steer_active_task_from_user_message(task_store: Any, active_task: Any, user_message: str) -> Any:
+    if not _should_steer_active_task_from_user_message(active_task, user_message):
+        return active_task
+    message = f"收到新的用户指令：{str(user_message or '').strip()}"
+    extras = getattr(active_task, "extras", None)
+    existing = extras.get("inbox_messages") if isinstance(extras, dict) else []
+    if not isinstance(existing, list):
+        existing = []
+    if message in existing:
+        return active_task
+    existing = [*existing, message]
+    await task_store.update_task_data(active_task.id, {"inbox_messages": existing})
+    active_task.extras = dict(extras) if isinstance(extras, dict) else {}
+    active_task.extras["inbox_messages"] = existing
+    _log.info("[task-steer] active_task=%s queued new user instruction into inbox", active_task.id)
+    return active_task
 
 
 async def _consume_active_task_inbox(task_store: Any, active_task: Any) -> Any:
@@ -143,6 +197,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     active_task = await loop._task_store.get_active()
     await _ingest_actionable_meta_reflections(loop._task_store, loop._wm)
     active_task = await _consume_task_runtime_hints(loop._task_store, active_task, loop._wm)
+    active_task = await _maybe_steer_active_task_from_user_message(loop._task_store, active_task, user_message)
     active_task = await _consume_active_task_inbox(loop._task_store, active_task)
     await _bind_chat_id(loop, active_task, chat_id)
 
@@ -390,6 +445,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             loop._episodic,
             loop._semantic,
             loop._emotion,
+            active_task=active_task,
             user_message=user_message,
             ethos_state=ethos_state,
             judgment_signals=signals,

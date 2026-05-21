@@ -136,6 +136,102 @@ async def _skill_list_and_search():
     assert "没有找到" in r3.summary
 
 
+def test_browser_navigate_failure_uses_stdout_when_stderr_empty(monkeypatch):
+    asyncio.run(_browser_navigate_failure_uses_stdout_when_stderr_empty(monkeypatch))
+
+
+async def _browser_navigate_failure_uses_stdout_when_stderr_empty(monkeypatch):
+    import tools.browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "_find_browser", lambda: "agent-browser")
+
+    async def _fake_browser_run(*args: str, timeout: int = 30):
+        return 7, "blocked by upstream gateway", ""
+
+    monkeypatch.setattr(browser_mod, "_browser_run", _fake_browser_run)
+    res = await browser_mod.browser_navigate({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error == "NavigateTargetBlocked"
+    assert "exit=7" in res.summary
+    assert "blocked by upstream gateway" in res.summary
+
+
+def test_browser_navigate_timeout_classified(monkeypatch):
+    asyncio.run(_browser_navigate_timeout_classified(monkeypatch))
+
+
+async def _browser_navigate_timeout_classified(monkeypatch):
+    import tools.browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "_find_browser", lambda: "agent-browser")
+
+    async def _fake_browser_run(*args: str, timeout: int = 30):
+        return -1, "", "操作超时"
+
+    monkeypatch.setattr(browser_mod, "_browser_run", _fake_browser_run)
+    res = await browser_mod.browser_navigate({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error == "NavigateTimeout"
+    assert "操作超时" in res.summary
+
+
+def test_browser_navigate_network_unreachable_classified(monkeypatch):
+    asyncio.run(_browser_navigate_network_unreachable_classified(monkeypatch))
+
+
+async def _browser_navigate_network_unreachable_classified(monkeypatch):
+    import tools.browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "_find_browser", lambda: "agent-browser")
+
+    async def _fake_browser_run(*args: str, timeout: int = 30):
+        return 2, "", "net::ERR_NAME_NOT_RESOLVED"
+
+    monkeypatch.setattr(browser_mod, "_browser_run", _fake_browser_run)
+    res = await browser_mod.browser_navigate({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error == "NavigateNetworkUnreachable"
+    assert "网络不可达" in res.summary
+
+
+def test_browser_navigate_dependency_missing_classified(monkeypatch):
+    asyncio.run(_browser_navigate_dependency_missing_classified(monkeypatch))
+
+
+async def _browser_navigate_dependency_missing_classified(monkeypatch):
+    import tools.browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "_find_browser", lambda: "agent-browser")
+
+    async def _fake_browser_run(*args: str, timeout: int = 30):
+        return 3, "", "Failed to launch browser process! libnss3.so: cannot open shared object file"
+
+    monkeypatch.setattr(browser_mod, "_browser_run", _fake_browser_run)
+    res = await browser_mod.browser_navigate({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error == "NavigateDependencyMissing"
+    assert "浏览器依赖缺失" in res.summary
+
+
+def test_browser_navigate_blank_page_classified(monkeypatch):
+    asyncio.run(_browser_navigate_blank_page_classified(monkeypatch))
+
+
+async def _browser_navigate_blank_page_classified(monkeypatch):
+    import tools.browser as browser_mod
+
+    monkeypatch.setattr(browser_mod, "_find_browser", lambda: "agent-browser")
+
+    async def _fake_browser_run(*args: str, timeout: int = 30):
+        return 0, "   \n   ", ""
+
+    monkeypatch.setattr(browser_mod, "_browser_run", _fake_browser_run)
+    res = await browser_mod.browser_navigate({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error == "NavigateBlankPage"
+    assert "页面空白" in res.summary
+
+
 def test_exec_empty_command():
     """exec 空命令应被拒绝。"""
     asyncio.run(_exec_empty_command())

@@ -2121,6 +2121,25 @@ def test_skill_registry():
     assert any(s.name == "failure.reflection" for s in skills_fail)
 
 
+def test_skill_registry_does_not_stick_failure_reflection_without_failures():
+    from core.skill import SkillRegistry
+
+    reg = SkillRegistry()
+    skills = reg.match_for_context(
+        last_applied=["failure.reflection"],
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=True,
+        failure_count=0,
+        high_error_streak=0,
+        context_text="继续推进当前任务，执行下一步并保持状态连续。",
+        max_inject=2,
+    )
+    names = [skill.name for skill in skills]
+    assert "task.continuity" in names
+    assert "failure.reflection" not in names
+
+
 def test_skill_registry_loads_package_skill_and_matches_context(tmp_path):
     from core.skill import SkillRegistry
 
@@ -2246,5 +2265,48 @@ description: |
         max_inject=20,
     )
     assert any(s.name == "error-handling" for s in err_skills)
+
+    focused_err_skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=1,
+        high_error_streak=1,
+        context_text="exec 被拒绝了，还报了 timeout 和 permission error",
+        max_inject=1,
+    )
+    assert [skill.name for skill in focused_err_skills] == ["error-handling"]
+
+
+def test_skill_registry_parses_state_bias_from_frontmatter(tmp_path):
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    pkg = skills_dir / "continuity-driven"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        """---
+name: continuity-driven
+description: |
+  Declarative state bias for next-step continuity.
+state_bias: has_active_task=1.0, has_next_step=4.5
+---
+当任务有明确 next_step 时，先推进当前任务，不要切走。
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+    skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=True,
+        failure_count=0,
+        high_error_streak=0,
+        context_text="",
+        max_inject=1,
+    )
+
+    assert [skill.name for skill in skills] == ["continuity-driven"]
 
 

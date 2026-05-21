@@ -29,6 +29,41 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
 BROWSER_CMD = "npx"
 BROWSER_ARGS = ["agent-browser"]
 BROWSER_TIMEOUT = 30  # 浏览器操作超时（秒）
+_NAVIGATE_NETWORK_PATTERNS = (
+    "err_name_not_resolved",
+    "err_internet_disconnected",
+    "err_connection_refused",
+    "err_connection_reset",
+    "err_connection_timed_out",
+    "err_address_unreachable",
+    "econnrefused",
+    "enetunreach",
+    "dns",
+    "network is unreachable",
+    "could not resolve host",
+)
+_NAVIGATE_BLOCKED_PATTERNS = (
+    "blocked by upstream",
+    "access denied",
+    "forbidden",
+    "captcha",
+    "bot verification",
+    "rate limited",
+    "temporarily blocked",
+    "intercepted",
+)
+_NAVIGATE_DEPENDENCY_PATTERNS = (
+    "failed to launch browser process",
+    "executable doesn't exist",
+    "browser binary",
+    "install chromium",
+    "please run the following command to download",
+    "shared object file",
+    "libnss3",
+    "libatk",
+    "libx11",
+    "no usable sandbox",
+)
 
 
 def _find_browser() -> Optional[str]:
@@ -74,6 +109,47 @@ def _make_snapshot_summary(text: str, max_lines: int = 60) -> str:
     return f"{head}\n...({len(lines) - max_lines} 行省略)...\n{tail}"
 
 
+def _browser_failure_summary(action: str, code: int, stdout: str, stderr: str) -> str:
+    detail = (stderr or stdout or "").strip()
+    prefix = f"{action}失败(exit={code})"
+    if not detail:
+        return prefix
+    return f"{prefix}: {detail[:200]}"
+
+
+def _classify_navigate_failure(code: int, stdout: str, stderr: str) -> tuple[str, str]:
+    detail = (stderr or stdout or "").strip()
+    lowered = detail.lower()
+    if "超时" in detail or "timeout" in lowered:
+        return "NavigateTimeout", "超时"
+    if any(marker in lowered for marker in _NAVIGATE_DEPENDENCY_PATTERNS):
+        return "NavigateDependencyMissing", "浏览器依赖缺失"
+    if any(marker in lowered for marker in _NAVIGATE_NETWORK_PATTERNS):
+        return "NavigateNetworkUnreachable", "网络不可达"
+    if any(marker in lowered for marker in _NAVIGATE_BLOCKED_PATTERNS):
+        return "NavigateTargetBlocked", "目标拦截"
+    return "NavigateError", "未知导航错误"
+
+
+def _snapshot_looks_blank(snapshot: str) -> bool:
+    stripped = snapshot.strip()
+    if not stripped:
+        return True
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return True
+    meaningful_lines = [
+        line for line in lines
+        if re.search(r"[A-Za-z0-9\u4e00-\u9fff]", line)
+    ]
+    if not meaningful_lines:
+        return True
+    generic_tokens = {"document", "webarea", "rootwebarea", "main", "generic", "application"}
+    normalized = [re.sub(r"[^a-z]+", "", line.lower()) for line in meaningful_lines[:4]]
+    normalized = [item for item in normalized if item]
+    return len(lines) <= 3 and normalized and all(item in generic_tokens for item in normalized)
+
+
 # ── browser.navigate ─────────────────────────────────────────────────────────
 
 
@@ -102,7 +178,21 @@ async def browser_navigate(params: dict[str, Any], ctx: ToolContext) -> ToolResu
     try:
         code, stdout, stderr = await _browser_run("navigate", url, "--snapshot")
         if code != 0:
-            return ToolResult(summary=f"导航失败: {stderr[:200]}", error="NavigateError")
+            detail = (stderr or stdout or "").strip()
+            err, label = _classify_navigate_failure(code, stdout, stderr)
+            return ToolResult(
+                summary=f"导航失败[{label}](exit={code}): {(detail or '无详细输出')[:200]}",
+                error=err,
+                evidence=detail[:500],
+                metadata={"url": url, "exit_code": code, "failure_kind": label},
+            )
+        if _snapshot_looks_blank(stdout):
+            return ToolResult(
+                summary=f"导航失败[页面空白](exit={code}): 页面已打开，但快照为空或只有空白骨架",
+                error="NavigateBlankPage",
+                evidence=stdout[:500],
+                metadata={"url": url, "exit_code": code, "failure_kind": "页面空白"},
+            )
         return ToolResult(
             summary=f"已打开: {url}\n{_make_snapshot_summary(stdout)}",
             resource_key=url,

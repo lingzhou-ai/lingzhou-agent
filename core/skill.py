@@ -27,6 +27,7 @@ class Skill:
     guidance: str         # 注入 LLM 的引导文本
     tags: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
+    state_bias: dict[str, float] = field(default_factory=dict)
     source_path: str = ""
 
 
@@ -44,6 +45,7 @@ _BUILTIN_SKILLS: list[Skill] = [
         ),
         tags=["bootstrap", "cold_start"],
         triggers=["冷启动", "bootstrap", "启动"],
+        state_bias={"idle_only": 3.5},
     ),
     Skill(
         name="provider.integration",
@@ -55,6 +57,7 @@ _BUILTIN_SKILLS: list[Skill] = [
         ),
         tags=["act", "tool_call"],
         triggers=["工具失败", "参数错误", "file not found", "调用失败"],
+        state_bias={"failure_signal": 1.8},
     ),
     Skill(
         name="task.continuity",
@@ -65,6 +68,7 @@ _BUILTIN_SKILLS: list[Skill] = [
         ),
         tags=["continuity", "task"],
         triggers=["next_step", "继续推进", "当前任务"],
+        state_bias={"has_active_task": 1.2, "has_next_step": 2.4},
     ),
     Skill(
         name="evidence-first-change",
@@ -75,6 +79,7 @@ _BUILTIN_SKILLS: list[Skill] = [
         ),
         tags=["caution", "verification"],
         triggers=["修改", "写入", "验证", "证据"],
+        state_bias={"wm_pressure": 1.2},
     ),
     Skill(
         name="failure.reflection",
@@ -86,6 +91,7 @@ _BUILTIN_SKILLS: list[Skill] = [
         ),
         tags=["failure", "reflection"],
         triggers=["失败", "报错", "根因", "重试"],
+        state_bias={"failure_signal_ratio": 3.2},
     ),
 ]
 
@@ -138,6 +144,22 @@ def _parse_listish(raw: str) -> list[str]:
     return [p.strip().strip('"\'') for p in parts if p.strip()]
 
 
+def _parse_state_bias(raw: str) -> dict[str, float]:
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    bias: dict[str, float] = {}
+    for part in re.split(r"[,;；\n]+", raw):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        match = re.match(r"^([A-Za-z_][\w-]*)\s*[:=]\s*(-?\d+(?:\.\d+)?)$", chunk)
+        if not match:
+            continue
+        bias[match.group(1)] = float(match.group(2))
+    return bias
+
+
 def _extract_trigger_text(description: str, meta: dict[str, str]) -> list[str]:
     triggers: list[str] = []
     for key in ("trigger", "triggers"):
@@ -182,18 +204,34 @@ _LOW_SIGNAL_TERMS = {
 }
 
 
-def _custom_context_boost(skill: Skill, hay: str) -> float:
-    rules: dict[str, list[str]] = {
-        'interaction': ['好奇', '分歧', '你觉得', '对吗', '确认', '提问', '追问', '真正想要', '理解语境'],
-        'proactive-work': ['接下来', '下一步', '自己判断', '自主决定', '往前推进', '完成任务后', '等回复'],
-        'self-monitoring': ['日志', '异常', '偏了', '漂移', 'edit 失败', '工具执行失败', '文件异常'],
-        'error-handling': ['timeout', 'permission', 'denied', '被拒绝', '报错', '错误', 'exec'],
-    }
-    phrases = rules.get(skill.name, [])
+def _state_score(
+    skill: Skill,
+    *,
+    has_active_task: bool,
+    has_next_step: bool,
+    failure_count: int,
+    high_error_streak: int,
+    wm_pressure: float,
+    failure_threshold: int,
+    wm_pressure_threshold: float,
+) -> float:
+    bias = dict(skill.state_bias or {})
     score = 0.0
-    for phrase in phrases:
-        if phrase.lower() in hay:
-            score += 1.6 if len(phrase) >= 3 else 0.8
+    failure_ratio = failure_count / max(1, failure_threshold)
+    error_ratio = high_error_streak / max(1, failure_threshold - 1 or 1)
+    failure_signal = failure_count > 0 or high_error_streak > 0
+
+    if not has_active_task and not has_next_step:
+        score += bias.get("idle_only", 0.0)
+    if has_active_task:
+        score += bias.get("has_active_task", 0.0)
+    if has_next_step:
+        score += bias.get("has_next_step", 0.0)
+    if failure_signal:
+        score += bias.get("failure_signal", 0.0)
+        score += min(1.0, max(failure_ratio, error_ratio)) * bias.get("failure_signal_ratio", 0.0)
+    if wm_pressure >= max(0.2, wm_pressure_threshold):
+        score += bias.get("wm_pressure", 0.0)
     return score
 
 
@@ -227,7 +265,6 @@ def _context_score(skill: Skill, context_text: str) -> float:
     desc_terms = {t for t in _text_terms(desc, expand_ngrams=False) if t not in _LOW_SIGNAL_TERMS}
     overlap = len(desc_terms & hay_terms)
     score += min(overlap, 8) * 0.28
-    score += _custom_context_boost(skill, hay)
     return score
 
 
@@ -266,6 +303,7 @@ class SkillRegistry:
                 description = meta.get("description") or f"自定义技能: {name}"
                 tags = _parse_listish(meta.get("tags", "")) or ["custom"]
                 triggers = _extract_trigger_text(description, meta)
+                state_bias = _parse_state_bias(meta.get("state_bias", "") or meta.get("state_rules", ""))
                 guidance = _trim_guidance(body or content)
                 if not guidance:
                     continue
@@ -275,6 +313,7 @@ class SkillRegistry:
                     guidance=guidance,
                     tags=tags,
                     triggers=triggers,
+                    state_bias=state_bias,
                     source_path=str(md_file),
                 )
                 existing = next((i for i, s in enumerate(self._skills) if s.name == name), -1)
@@ -303,17 +342,54 @@ class SkillRegistry:
         max_inject: 最多注入数；0 = 不限（向后兼容）。
         """
         all_skills = list(self._skills)
-        if max_inject <= 0:
-            _log.info("[skill.match] selected=%d: %s", len(all_skills), [s.name for s in all_skills])
-            return all_skills
+        context_text = str(_kwargs.get("context_text") or "")
+        has_active_task = bool(_kwargs.get("has_active_task"))
+        has_next_step = bool(_kwargs.get("has_next_step"))
+        failure_count = int(_kwargs.get("failure_count") or 0)
+        high_error_streak = int(_kwargs.get("high_error_streak") or 0)
+        wm_pressure = float(_kwargs.get("wm_pressure") or 0.0)
+        failure_threshold = max(1, int(_kwargs.get("failure_threshold") or 3))
+        wm_pressure_threshold = float(_kwargs.get("wm_pressure_threshold") or 0.4)
         applied_names = set(last_applied or [])
-        priority: list[Skill] = [s for s in all_skills if s.name in applied_names]
-        rest: list[Skill] = [s for s in all_skills if s.name not in applied_names]
-        selected = (priority + rest)[:max_inject]
+
+        scored: list[tuple[float, int, Skill]] = []
+        for index, skill in enumerate(all_skills):
+            score = _state_score(
+                skill,
+                has_active_task=has_active_task,
+                has_next_step=has_next_step,
+                failure_count=failure_count,
+                high_error_streak=high_error_streak,
+                wm_pressure=wm_pressure,
+                failure_threshold=failure_threshold,
+                wm_pressure_threshold=wm_pressure_threshold,
+            )
+            score += _context_score(skill, context_text)
+            if skill.name in applied_names and score > 0:
+                score += 0.35
+            if score > 0:
+                scored.append((score, index, skill))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        ordered = [skill for _, _, skill in scored]
+
+        if max_inject <= 0:
+            selected = ordered + [skill for skill in all_skills if skill not in ordered]
+        elif ordered:
+            selected = ordered[:max_inject]
+        else:
+            selected = [skill for skill in all_skills if skill.name in applied_names][:max_inject]
+            if not selected:
+                selected = all_skills[:max_inject]
+
+        top_scores = ", ".join(
+            f"{skill.name}={score:.2f}" for score, _, skill in scored[:max(3, max_inject or 3)]
+        ) or "none"
         _log.info(
-            "[skill.match] selected=%d/%d (max=%d last_applied=%s): %s",
+            "[skill.match] selected=%d/%d (max=%d last_applied=%s scores=%s): %s",
             len(selected), len(all_skills), max_inject,
             list(last_applied or []),
+            top_scores,
             [s.name for s in selected],
         )
         return selected

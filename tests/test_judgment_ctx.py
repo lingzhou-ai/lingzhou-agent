@@ -1330,3 +1330,69 @@ def test_clip_reply_for_log_strips_memory_context():
     assert clipped == "用户可见回复"
 
 
+def test_assemble_context_prefers_active_task_override_with_inbox():
+    asyncio.run(_assemble_context_prefers_active_task_override_with_inbox())
+
+
+async def _assemble_context_prefers_active_task_override_with_inbox():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "旧回填任务",
+                goal="等待模型加载完成后，再次检查日志确认数据回填进度",
+                next_step="继续检查回填进度",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+            task.extras["inbox_messages"] = ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assemble_context(
+                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                WorkingMemory(capacity=20),
+                store,
+                EpisodicMemory(Path(d) / "memory"),
+                SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                EmotionState.from_config(cfg),
+                active_task=task,
+                user_message="请你使用 puppeteer 去搜索。",
+            )
+
+            assert "收到新的用户指令：请你使用 puppeteer 去搜索。" in text
+        finally:
+            await store.close()
+
+

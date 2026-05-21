@@ -116,6 +116,59 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
+def test_should_not_auto_steer_short_continuation_message():
+    from core.loop.tick import _should_steer_active_task_from_user_message
+    from memory.task_store import Task
+
+    task = Task(
+        id=1,
+        title="继续分析 chat 回复",
+        status="in_progress",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="继续分析 chat 回复为什么丢失",
+        next_step="继续分析这个问题",
+    )
+
+    assert _should_steer_active_task_from_user_message(task, "继续分析") is False
+
+
+def test_distinct_user_message_is_queued_into_active_task_inbox():
+    asyncio.run(_distinct_user_message_is_queued_into_active_task_inbox())
+
+
+async def _distinct_user_message_is_queued_into_active_task_inbox():
+    from core.loop.tick import _maybe_steer_active_task_from_user_message
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "steer-user-message.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "旧回填任务",
+                goal="等待模型加载完成后，再次检查日志确认数据回填进度",
+                next_step="继续检查回填进度",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            updated = await _maybe_steer_active_task_from_user_message(
+                store,
+                task,
+                "请你使用 puppeteer 去搜索。",
+            )
+
+            assert updated is not None
+            assert updated.extras["inbox_messages"] == ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+
+            persisted = await store.get_task_by_id(task_id)
+            assert persisted is not None
+            assert persisted.extras["inbox_messages"] == ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+        finally:
+            await store.close()
+
+
 def test_dev_model_switch_syncs_routing_entries_following_primary_model():
     from cli.dev import _sync_routing_models_on_primary_switch
 

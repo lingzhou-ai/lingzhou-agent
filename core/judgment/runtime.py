@@ -546,6 +546,7 @@ class JudgmentLayer:
         episodic: "EpisodicMemory",
         semantic: "SemanticMemory",
         emotion: "EmotionState",
+        active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
         judgment_signals: "JudgmentSignals | None" = None,
@@ -567,6 +568,7 @@ class JudgmentLayer:
         try:
             context_text = await self._assemble_context(
                 percept, wm, task_store, episodic, semantic, emotion,
+                active_task=active_task,
                 user_message=user_message,
                 ethos_state=ethos_state,
                 judgment_signals=judgment_signals,
@@ -945,6 +947,7 @@ class JudgmentLayer:
         episodic: "EpisodicMemory",
         semantic: "SemanticMemory",
         emotion: "EmotionState",
+        active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
         judgment_signals: "JudgmentSignals | None" = None,
@@ -958,7 +961,7 @@ class JudgmentLayer:
         routing_overrides: "dict[str, str] | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
-        task = await task_store.get_active()
+        task = active_task if active_task is not None else await task_store.get_active()
 
         if task:
             failures = await task_store.list_failures_for_task(
@@ -1017,9 +1020,35 @@ class JudgmentLayer:
 
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
+        skill_context_parts: list[str] = []
+        if user_message:
+            skill_context_parts.append(user_message)
+        inbox_messages = task.extras.get("inbox_messages") if task and isinstance(task.extras, dict) else []
+        if task:
+            skill_context_parts.extend([
+                task.title or "",
+                task.goal or "",
+                task.current_step or "",
+                task.next_step or "",
+            ])
+            if isinstance(inbox_messages, list):
+                skill_context_parts.extend(str(message or "") for message in inbox_messages[:3])
+        if current_action:
+            skill_context_parts.append(current_action)
+        for failure in failures[:3]:
+            skill_context_parts.append(f"{failure.kind} {failure.summary}")
+        has_pending_inbox = bool(isinstance(inbox_messages, list) and inbox_messages)
         skills = self._skills.match_for_context(
             last_applied=self._last_applied_skill_names,
             max_inject=getattr(self._cfg.thresholds, "skill_max_inject", 3),
+            wm_pressure=wm.pressure,
+            has_active_task=bool(task),
+            has_next_step=bool(task and (task.next_step or "").strip() and not has_pending_inbox),
+            failure_count=len(failures),
+            high_error_streak=getattr(perception_replay, "high_error_streak", 0),
+            context_text="\n".join(part for part in skill_context_parts if part),
+            failure_threshold=getattr(self._cfg.thresholds, "skill_failure_threshold", 3),
+            wm_pressure_threshold=getattr(self._cfg.thresholds, "skill_wm_pressure_threshold", 0.4),
         )
         self._last_selected_skills = list(skills)
         if skills:
