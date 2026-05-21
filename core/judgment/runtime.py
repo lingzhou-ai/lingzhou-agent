@@ -137,9 +137,13 @@ def _rewrite_complex_act_to_task_plan(
     """若 LLM 对复杂请求直接输出 mutation 且有 next_step，先拆为 task.plan。
 
     只对非读取类工具生效；file.read / memory.search 等读取工具直接透传。
+    任务管理类工具（task.complete/advance/update/fail/add）是状态转换动作，不改写。
     """
     tool_id = action.chosen_action_id or ""
     if tool_id in _READER_TOOLS:
+        return action
+    # 任务管理类工具直接透传，不改写为 task.plan（它们本身就是任务执行步骤）
+    if tool_id.startswith("task."):
         return action
     if active_task is None:
         return action

@@ -341,10 +341,25 @@ class CognitionLoop:
         if not signal.should_explore:
             return
 
-        # 去重：队列中已存在未完成的 self_drive 任务时跳过，防止同目标反复入队
+        # 去重①：队列中已存在未完成的 self_drive 任务时跳过
         runnable = await self._task_store.list_runnable_tasks(limit=20)
         if any(t.source == "self_drive" for t in runnable):
             return
+
+        # 去重②：最近 2 小时内已有 self_drive 任务完成，跳过（防止刚完成就重新触发）
+        import time as _time
+        from datetime import datetime as _dt, timezone as _tz
+        _recent_done = await self._task_store.list_tasks(status="done", limit=10)
+        _two_hours_ago = _time.time() - 7200
+        for _t in _recent_done:
+            if getattr(_t, "source", None) != "self_drive":
+                continue
+            try:
+                _ts = _dt.fromisoformat(_t.created_at.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                continue
+            if _ts >= _two_hours_ago:
+                return
 
         task_template = self._self_drive.generate_exploration_task(
             signal.suggested_domain or "self_evolution"
@@ -462,8 +477,9 @@ class CognitionLoop:
         task_id = str(active_task.id) if active_task else None
         summary = "\n".join(f"- [{i['kind']}] {i['content']}" for i in items)
         self._episodic.record(role="consolidation", content=summary, task_id=task_id)
-        # 保留身份锚点(bootstrap_identity),不参与周期轮换
-        self._wm.clear(preserve_kinds={"bootstrap_identity"})
+        # 保留身份锚点(bootstrap_identity)和自我感知信号(self_awareness)
+        # self_awareness 包含行为循环检测等信号，清除后 LLM 会失去对空转的感知
+        self._wm.clear(preserve_kinds={"bootstrap_identity", "self_awareness"})
         # 清空后注入任务锚点,避免下一轮因 WM 为空而丢失任务上下文
         if active_task:
             _progress_line = ""

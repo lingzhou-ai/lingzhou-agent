@@ -56,6 +56,9 @@ class CuriosityState:
     prediction_error_ema: float = 0.1  # 指数移动平均
     surprise_count: int = 0            # 近期惊奇事件数
 
+    # 域冷却：记录每个域上次被选中并生成任务的时间戳（monotonic）
+    last_explored_at: dict[str, float] = field(default_factory=dict)
+
     def decay(self, rate: float = 0.05) -> None:
         """自然衰减 — 久不探索的兴趣会下降。"""
         now = time.monotonic()
@@ -205,17 +208,27 @@ class SelfDriveEngine:
             should_explore = True
             rationale_parts.append(f"惊奇事件 {s.surprise_count} 个")
 
-        # 选择探索领域
+        # 选择探索领域（跳过冷却期内的域，默认 3600s）
+        _DOMAIN_COOLDOWN = 3600.0  # 同一域 60 分钟内不重复生成任务
         if should_explore:
-            # 选兴趣最高的领域（但加一点随机性避免卡死）
-            ranked = sorted(s.interests.items(), key=lambda x: -x[1])
-            # 60% 概率选最高，40% 概率随机选（避免只在一个领域循环）
-            import random
-            if random.random() < 0.6 or len(ranked) <= 1:
-                suggested_domain = ranked[0][0]
+            now_mono = time.monotonic()
+            # 选兴趣最高的领域（但加一点随机性避免卡死），过滤掉冷却中的域
+            ranked = sorted(
+                [(d, v) for d, v in s.interests.items()
+                 if now_mono - s.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
+                key=lambda x: -x[1],
+            )
+            if not ranked:
+                # 所有域均在冷却期 → 不触发探索
+                should_explore = False
+                rationale_parts.append("所有域均在冷却期，跳过")
             else:
-                suggested_domain = random.choice(ranked[1:])[0]
-            rationale_parts.append(f"探索领域: {suggested_domain}")
+                import random
+                if random.random() < 0.6 or len(ranked) <= 1:
+                    suggested_domain = ranked[0][0]
+                else:
+                    suggested_domain = random.choice(ranked[1:])[0]
+                rationale_parts.append(f"探索领域: {suggested_domain}")
 
         rationale = "; ".join(rationale_parts) if rationale_parts else "好奇心未达阈值"
         _log.debug(
@@ -274,4 +287,7 @@ class SelfDriveEngine:
             },
         }
 
+        # 记录本次探索的域和时间，用于冷却判断
+        self._state.last_explored_at[domain] = time.monotonic()
+        self._save()
         return domain_tasks.get(domain, domain_tasks["self_evolution"])

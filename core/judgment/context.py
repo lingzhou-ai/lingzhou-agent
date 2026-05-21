@@ -527,25 +527,6 @@ def apply_context_budget(
     return budgeted
 
 
-def _validate_context_schema(messages: list[dict]) -> tuple[bool, str]:
-    """严格校验上下文消息列表 schema，防止格式污染导致 LLM 解析失败。
-    返回 (is_valid, error_message)
-    """
-    if not isinstance(messages, list):
-        return False, "context must be a list of message dicts"
-    valid_roles = {"system", "user", "assistant", "tool"}
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            return False, f"message[{i}] is not a dict"
-        if "role" not in msg or "content" not in msg:
-            return False, f"message[{i}] missing 'role' or 'content'"
-        if msg["role"] not in valid_roles:
-            return False, f"message[{i}] has invalid role: {msg['role']}"
-        if not isinstance(msg["content"], str):
-            return False, f"message[{i}] 'content' must be a string"
-    return True, ""
-
-
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
@@ -724,9 +705,8 @@ def _fmt_cognitive_signals(signals: "CognitiveSignals | None") -> str:
 
 
 
-# --- 增量加载与严格 Schema 校验 ---
+# --- 严格 Schema 校验 ---
 _CONTEXT_SCHEMA_KEYS = ["identity", "tasks", "memory", "perception"]
-_context_cache: dict[str, Any] = {"last_hash": "", "last_payload": None}
 
 def _validate_context_schema(ctx: dict) -> tuple[bool, str]:
     """严格校验上下文结构，防止畸形数据注入。"""
@@ -735,22 +715,17 @@ def _validate_context_schema(ctx: dict) -> tuple[bool, str]:
         return False, f"缺少必需字段: {', '.join(missing)}"
     return True, "ok"
 
-def _should_rebuild_context(current_data: dict) -> bool:
-    """基于数据哈希判断是否需要重新序列化上下文。"""
-    import hashlib
-    current_hash = hashlib.md5(json.dumps(current_data, sort_keys=True, default=str).encode()).hexdigest()
-    if current_hash == _context_cache["last_hash"]:
-        return False
-    _context_cache["last_hash"] = current_hash
-    return True
-
 def _fmt_blind_spots(probes: list[Any], self_model_tokens: int = 0) -> str:
     """计算当前可能存在的感知盲点——LLM 意识不到的缺失。
 
     不是命令，是让 LLM 自己决定是否需要关注这些潜在盲区。
     """
     has_hermesclaw = any("hermesclaw" in (getattr(p, "purpose", "") or "").lower() or "19997" in (getattr(p, "spec", "") or "") for p in probes)
-    has_api_quota = any("quota" in (getattr(p, "purpose", "") or "").lower() or "api" in (getattr(p, "purpose", "") or "").lower() for p in probes)
+    has_api_quota = any(
+        "quota" in pur or "api" in pur
+        for p in probes
+        for pur in ((getattr(p, "purpose", "") or "").lower(),)
+    )
     has_git = any("git" in (getattr(p, "purpose", "") or "").lower() for p in probes)
 
     gaps = []

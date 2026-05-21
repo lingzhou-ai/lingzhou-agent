@@ -44,12 +44,12 @@ _WRITE_ALLOW_ROOTS: frozenset[str] = frozenset({
 })
 
 
-def _path_guard(path: Path, workspace_dir: str = "") -> tuple[bool, str]:
+def _path_guard(path: Path) -> tuple[bool, str]:
     """路径安全守卫。
     
     返回 (is_safe, warning)。
     - 路径穿越检测（../etc/passwd 等）
-    - 可选 workspace 沙箱（_WRITE_ALLOW_ROOTS + 运行时 workspace_dir）
+    - 可选 workspace 沙箱
     """
     try:
         resolved = path.resolve()
@@ -57,19 +57,8 @@ def _path_guard(path: Path, workspace_dir: str = "") -> tuple[bool, str]:
         return False, f"无法解析路径: {path}"
     
     # 路径穿越检测：确保解析后的路径仍在预期范围内
-    effective_roots: set[str] = set()
-    for r in _WRITE_ALLOW_ROOTS:
-        try:
-            effective_roots.add(str(Path(r).resolve()))
-        except Exception:
-            effective_roots.add(r)
-    if workspace_dir:
-        try:
-            effective_roots.add(str(Path(workspace_dir).resolve()))
-        except Exception:
-            effective_roots.add(workspace_dir)
-    if effective_roots:
-        for root in effective_roots:
+    if _WRITE_ALLOW_ROOTS:
+        for root in _WRITE_ALLOW_ROOTS:
             try:
                 resolved.relative_to(root)
                 break
@@ -78,7 +67,7 @@ def _path_guard(path: Path, workspace_dir: str = "") -> tuple[bool, str]:
         else:
             return False, (
                 f"路径 {path} 不在允许的工作区内。"
-                f"只能写入 {', '.join(sorted(effective_roots))} 内的文件。"
+                f"只能写入 {', '.join(_WRITE_ALLOW_ROOTS)} 内的文件。"
             )
     
     return True, ""
@@ -163,7 +152,32 @@ def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
     return "\n".join(warnings) if warnings else "", None
 
 
+def _verify_python_syntax(path: Path, content: str) -> str | None:
+    """验证 Python 文件语法。返回 None 表示通过，否则返回错误信息。"""
+    if not path.suffix == '.py':
+        return None
+    try:
+        import ast
+        ast.parse(content)
+        return None
+    except SyntaxError as e:
+        return f"语法错误: {e}"
+    except Exception as e:
+        return f"验证异常: {e}"
 
+
+def _pycompile_check(path: Path) -> str | None:
+    """对磁盘上已写入的 .py 文件执行 py_compile.compile()，返回 None 表示通过，否则返回错误信息。"""
+    if path.suffix != ".py":
+        return None
+    try:
+        import py_compile
+        py_compile.compile(str(path), doraise=True)
+        return None
+    except py_compile.PyCompileError as e:
+        return f"py_compile 校验失败: {e}"
+    except Exception as e:
+        return f"py_compile 异常: {e}"
 
 
 def _repo_root() -> Path:
@@ -452,8 +466,7 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="写入内容为空", error="EmptyContent", skipped=True)
 
     # 路径守卫：沙箱 + 穿越检测
-    _ws = _workspace_dir(ctx)
-    ok, err = _path_guard(path, workspace_dir=str(_ws) if _ws else "")
+    ok, err = _path_guard(path)
     if not ok:
         return ToolResult(summary=err, error="PathBlocked", skipped=True)
 
@@ -477,6 +490,15 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             )
         
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 写前语法验证（.py 文件）：语法错误直接阻断，不写入损坏文件
+        if path.suffix == ".py":
+            syntax_error = _verify_python_syntax(path, text)
+            if syntax_error:
+                return ToolResult(
+                    summary=f"拒绝写入: {path}\n{syntax_error}\n备份（若有）: {path.with_suffix('.py.lingzhou-backup')}",
+                    error="PythonSyntaxError",
+                    skipped=True,
+                )
         # 原子写入：先写临时文件，成功后再 rename
         tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
         tmp_path.write_text(text, encoding="utf-8")
@@ -484,13 +506,17 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         summary = f"写入成功: {path} ({len(text)} 字符)"
         if guard_warning:
             summary += f"\n{guard_warning}"
+        compile_err = _pycompile_check(path)
+        if compile_err:
+            summary += f"\n⚠️ {compile_err}"
+        syntax_ok = compile_err is None
         return ToolResult(
             summary=summary,
             resource_key=str(path),
             fingerprint=f"write:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
-            state_delta={"file": "written", "chars": len(text), "syntax_ok": True},
-            metadata={"path": str(path), "chars": len(text), "syntax_ok": True},
+            state_delta={"file": "written", "chars": len(text), "syntax_ok": syntax_ok},
+            metadata={"path": str(path), "chars": len(text), "syntax_ok": syntax_ok},
         )
     except Exception as e:
         _log.exception("写入文件失败: %s", path)
@@ -545,8 +571,7 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             )
 
         # 路径守卫
-        _ws = _workspace_dir(ctx)
-        ok, err = _path_guard(path, workspace_dir=str(_ws) if _ws else "")
+        ok, err = _path_guard(path)
         if not ok:
             return ToolResult(summary=err, error="PathBlocked", skipped=True)
         
@@ -637,6 +662,15 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if content == original:
             return ToolResult(summary=f"编辑未产生变化: {path}", error="NoChange", skipped=True)
 
+        # 写前语法验证（.py 文件）：语法错误直接阻断，不写入损坏文件
+        if path.suffix == ".py":
+            syntax_error = _verify_python_syntax(path, content)
+            if syntax_error:
+                return ToolResult(
+                    summary=f"拒绝编辑: {path}\n{syntax_error}\n备份（若有）: {path.with_suffix('.py.lingzhou-backup')}",
+                    error="PythonSyntaxError",
+                    skipped=True,
+                )
         # 原子写入
         tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
         tmp_path.write_text(content, encoding="utf-8")
@@ -649,6 +683,10 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         summary = f"编辑成功: {path}（{changes_made} 处替换）\n{applied_summary}"
         if guard_warning:
             summary += f"\n{guard_warning}"
+        compile_err = _pycompile_check(path)
+        if compile_err:
+            summary += f"\n⚠️ {compile_err}"
+        syntax_ok = compile_err is None
         payload = {"path": str(path), "changes": changes_made, "applied": applied}
         return ToolResult(
             summary=summary,
@@ -656,8 +694,8 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=str(path),
             fingerprint=f"edit:{hashlib.md5(content.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
-            state_delta={"file": "edited", "changes": changes_made, "syntax_ok": True},
-            metadata={**payload, "syntax_ok": True},
+            state_delta={"file": "edited", "changes": changes_made, "syntax_ok": syntax_ok},
+            metadata={**payload, "syntax_ok": syntax_ok},
         )
     except Exception as e:
         _log.exception("编辑文件失败: %s", path)
@@ -686,8 +724,7 @@ async def file_delete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if path.is_dir():
         return ToolResult(summary=f"目标是目录而非文件: {path}（file.delete 仅删除文件）", error="IsDirectory", skipped=True)
 
-    _ws = _workspace_dir(ctx)
-    ok, err = _path_guard(path, workspace_dir=str(_ws) if _ws else "")
+    ok, err = _path_guard(path)
     if not ok:
         return ToolResult(summary=err, error="PathBlocked", skipped=True)
 
