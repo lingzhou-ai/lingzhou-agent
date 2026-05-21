@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -21,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 _log = logging.getLogger("core.skill")
+
+_SEED_SYNC_MANIFEST = ".seed-sync.json"
 
 
 @dataclass
@@ -87,25 +91,90 @@ def _iter_skill_files(skills_dir: Path) -> list[Path]:
     return files
 
 
+def _skill_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _seed_sync_manifest_path(skills_dir: Path) -> Path:
+    return skills_dir / _SEED_SYNC_MANIFEST
+
+
+def _load_seed_sync_manifest(skills_dir: Path) -> dict[str, str]:
+    manifest_path = _seed_sync_manifest_path(skills_dir)
+    if not manifest_path.exists():
+        return {}
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip()
+    }
+
+
+def _write_seed_sync_manifest(skills_dir: Path, manifest: dict[str, str]) -> None:
+    manifest_path = _seed_sync_manifest_path(skills_dir)
+    if not manifest:
+        manifest_path.unlink(missing_ok=True)
+        return
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _sync_seed_skill_file(src: Path, dest: Path, *, relative: str, manifest: dict[str, str]) -> int:
+    source_text = src.read_text(encoding="utf-8")
+    source_hash = _skill_digest(source_text)
+
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(source_text, encoding="utf-8")
+        manifest[relative] = source_hash
+        return 1
+
+    dest_text = dest.read_text(encoding="utf-8")
+    dest_hash = _skill_digest(dest_text)
+    tracked_hash = manifest.get(relative, "")
+
+    if dest_hash == source_hash:
+        manifest[relative] = source_hash
+        return 0
+
+    if tracked_hash and dest_hash == tracked_hash:
+        dest.write_text(source_text, encoding="utf-8")
+        manifest[relative] = source_hash
+        return 1
+
+    manifest.pop(relative, None)
+    return 0
+
+
 def seed_workspace_skills(workspace_dir: Path) -> int:
     seed_dir = _seed_skills_dir()
     skills_dir = workspace_dir / "skills"
     if not seed_dir.exists():
         return 0
-    if skills_dir.exists() and _iter_skill_files(skills_dir):
-        return 0
     written = 0
     skills_dir.mkdir(parents=True, exist_ok=True)
+    manifest = _load_seed_sync_manifest(skills_dir)
+    known_relatives: set[str] = set()
     for src in _iter_skill_files(seed_dir):
-        relative = src.relative_to(seed_dir)
-        dest = skills_dir / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            continue
-        dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-        written += 1
+        relative_path = src.relative_to(seed_dir)
+        relative = relative_path.as_posix()
+        known_relatives.add(relative)
+        dest = skills_dir / relative_path
+        written += _sync_seed_skill_file(src, dest, relative=relative, manifest=manifest)
+    for relative in list(manifest):
+        if relative not in known_relatives:
+            manifest.pop(relative, None)
+    _write_seed_sync_manifest(skills_dir, manifest)
     if written:
-        _log.info("[skill] 已向 %s 播种 %d 个初始 skills", skills_dir, written)
+        _log.info("[skill] 已向 %s 同步 %d 个默认 skills", skills_dir, written)
     return written
 
 

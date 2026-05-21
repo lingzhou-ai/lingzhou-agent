@@ -2578,6 +2578,91 @@ workspace authoritative
     assert written_again == 0
 
 
+def test_seed_workspace_skills_updates_unmodified_workspace_copy(monkeypatch, tmp_path):
+    from core import skill as skill_mod
+
+    seed_dir = tmp_path / "seed"
+    seed_skill_dir = seed_dir / "runtime.bootstrap"
+    seed_skill_dir.mkdir(parents=True)
+    seed_file = seed_skill_dir / "SKILL.md"
+    seed_file.write_text(
+        """---
+name: runtime.bootstrap
+description: seed v1
+---
+seed v1
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skill_mod, "_seed_skills_dir", lambda: seed_dir)
+
+    written = skill_mod.seed_workspace_skills(tmp_path)
+    target = tmp_path / "skills" / "runtime.bootstrap" / "SKILL.md"
+    assert written == 1
+    assert "seed v1" in target.read_text(encoding="utf-8")
+
+    seed_file.write_text(
+        """---
+name: runtime.bootstrap
+description: seed v2
+---
+seed v2
+""",
+        encoding="utf-8",
+    )
+
+    written_again = skill_mod.seed_workspace_skills(tmp_path)
+    assert written_again == 1
+    assert "seed v2" in target.read_text(encoding="utf-8")
+
+
+def test_seed_workspace_skills_preserves_workspace_override_on_seed_change(monkeypatch, tmp_path):
+    from core import skill as skill_mod
+
+    seed_dir = tmp_path / "seed"
+    seed_skill_dir = seed_dir / "runtime.bootstrap"
+    seed_skill_dir.mkdir(parents=True)
+    seed_file = seed_skill_dir / "SKILL.md"
+    seed_file.write_text(
+        """---
+name: runtime.bootstrap
+description: seed v1
+---
+seed v1
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skill_mod, "_seed_skills_dir", lambda: seed_dir)
+
+    skill_mod.seed_workspace_skills(tmp_path)
+    target = tmp_path / "skills" / "runtime.bootstrap" / "SKILL.md"
+    target.write_text(
+        """---
+name: runtime.bootstrap
+description: workspace override
+---
+workspace override
+""",
+        encoding="utf-8",
+    )
+
+    seed_file.write_text(
+        """---
+name: runtime.bootstrap
+description: seed v2
+---
+seed v2
+""",
+        encoding="utf-8",
+    )
+
+    written_again = skill_mod.seed_workspace_skills(tmp_path)
+    assert written_again == 0
+    assert "workspace override" in target.read_text(encoding="utf-8")
+
+
 def test_skill_registry_prefers_contextual_skill_over_builtin_state_bias(tmp_path):
     from core.skill import SkillRegistry
 
