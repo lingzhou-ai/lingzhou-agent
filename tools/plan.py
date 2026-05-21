@@ -81,6 +81,10 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             skipped=True,
         )
 
+    # 提前计算统计量（幂等检查和摘要均依赖）
+    done = sum(1 for s in clean_plan if s["status"] == "completed")
+    pending = sum(1 for s in clean_plan if s["status"] == "pending")
+
     # 幂等检查：结构不变（步骤数 + 已完成数 + 已有 in_progress）就拒绝，引导 LLM 直接执行
     # 注：不用精确文本比较 —— LLM 会微变描述逃过精json匹配，结构匹配更鲁棒
     existing_plan = (task.extras or {}).get("plan") or []
@@ -102,8 +106,6 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     await ctx.task_store.update_task_data(task.id, {"plan": clean_plan})
 
     # 生成摘要
-    pending = sum(1 for s in clean_plan if s["status"] == "pending")
-    done = sum(1 for s in clean_plan if s["status"] == "completed")
     active = next((s["step"] for s in clean_plan if s["status"] == "in_progress"), None)
     lines = [f"任务 #{task.id} 计划已更新: {len(clean_plan)} 步 ({done}✅ {in_progress_count}🔄 {pending}⏳)"]
     for i, s in enumerate(clean_plan, 1):

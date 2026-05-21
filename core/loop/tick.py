@@ -824,7 +824,7 @@ async def _post_tick_memory_impl(
                     ))
                 await loop._task_store.set_fact(marker, "1", scope="system")
 
-    if result.summary and not result.skipped:
+    if result.summary and (not result.skipped or result.error):
         tool_id = action.chosen_action_id or ""
         key_param = action_key_param(action.params)
         wm_prefix = f"[{tool_id}{'  ' + key_param if key_param else ''}] "

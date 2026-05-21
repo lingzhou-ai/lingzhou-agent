@@ -42,6 +42,7 @@ async def _run_continue_phase(
     cfg = loop._cfg
     affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}
     _continue_plan_streak = 0  # task.plan 连续调用计数（continue phase 专属防死锁）
+    _wm_delta: list[dict] = []  # 本 tick continue 阶段新增的 WM 条目（不在 tool_history 里）
 
     for inner in range(cfg.loop.max_tool_rounds - 1):
         if await loop._task_store.has_pending_chat_message():
@@ -61,6 +62,7 @@ async def _run_continue_phase(
             prefer_tier=next_tier or None,
             thinking_override=continue_thinking,
             routing_overrides=loop._pending_routing_overrides,
+            wm_delta=_wm_delta or None,
         )
 
         if cont.decision == "act":
@@ -74,14 +76,16 @@ async def _run_continue_phase(
                         "[continue] task.plan 连续 %d 次，强制中断 continue 循环",
                         _continue_plan_streak,
                     )
-                    loop._wm.add(WMItem(
+                    _forced_break = WMItem(
                         kind="self_awareness",
                         content=(
                             f"[强制中断] continue 阶段连续 {_continue_plan_streak} 次 task.plan，"
                             "下一 tick 必须直接执行计划中的工具，禁止再次 plan"
                         ),
                         priority=loop._cfg.thresholds.wm_pri_critical,
-                    ))
+                    )
+                    loop._wm.add(_forced_break)
+                    _wm_delta.append(_forced_break.to_dict())
                     break
             else:
                 _continue_plan_streak = 0
@@ -92,19 +96,24 @@ async def _run_continue_phase(
                 cont.params,
             ):
                 loop._wm.add(behavior_item)
+                _wm_delta.append(behavior_item.to_dict())
             loop._behavior.apply_cognitive_probe(cognitive_signals)
 
         cont_result = await loop._execution.dispatch(cont, ctx)
 
-        if cont_result.summary and not cont_result.skipped:
+        if cont_result.summary and (not cont_result.skipped or cont_result.error):
             tool_name = cont.chosen_action_id or ""
             key_param = action_key_param(cont.params)
             prefix = f"[{tool_name}{'  ' + key_param if key_param else ''}] "
-            loop._wm.add(WMItem(
+            _result_item = WMItem(
                 kind=tool_name or cont_result.kind,
                 content=prefix + cont_result.summary,
                 priority=cont_result.priority,
-            ))
+            )
+            loop._wm.add(_result_item)
+            if cont_result.skipped and cont_result.error:
+                # error 类 skipped 同步追加到 wm_delta，确保本轮后续 continue 轮能感知
+                _wm_delta.append(_result_item.to_dict())
         if cont.reflection and cont.reflection.strip():
             loop._wm.add(WMItem(
                 kind="synthesis",

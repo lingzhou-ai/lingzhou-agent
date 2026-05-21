@@ -58,6 +58,7 @@ from .context import (
     _fmt_shell_capabilities,
     _fmt_skill_catalog,
     _fmt_skills,
+    _fmt_primary_skill,
     _fmt_soul,
     _fmt_task,
     _fmt_tools,
@@ -703,6 +704,7 @@ class JudgmentLayer:
         thinking_override: str | None = None,
         routing_overrides: "dict[str, str] | None" = None,
         reply_only: bool = False,
+        wm_delta: "list[dict[str, Any]] | None" = None,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
 
@@ -719,10 +721,19 @@ class JudgmentLayer:
             return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
 
         history_json_block, history_block = _structured_tool_history_window(tool_history)
+        # 本轮新增 WM 条目（behavior_tracker 警告等不在 tool_history 里的感知更新）
+        wm_delta_block = ""
+        if wm_delta:
+            delta_lines = [
+                f"- [{item.get('kind', '')}|p={item.get('priority', 0):.2f}] {item.get('content', '')}"
+                for item in wm_delta
+            ]
+            wm_delta_block = "## 本轮新增工作记忆（WM 更新，初始上下文之后）\n" + "\n".join(delta_lines) + "\n\n"
         if reply_only:
             continuation_context = (
                 f"{self._last_context_text}\n\n"
                 "---\n"
+                f"{wm_delta_block}"
                 "## 结构化最近工具结果(JSON)\n"
                 f"{history_json_block}\n\n"
                 "## 本轮已执行工具历史\n"
@@ -739,6 +750,7 @@ class JudgmentLayer:
             continuation_context = (
                 f"{self._last_context_text}\n\n"
                 "---\n"
+                f"{wm_delta_block}"
                 "## 结构化最近工具结果(JSON)\n"
                 f"{history_json_block}\n\n"
                 "## 本轮已执行工具历史\n"
@@ -1045,7 +1057,7 @@ class JudgmentLayer:
             "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
             "perception_replay_section": _fmt_perception_replay(perception_replay),
             "skills_catalog_section": _fmt_skill_catalog(all_skills),
-            "primary_skill_section": "",
+            "primary_skill_section": _fmt_primary_skill(skills[0] if skills else None),
             "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
