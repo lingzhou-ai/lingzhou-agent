@@ -91,7 +91,7 @@ class SelfModel:
 
     def _update_cost(self, prompt: int, completion: int) -> None:
         """按模型定价估算成本（USD）。"""
-        prices = _MODEL_PRICES.get(self.primary_model.split("/", 1)[1], {})
+        prices = _MODEL_PRICES.get(self.primary_model.split("/", 1)[-1], {})
         input_price = prices.get("input", 0.0)
         output_price = prices.get("output", 0.0)
         self.estimated_cost_usd += (prompt / 1_000_000) * input_price + (completion / 1_000_000) * output_price
@@ -131,6 +131,7 @@ class SelfModel:
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             "total_tokens": self.total_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
             "started_at": self.started_at,
         }, ensure_ascii=False)
 
