@@ -39,6 +39,18 @@ def test_working_memory():
     assert 0.0 < wm.pressure <= 1.0
 
 
+def test_working_memory_token_budget_uses_mixed_text_estimate():
+    from memory.working import WorkingMemory, WMItem
+
+    wm = WorkingMemory(capacity=5, token_budget=5)
+    wm.add(WMItem(kind="high", content="保留 中文上下文", priority=0.9))
+    wm.add(WMItem(kind="low", content="abcdefghi", priority=0.1))
+
+    top = wm.get_top()
+    assert len(top) == 1
+    assert top[0]["kind"] == "high"
+
+
 def test_emotion_state_ema():
     from core.perception import EmotionState
     e = EmotionState(valence=0.6, arousal=0.5)

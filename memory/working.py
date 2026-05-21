@@ -12,6 +12,15 @@ from datetime import datetime, UTC
 from typing import Any
 
 
+def _estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    ascii_chars = sum(1 for char in text if ord(char) < 128 and not char.isspace())
+    other = sum(1 for char in text if ord(char) >= 128 and not ("\u4e00" <= char <= "\u9fff"))
+    return cjk + max(1, ascii_chars // 4) + max(1, other // 2)
+
+
 @dataclass(order=True)
 class WMItem:
     # heapq 是最小堆；_sort_key 存正优先级，heappop 弹出最小值 = 最低优先级 = 正确驱逐方向
@@ -26,10 +35,8 @@ class WMItem:
 
     @property
     def estimated_tokens(self) -> int:
-        """粗估 token 数：中英混合取 len//4 作保守下界，中文字符按 2x 修正。"""
-        n = len(self.content)
-        zh = sum(1 for c in self.content if "\u4e00" <= c <= "\u9fff")
-        return max(1, (n + zh) // 4)
+        """粗估 token 数；口径与 judgment context 预算保持一致。"""
+        return _estimate_tokens(self.content)
 
     def to_dict(self) -> dict[str, Any]:
         return {

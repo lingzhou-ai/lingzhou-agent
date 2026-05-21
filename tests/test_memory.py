@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import tempfile
 import time
 from functools import lru_cache
@@ -163,6 +164,29 @@ def test_episodic_search_exclude_task_id_blocks_self_echo():
             f"旧任务的目标文本回显应被过滤，实际: {result_excl!r}"
 
 
+def test_episodic_record_keeps_narrative_when_fts_sync_fails():
+    """FTS 同步失败时，.md 和 narrative 表仍应保持一致。"""
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+
+        def _boom(*args, **kwargs):
+            raise sqlite3.OperationalError("fts broken")
+
+        ep._sync_narrative_fts = _boom  # type: ignore[method-assign]
+        ep.record("user", "记录一条需要保留的情节", task_id="task-1")
+
+        md_text = (Path(d) / "task-task-1.md").read_text(encoding="utf-8")
+        assert "记录一条需要保留的情节" in md_text
+
+        rows = ep.query_recent_narrative(hours=24, limit=10)
+        assert any(row["content"] == "记录一条需要保留的情节" for row in rows)
+
+        turns = ep.get_recent_turns("task-1", limit=5)
+        assert any(turn["content"] == "记录一条需要保留的情节" for turn in turns)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SemanticMemory — retrieve() 向量路径 & retrieve_multi_anchor 向量对齐
 # ══════════════════════════════════════════════════════════════════════════════
@@ -240,6 +264,26 @@ def test_semantic_fts_short_ascii_filtered():
         if results_mixed:
             assert results_mixed[0]["id"] == "cn", \
                 f"含中文关键词的节点应排第一，实际: {[r['id'] for r in results_mixed]}"
+
+
+def test_semantic_upsert_disables_fts_when_sync_fails_and_retrieval_falls_back():
+    """FTS 同步失败后，不应继续依赖残缺索引。"""
+    from memory.semantic import SemanticMemory, MemoryNode
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0)
+
+        def _boom(*args, **kwargs):
+            raise sqlite3.OperationalError("fts broken")
+
+        sm._sync_node_fts = _boom  # type: ignore[method-assign]
+        sm.upsert(MemoryNode(id="node-1", kind="fact", title="模块架构分析", body="关键检索路径", activation=0.5))
+
+        assert sm.fts5_ok is False
+
+        results = sm.retrieve("模块架构 关键检索", top_k=3)
+        assert results
+        assert results[0]["id"] == "node-1"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

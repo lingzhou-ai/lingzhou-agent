@@ -282,16 +282,38 @@ class SemanticMemory:
                 node.created_at,
             ),
         )
+        self._conn.commit()
         # P1-A: 同步 FTS5 索引（DELETE+INSERT 模式，保证幂等）
         if self._fts5_ok:
             try:
-                self._conn.execute("DELETE FROM nodes_fts WHERE id = ?", (node.id,))
-                self._conn.execute(
-                    "INSERT INTO nodes_fts(id, title, body, tags) VALUES (?, ?, ?, ?)",
-                    (node.id, node.title, node.body, tags_json),
+                self._sync_node_fts(
+                    node_id=node.id,
+                    title=node.title,
+                    body=node.body,
+                    tags_json=tags_json,
                 )
-            except Exception:
-                pass  # FTS5 失败不阻断主写入
+            except Exception as exc:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                self._fts5_ok = False
+                _log.warning("[semantic] FTS5 同步失败，降级为全表扫描: %s", exc)
+
+    def _sync_node_fts(
+        self,
+        *,
+        node_id: str,
+        title: str,
+        body: str,
+        tags_json: str,
+    ) -> None:
+        self._conn.execute("DELETE FROM nodes_fts WHERE id = ?", (node_id,))
+        self._conn.execute(
+            "INSERT INTO nodes_fts(id, title, body, tags) VALUES (?, ?, ?, ?)",
+            (node_id, title, body, tags_json),
+        )
+        self._conn.commit()
 
     # --- Public interface (signatures identical to original) ------------------
 
@@ -330,9 +352,8 @@ class SemanticMemory:
         # 2. Search index layer: write to DB first so the row exists before embedding UPDATE
         try:
             self._db_upsert(node)
-            self._conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("[semantic] 节点写入 DB 失败，保留 json 作为恢复源: %s", exc)
         # 3. 可选：计算并存储 embedding（行已存在，UPDATE 必然生效）
         if self._embed_fn is not None:
             try:
@@ -575,7 +596,9 @@ class SemanticMemory:
                 (fts_query, limit),
             ).fetchall()
             return [r[0] for r in rows]
-        except Exception:
+        except Exception as exc:
+            self._fts5_ok = False
+            _log.warning("[semantic] FTS5 查询失败，降级为全表扫描: %s", exc)
             return []
 
     def _load_by_ids(self, ids: list[str]) -> list[MemoryNode]:

@@ -156,6 +156,38 @@ class EpisodicMemory:
         name = f"task-{task_id}.md" if task_id else "global.md"
         return self._dir / name
 
+    def _insert_narrative_row(
+        self,
+        *,
+        task_id: str | None,
+        role: str,
+        source_type: str,
+        content: str,
+        affect_json: str | None,
+        ts: str,
+    ) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO narrative(task_id, role, source_type, content, affect, ts)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, role, source_type, content, affect_json, ts),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def _sync_narrative_fts(
+        self,
+        *,
+        row_id: int,
+        task_id: str | None,
+        role: str,
+        content: str,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO narrative_fts(id, task_id, role, content) VALUES (?, ?, ?, ?)",
+            (row_id, task_id or "", role, content),
+        )
+        self._conn.commit()
+
     def record(
         self,
         role: str,
@@ -183,25 +215,32 @@ class EpisodicMemory:
         with path.open("a", encoding="utf-8") as f:
             f.write(block)
 
-        # 2. 写 narrative DB + FTS5（用于 search() 全文检索）
+        affect_json = json.dumps(affect, ensure_ascii=False) if affect else None
+
+        # 2. 先稳定写 narrative 表（供 recent-turns / recent-narrative 使用）
         try:
-            cur = self._conn.execute(
-                "INSERT INTO narrative(task_id, role, source_type, content, affect, ts)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    task_id, role, src, content,
-                    json.dumps(affect, ensure_ascii=False) if affect else None,
-                    ts,
-                ),
+            row_id = self._insert_narrative_row(
+                task_id=task_id,
+                role=role,
+                source_type=src,
+                content=content,
+                affect_json=affect_json,
+                ts=ts,
             )
-            row_id = cur.lastrowid
-            self._conn.execute(
-                "INSERT INTO narrative_fts(id, task_id, role, content) VALUES (?, ?, ?, ?)",
-                (row_id, task_id or "", role, content),
+        except Exception as _narrative_err:
+            _log.warning("[episodic] narrative 写入失败（.md 已保留）: %s", _narrative_err)
+            return
+
+        # 3. 再同步 FTS5（失败时仅影响全文检索，不影响主叙事层）
+        try:
+            self._sync_narrative_fts(
+                row_id=row_id,
+                task_id=task_id,
+                role=role,
+                content=content,
             )
-            self._conn.commit()
         except Exception as _fts_err:
-            _log.warning("[episodic] FTS5 写入失败（不影响 .md 主流程）: %s", _fts_err)
+            _log.warning("[episodic] FTS5 写入失败（narrative 已提交，search 将退回 .md 扫描）: %s", _fts_err)
 
     def load_for_context(self, task_id: str | None, max_chars: int = 4000) -> str:
         """读取情节记忆，注入 LLM context。

@@ -75,6 +75,13 @@ def test_semantic_multi_anchor_empty_anchors():
         assert sm.retrieve_multi_anchor(["", "  "]) == []
 
 
+def test_fill_template_raises_when_variable_missing():
+    from core.judgment.context import _fill_template
+
+    with pytest.raises(ValueError, match="missing_field"):
+        _fill_template("hello {{ missing_field }}", {"other": "value"})
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 今日新增功能验证
 # ══════════════════════════════════════════════════════════════════════════════

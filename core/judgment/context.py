@@ -446,11 +446,19 @@ def _emotion_label(emotion: "EmotionState", cfg: "Config") -> str:
 
 
 def _fill_template(template: str, ctx: dict[str, Any]) -> str:
+    missing = sorted({
+        match.group(1).strip()
+        for match in re.finditer(r"\{\{([^}]+)\}\}", template)
+        if match.group(1).strip() not in ctx
+    })
+    if missing:
+        msg = "[judgment] 模板变量缺失: " + ", ".join(missing)
+        _log.error("%s（judgment.md 与 context 组装已失配）", msg)
+        raise ValueError(msg)
+
     def replace(match: re.Match[str]) -> str:
         key = match.group(1).strip()
-        if key not in ctx:
-            _log.warning("[judgment] 模板变量缺失: %s（judgment.md 含 {{%s}} 但 ctx 无此键）", key, key)
-        return str(ctx.get(key, f"[未知字段: {key}]"))
+        return str(ctx[key])
 
     return re.sub(r"\{\{([^}]+)\}\}", replace, template)
 
