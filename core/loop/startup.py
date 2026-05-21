@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from core.config import Config
@@ -12,6 +13,117 @@ from provider import create_provider_with_model
 from provider.models_gen import ensure_models_json
 
 _log = logging.getLogger("lingzhou.loop")
+
+# ── 运行时启动自检 ────────────────────────────────────────────────────────────
+# 与 cli/diag.py doctor 命令共享同一套 patch 定义（字符串 patch 而非 importlib，
+# 因为需要在 Config 对象创建之前修复源文件，确保下次 reload 生效）。
+
+_MEMORY_FIELD_PATCHES: dict[str, str] = {
+    "wm_item_max_tokens": (
+        "    wm_item_max_tokens: int = Field(\n"
+        "        default=300, ge=0,\n"
+        "        description=(\n"
+        "            \"工作记忆单条 content token 上限（估算）；超出时自动截断并追加省略提示。\"\n"
+        "            \"0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。\"\n"
+        "        ),\n"
+        "    )\n"
+    ),
+}
+
+_THRESHOLDS_FIELD_PATCHES: dict[str, str] = {
+    "skill_max_inject": (
+        "    skill_max_inject: int = Field(\n"
+        "        default=3, ge=1, le=8,\n"
+        "        description=\"单次 tick 最多注入技能数；压力大时可通过配置增加护栏覆盖\"\n"
+        "    )\n"
+    ),
+    "skill_failure_threshold": (
+        "    skill_failure_threshold: int = Field(\n"
+        "        default=3, ge=1,\n"
+        "        description=\"连续评分函数的失败次数基准点；达到此值时 failure.reflection 技能得分达到峰值\"\n"
+        "    )\n"
+    ),
+    "skill_wm_pressure_threshold": (
+        "    skill_wm_pressure_threshold: float = Field(\n"
+        "        default=0.4, ge=0.0, le=1.0,\n"
+        "        description=\"WM 压力连续评分基准点；达到此值时 evidence-first-change 技能得分达到峰值\"\n"
+        "    )\n"
+    ),
+    "skill_min_budget_tokens": (
+        "    skill_min_budget_tokens: int = Field(\n"
+        "        default=80, ge=0,\n"
+        "        description=\"上下文预算裁剪时 skills_section 保留的最小 token 数；0=可完全裁掉\"\n"
+        "    )\n"
+    ),
+}
+
+
+def _patch_config_class(config_py: Path, class_name: str, patches: dict[str, str]) -> list[str]:
+    """向 config_py 中的 class_name 末尾注入缺失字段，返回已注入字段名列表。"""
+    try:
+        import importlib
+        mod = importlib.import_module("core.config")
+        cls = getattr(mod, class_name, None)
+        if cls is None:
+            return []
+        instance = cls()
+        missing = [f for f in patches if not hasattr(instance, f)]
+    except Exception:
+        return []
+
+    if not missing or not config_py.exists():
+        return []
+
+    lines = config_py.read_text(encoding="utf-8").splitlines(keepends=True)
+    in_class = False
+    insert_at = len(lines)
+    for i, line in enumerate(lines):
+        if line.startswith(f"class {class_name}"):
+            in_class = True
+        elif in_class and line.startswith("class "):
+            insert_at = i
+            break
+    if not in_class:
+        return []
+
+    while insert_at > 0 and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    inject = ["\n"] + [patches[f] for f in missing]
+    lines[insert_at:insert_at] = inject
+    config_py.write_text("".join(lines), encoding="utf-8")
+
+    # 热重载让当前进程立即获得新字段
+    try:
+        import importlib
+        importlib.reload(importlib.import_module("core.config"))
+    except Exception:
+        pass
+
+    return missing
+
+
+def _startup_health_check(cfg: Config, project_root: Path) -> None:
+    """运行时启动自检（非阻塞，仅 warn 级日志）：
+
+    1. 确保 memory_dir / workspace_dir 目录存在
+    2. Config schema 兼容性 patch（MemoryConfig + ThresholdsConfig）
+    """
+    # 1. 目录自动创建
+    for label, raw_path in [("memory_dir", cfg.memory_dir), ("workspace_dir", cfg.workspace_dir)]:
+        p = Path(raw_path).expanduser()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            _log.warning("[startup] %s 无法创建，可能导致记忆写入失败: %s  路径=%s", label, exc, p)
+
+    # 2. Config schema patch
+    config_py = project_root / "core" / "config.py"
+    for class_name, patches in [("MemoryConfig", _MEMORY_FIELD_PATCHES),
+                                  ("ThresholdsConfig", _THRESHOLDS_FIELD_PATCHES)]:
+        patched = _patch_config_class(config_py, class_name, patches)
+        if patched:
+            _log.warning("[startup] %s schema 版本过旧，已自动注入缺失字段: %s", class_name, patched)
+
 
 def _build_routing_providers(cfg: Config) -> dict[str, Any]:
     """根据 cfg.routing 构建分层路由 providers 字典。"""
@@ -48,6 +160,8 @@ def _routing_summary_text(cfg: Config, routing_providers: dict[str, Any]) -> str
 
 
 async def _open_runtime_impl(loop: Any) -> None:
+    from core.paths import project_root as _project_root
+    _startup_health_check(loop._cfg, _project_root())
     await loop._task_store.open()
     await ensure_models_json(loop._cfg)
     loop._routing_providers = _build_routing_providers(loop._cfg)
@@ -62,6 +176,8 @@ async def _open_runtime_impl(loop: Any) -> None:
 
 
 async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
+    from core.paths import project_root as _project_root
+    _startup_health_check(loop._cfg, _project_root())
     await loop._task_store.open()
     cfg = loop._cfg
     await ensure_models_json(cfg)

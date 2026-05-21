@@ -147,124 +147,42 @@ def doctor(
     else:
         console.print(f"  {warn_mark} 数据库: 跳过（配置文件不可用）")
 
-    # ── 6. 配置 schema 兼容性（类比 openclaw _reconcile_columns）──────────
-    # 检测 ThresholdsConfig 是否包含 runtime 依赖的关键字段；缺失时自动注入默认定义。
-    _THRESHOLDS_FIELD_PATCHES: dict[str, str] = {
-        "skill_max_inject": (
-            "    skill_max_inject: int = Field(\n"
-            "        default=3, ge=1, le=8,\n"
-            "        description=\"单次 tick 最多注入技能数；压力大时可通过配置增加护栏覆盖\"\n"
-            "    )\n"
-        ),
-        "skill_failure_threshold": (
-            "    skill_failure_threshold: int = Field(\n"
-            "        default=3, ge=1,\n"
-            "        description=\"连续评分函数的失败次数基准点；达到此值时 failure.reflection 技能得分达到峰值\"\n"
-            "    )\n"
-        ),
-        "skill_wm_pressure_threshold": (
-            "    skill_wm_pressure_threshold: float = Field(\n"
-            "        default=0.4, ge=0.0, le=1.0,\n"
-            "        description=\"WM 压力连续评分基准点；达到此值时 evidence-first-change 技能得分达到峰值\"\n"
-            "    )\n"
-        ),
-        "skill_min_budget_tokens": (
-            "    skill_min_budget_tokens: int = Field(\n"
-            "        default=80, ge=0,\n"
-            "        description=\"上下文预算裁剪时 skills_section 保留的最小 token 数；0=可完全裁掉\"\n"
-            "    )\n"
-        ),
-    }
+    # ── 6 & 7. Config schema 兼容性（ThresholdsConfig + MemoryConfig）──────────
+    # 复用 core/loop/startup.py 的 patch 定义与逻辑，与运行时启动保持一致。
     try:
-        from core.config import ThresholdsConfig as _ThresholdsConfig
-        _t_instance = _ThresholdsConfig()
-        _missing_fields = [f for f in _THRESHOLDS_FIELD_PATCHES if not hasattr(_t_instance, f)]
-        if _missing_fields:
-            # 自动注入缺失字段到 core/config.py（类比 ALTER TABLE ADD COLUMN）
-            _config_py = PROJECT_ROOT / "core" / "config.py"
-            _patched: list[str] = []
-            if _config_py.exists():
-                _lines = _config_py.read_text(encoding="utf-8").splitlines(keepends=True)
-                _in_thresholds = False
-                _insert_at = len(_lines)
-                for _i, _line in enumerate(_lines):
-                    if _line.startswith("class ThresholdsConfig"):
-                        _in_thresholds = True
-                    elif _in_thresholds and _line.startswith("class "):
-                        _insert_at = _i
-                        break
-                if _in_thresholds:
-                    # 删除末尾空行，保持整洁
-                    while _insert_at > 0 and not _lines[_insert_at - 1].strip():
-                        _insert_at -= 1
-                    _inject = ["\n"]
-                    for _f in _missing_fields:
-                        if _f in _THRESHOLDS_FIELD_PATCHES:
-                            _inject.append(_THRESHOLDS_FIELD_PATCHES[_f])
-                            _patched.append(_f)
-                    if _patched:
-                        _lines[_insert_at:_insert_at] = _inject
-                        _config_py.write_text("".join(_lines), encoding="utf-8")
+        from core.loop.startup import (
+            _THRESHOLDS_FIELD_PATCHES,
+            _MEMORY_FIELD_PATCHES,
+            _patch_config_class,
+        )
+        _config_py = PROJECT_ROOT / "core" / "config.py"
+        for _cls_name, _patches, _label in [
+            ("ThresholdsConfig", _THRESHOLDS_FIELD_PATCHES, "ThresholdsConfig"),
+            ("MemoryConfig",     _MEMORY_FIELD_PATCHES,     "MemoryConfig"),
+        ]:
+            _patched = _patch_config_class(_config_py, _cls_name, _patches)
             if _patched:
-                console.print(f"  {warn_mark} ThresholdsConfig 缺少字段，已自动注入: {_patched}")
+                console.print(f"  {warn_mark} {_label} 缺少字段，已自动注入: {_patched}")
             else:
-                console.print(f"  {fail_mark} ThresholdsConfig 缺少字段: {_missing_fields}  [dim](自动注入失败，请手动 git pull)[/dim]")
-                issues.append(f"core/config.py 版本过旧，缺少: {_missing_fields}")
-        else:
-            console.print(f"  {ok_mark} ThresholdsConfig schema 兼容  [dim]({len(_THRESHOLDS_FIELD_PATCHES)} 个关键字段均存在)[/dim]")
+                # 如果字段本就存在，_patch_config_class 返回空列表
+                # 若返回空但字段仍缺失（注入失败），_patch_config_class 内部已尝试且失败
+                try:
+                    import importlib as _il
+                    _mod = _il.import_module("core.config")
+                    _cls = getattr(_mod, _cls_name)
+                    _inst = _cls()
+                    _still_missing = [f for f in _patches if not hasattr(_inst, f)]
+                    if _still_missing:
+                        console.print(f"  {fail_mark} {_label} 缺少字段: {_still_missing}  [dim](自动注入失败，请手动 git pull)[/dim]")
+                        issues.append(f"core/config.py 版本过旧，{_label} 缺少: {_still_missing}")
+                    else:
+                        console.print(f"  {ok_mark} {_label} schema 兼容  [dim]({len(_patches)} 个关键字段均存在)[/dim]")
+                except Exception as _e:
+                    console.print(f"  {fail_mark} {_label} schema 检查失败: {_e}")
+                    issues.append(f"{_label} 无法导入: {_e}")
     except Exception as e:
-        console.print(f"  {fail_mark} ThresholdsConfig schema 检查失败: {e}")
-        issues.append(f"ThresholdsConfig 无法导入: {e}")
-
-    # ── 7. MemoryConfig schema 兼容性（类比 ThresholdsConfig patch）──────
-    _MEMORY_FIELD_PATCHES: dict[str, str] = {
-        "wm_item_max_tokens": (
-            "    wm_item_max_tokens: int = Field(\n"
-            "        default=300, ge=0,\n"
-            "        description=(\n"
-            "            \"工作记忆单条 content token 上限（估算）；超出时自动截断并追加省略提示。\"\n"
-            "            \"0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。\"\n"
-            "        ),\n"
-            "    )\n"
-        ),
-    }
-    try:
-        from core.config import MemoryConfig as _MemoryConfig
-        _m_instance = _MemoryConfig()
-        _missing_mem = [f for f in _MEMORY_FIELD_PATCHES if not hasattr(_m_instance, f)]
-        if _missing_mem:
-            _config_py = PROJECT_ROOT / "core" / "config.py"
-            _patched_mem: list[str] = []
-            if _config_py.exists():
-                _lines = _config_py.read_text(encoding="utf-8").splitlines(keepends=True)
-                _in_mem = False
-                _insert_at = len(_lines)
-                for _i, _line in enumerate(_lines):
-                    if _line.startswith("class MemoryConfig"):
-                        _in_mem = True
-                    elif _in_mem and _line.startswith("class "):
-                        _insert_at = _i
-                        break
-                if _in_mem:
-                    while _insert_at > 0 and not _lines[_insert_at - 1].strip():
-                        _insert_at -= 1
-                    _inject = ["\n"]
-                    for _f in _missing_mem:
-                        _inject.append(_MEMORY_FIELD_PATCHES[_f])
-                        _patched_mem.append(_f)
-                    if _patched_mem:
-                        _lines[_insert_at:_insert_at] = _inject
-                        _config_py.write_text("".join(_lines), encoding="utf-8")
-            if _patched_mem:
-                console.print(f"  {warn_mark} MemoryConfig 缺少字段，已自动注入: {_patched_mem}")
-            else:
-                console.print(f"  {fail_mark} MemoryConfig 缺少字段: {_missing_mem}  [dim](自动注入失败，请手动 git pull)[/dim]")
-                issues.append(f"core/config.py 版本过旧，MemoryConfig 缺少: {_missing_mem}")
-        else:
-            console.print(f"  {ok_mark} MemoryConfig schema 兼容  [dim]({len(_MEMORY_FIELD_PATCHES)} 个关键字段均存在)[/dim]")
-    except Exception as e:
-        console.print(f"  {fail_mark} MemoryConfig schema 检查失败: {e}")
-        issues.append(f"MemoryConfig 无法导入: {e}")
+        console.print(f"  {fail_mark} Config schema 检查失败: {e}")
+        issues.append(f"Config schema 检查异常: {e}")
 
     # ── 8. 目录读写权限 ────────────────────────────────────────────────
     if cfg is not None:
