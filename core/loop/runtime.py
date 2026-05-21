@@ -94,7 +94,18 @@ class CognitionLoop:
         # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
         # embedding 混合检索(embed_fn=None 则纯关键词模式)
-        _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
+        if cfg.memory.embedding_model:
+            try:
+                import os
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                from sentence_transformers import SentenceTransformer
+                _local_model = SentenceTransformer("BAAI/bge-m3", cache_folder="/root/.cache/huggingface/hub")
+                _embed_fn = lambda texts: _local_model.encode(texts, normalize_embeddings=True).tolist()
+            except Exception:
+                _embed_fn = getattr(self._provider, "embed", None)
+        else:
+            _embed_fn = None
         self._semantic = SemanticMemory(
             cfg.memory_dir,
             decay_lambda=cfg.memory.semantic_decay_lambda,
