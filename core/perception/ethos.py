@@ -33,6 +33,15 @@ class EthosState:
     values: EthosValues = field(default_factory=EthosValues)
     bias: EthosBias = field(default_factory=EthosBias)
 
+    def __hash__(self) -> int:
+        v = self.values
+        b = self.bias
+        return hash((
+            v.truth, v.caution, v.continuity, v.curiosity, v.care,
+            b.prefer_verification, b.prefer_narrow_scope,
+            b.preserve_continuity, b.avoid_overclaiming,
+        ))
+
 
 def derive_ethos_state(
     failure_count: int,

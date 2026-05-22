@@ -124,6 +124,81 @@ class EvolutionEngine:
     def _restore_text(self, path: Path, previous_src: str) -> None:
         path.write_text(previous_src, encoding="utf-8")
 
+    @staticmethod
+    def _smoke_test_module(new_src: str, module_path: Path, project_root: Path) -> str | None:
+        """在独立子进程中验证 staged 模块。
+
+        流程：
+          1. 把 new_src 写入同目录的临时 staging 文件
+          2. 子进程：预加载父包 → 将 staging 注册到真实模块名 → 执行 snippet
+          3. 子进程输出含 "SMOKE_OK" 且 returncode=0 → 通过
+          4. 无论结果如何，删除 staging 文件
+
+        返回 None 表示通过，返回错误字符串表示失败。
+        """
+        import subprocess
+        import textwrap
+        from core.smoke_tests import SMOKE_TESTS, FALLBACK_SNIPPET
+
+        try:
+            rel_path = str(module_path.relative_to(project_root)).replace("\\", "/")
+        except ValueError:
+            rel_path = module_path.name
+
+        snippet = SMOKE_TESTS.get(rel_path, FALLBACK_SNIPPET)
+
+        # 真实模块名（供 sys.modules 注册以支持相对导入）
+        real_module_name = rel_path.removesuffix(".py").replace("/", ".")
+        # 父包（mod.__package__）
+        pkg_parts = real_module_name.rsplit(".", 1)
+        parent_pkg = pkg_parts[0] if len(pkg_parts) > 1 else ""
+
+        # 需要预先 import 的父包层次（从最顶层开始）
+        if parent_pkg:
+            pkg_hierarchy = parent_pkg.split(".")
+            parent_imports_lines = "\n".join(
+                f"import {'.'.join(pkg_hierarchy[:i + 1])}"
+                for i in range(len(pkg_hierarchy))
+            )
+        else:
+            parent_imports_lines = ""
+
+        staging_path = module_path.parent / f"_smoke_staging_{module_path.name}"
+        try:
+            staging_path.write_text(new_src, encoding="utf-8")
+
+            probe = textwrap.dedent(f"""
+import sys
+sys.path.insert(0, {str(project_root)!r})
+{parent_imports_lines}
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location({real_module_name!r}, {str(staging_path)!r})
+mod = _ilu.module_from_spec(_spec)
+mod.__package__ = {parent_pkg!r}
+sys.modules[{real_module_name!r}] = mod
+_spec.loader.exec_module(mod)
+{snippet}
+print("SMOKE_OK")
+""").strip()
+
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                cwd=str(project_root),
+            )
+            if result.returncode != 0 or "SMOKE_OK" not in result.stdout:
+                err = result.stderr.strip() or result.stdout.strip() or "smoke test failed (no output)"
+                return err[:1200]
+            return None
+        except subprocess.TimeoutExpired:
+            return "smoke test timed out (>15s)"
+        except Exception as exc:
+            return str(exc)
+        finally:
+            staging_path.unlink(missing_ok=True)
+
     def _tool_manifest_is_present(self, tool_name: str) -> bool:
         entry = self._registry.get(tool_name)
         return entry is not None and entry.manifest.name == tool_name
@@ -583,12 +658,25 @@ class EvolutionEngine:
                     # 自动清理旧备份（保留最新 3 个）
                     _clean_old_backups(tool_path)
 
-                # 写回
-                # 语法检查
+                # 写回前：AST 二次确认 + 子进程 smoke test
                 try:
                     ast.parse(new_src)
                 except SyntaxError as e:
                     raise ValueError(f'Syntax error in generated tool source: {e}') from e
+
+                _project_root = Path(__file__).parent.parent
+                smoke_err = self._smoke_test_module(new_src, tool_path, _project_root)
+                if smoke_err:
+                    _log.warning(
+                        "[evolution] smoke test 失败，%r 将在下一轮重试: %s",
+                        tool_name, smoke_err[:200],
+                    )
+                    if attempt < self._cfg.evolution.max_attempts - 1:
+                        from provider.base import Message as _Msg
+                        messages.append(_Msg(role="assistant", content=new_src))
+                        messages.append(_Msg(role="user", content=f"代码运行时验证失败，请修复：{smoke_err[:500]}"))
+                    continue
+
                 tool_path.write_text(new_src, encoding="utf-8")
 
                 # 热重载 + 载荷校验：必须能重新注册目标工具，否则回滚

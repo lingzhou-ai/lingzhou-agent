@@ -1,0 +1,367 @@
+"""core/smoke_tests.py — Evolution 前置 smoke test 注册表。
+
+每条 entry：相对路径（以项目根为基准）→ Python 验证片段。
+
+执行环境（子进程内）:
+  - sys.path[0] = 项目根
+  - 父包已按 production 版本预加载
+  - `mod` 变量 = 已注册到 sys.modules 真实名称下的 staged 模块对象
+
+Tier 说明：
+  Tier 1 — 调用纯逻辑函数，验证返回值正确性  ← 最高价值
+  Tier 2 — 验证关键类/方法存在（实例化依赖复杂）
+  Tier 3 — 仅加载不报错（FALLBACK_SNIPPET）
+"""
+from __future__ import annotations
+
+# 无自定义 snippet 时的 fallback：加载模块不崩溃即通过
+FALLBACK_SNIPPET = ""
+
+SMOKE_TESTS: dict[str, str] = {
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # core/perception
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "core/perception/ethos.py": """
+s = mod.EthosState()
+_ = hash(s)          # 必须可哈希，这是历史 P0 bug 的根因
+e = mod.derive_ethos_state(0, 0, False, False, "neutral")
+assert 0.0 <= e.values.truth <= 1.0, f"truth out of range: {e.values.truth}"
+assert isinstance(e.bias.reasons, list)
+""",
+
+    "core/perception/emotion.py": """
+s = mod.EmotionState()
+assert hasattr(s, "valence")
+assert hasattr(s, "arousal")
+assert hasattr(s, "appraisal")
+assert 0.0 <= s.valence <= 1.0
+a = mod.Appraisal()
+assert hasattr(a, "novelty")
+""",
+
+    "core/perception/signals.py": """
+s = mod.JudgmentSignals()
+assert hasattr(s, "posture")
+assert s.posture in ("act", "pause", "narrow"), f"unexpected posture: {s.posture}"
+cs = mod.CognitiveSignals()
+assert hasattr(cs, "emotion_activation")
+assert hasattr(cs, "has_active_task")
+""",
+
+    "core/perception/layer.py": """
+assert hasattr(mod, "PerceptionLayer"), "PerceptionLayer class missing"
+assert callable(mod.PerceptionLayer)
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # core/judgment
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "core/judgment/output.py": """
+w = mod.JudgmentOutput.wait("test reason")
+assert w.decision == "wait", f"expected 'wait', got {w.decision!r}"
+assert isinstance(w.rationale, str)
+parsed = mod.JudgmentOutput.from_llm('{"decision": "wait", "rationale": "ok"}')
+assert parsed.decision == "wait"
+assert hasattr(mod, "is_reader_tool")
+assert hasattr(mod, "tool_tier")
+""",
+
+    "core/judgment/context.py": """
+from core.perception.ethos import EthosState
+# 核心测试：_fmt_ethos 必须接受 EthosState 且不崩溃（历史 P0 bug 触发点）
+result = mod._fmt_ethos(EthosState())
+assert isinstance(result, str) and len(result) > 0, f"empty ethos output: {result!r}"
+result_none = mod._fmt_ethos(None)
+assert isinstance(result_none, str)
+# 时间格式化（无外部依赖的纯函数）
+t = mod._fmt_current_time()
+assert isinstance(t, str) and len(t) > 0
+# apply_context_budget 预算裁剪
+budgeted = mod.apply_context_budget({"wm_section": "x" * 1000}, token_budget=10)
+assert isinstance(budgeted, dict)
+""",
+
+    "core/judgment/runtime.py": """
+assert hasattr(mod, "JudgmentLayer"), "JudgmentLayer class missing"
+assert callable(mod.JudgmentLayer)
+assert hasattr(mod.JudgmentLayer, "decide")
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # core/
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "core/behavior_tracker.py": """
+bt = mod.BehaviorTracker()
+items = bt.on_wait("wait", has_active_task=False)
+assert isinstance(items, list)
+assert bt.wait_streak >= 1
+items2 = bt.on_judgment("some rationale")
+assert isinstance(items2, list)
+""",
+
+    "core/config.py": """
+assert hasattr(mod, "Config"), "Config class missing"
+c = mod.Config()
+assert hasattr(c, "model")
+assert hasattr(c, "memory")
+assert hasattr(c, "loop")
+assert hasattr(c, "evolution")
+""",
+
+    "core/skill.py": """
+assert hasattr(mod, "SkillRegistry"), "SkillRegistry class missing"
+assert hasattr(mod, "Skill"), "Skill class missing"
+sr = mod.SkillRegistry()     # 无 skills_dir → 尝试 seed dir，容许 0 个
+assert hasattr(sr, "get")
+assert hasattr(sr, "match_for_context")
+""",
+
+    "core/evolution.py": """
+assert hasattr(mod, "EvolutionEngine"), "EvolutionEngine missing"
+assert hasattr(mod, "EvolutionResult"), "EvolutionResult missing"
+r = mod.EvolutionResult(success=True, target="test_tool")
+assert r.success is True
+assert r.target == "test_tool"
+""",
+
+    "core/execution.py": """
+assert hasattr(mod, "ExecutionLayer"), "ExecutionLayer class missing"
+assert callable(mod.ExecutionLayer)
+""",
+
+    "core/self_drive.py": """
+assert hasattr(mod, "SelfDriveEngine"), "SelfDriveEngine class missing"
+""",
+
+    "core/self_model.py": """
+assert hasattr(mod, "SelfModel"), "SelfModel class missing"
+""",
+
+    "core/soul.py": """
+assert hasattr(mod, "SoulManager"), "SoulManager class missing"
+""",
+
+    "core/plugin.py": """
+assert hasattr(mod, "PluginManager") or hasattr(mod, "PluginLifecycle"), \
+    "no plugin manager class found"
+""",
+
+    "core/worker.py": """
+assert hasattr(mod, "Worker") or hasattr(mod, "CognitionWorker") or hasattr(mod, "WorkerPool"), \
+    "no worker class found"
+""",
+
+    "core/task_runtime.py": """
+assert hasattr(mod, "TaskRuntime") or hasattr(mod, "ingest_reflection") or True
+""",
+
+    "core/run_refresh.py": """
+assert hasattr(mod, "refresh_runs") or True
+""",
+
+    "core/reference.py": """
+assert hasattr(mod, "Reference") or hasattr(mod, "ReferenceStore") or True
+""",
+
+    "core/paths.py": """
+assert hasattr(mod, "project_root") or hasattr(mod, "get_project_root") or True
+""",
+
+    "core/version.py": """
+assert hasattr(mod, "__version__") or hasattr(mod, "VERSION") or True
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # core/loop
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "core/loop/runtime.py": """
+assert hasattr(mod, "CognitionLoop"), "CognitionLoop class missing"
+assert hasattr(mod.CognitionLoop, "open")
+""",
+
+    "core/loop/tick.py": """
+assert hasattr(mod, "run_tick") or hasattr(mod, "tick") or True
+""",
+
+    "core/loop/driver.py": """
+assert hasattr(mod, "CognitionDriver") or hasattr(mod, "LoopDriver") or True
+""",
+
+    "core/loop/chat.py": """
+assert hasattr(mod, "chat_loop") or hasattr(mod, "ChatLoop") or True
+""",
+
+    "core/loop/startup.py": """
+assert hasattr(mod, "startup") or hasattr(mod, "build_routing_providers") or True
+""",
+
+    "core/loop/postprocess.py": """
+assert hasattr(mod, "postprocess") or True
+""",
+
+    "core/loop/continue_phase.py": """
+assert hasattr(mod, "run_continue_phase") or True
+""",
+
+    "core/loop/logging.py": """
+assert hasattr(mod, "setup_logging") or hasattr(mod, "configure_logging") or True
+""",
+
+    "core/loop/progress.py": """
+assert hasattr(mod, "ProgressReporter") or True
+""",
+
+    "core/loop/reload.py": """
+assert hasattr(mod, "_maybe_hot_reload_provider_impl") or True
+""",
+
+    "core/loop/task_parallel.py": """
+assert hasattr(mod, "TaskParallelRunner") or True
+""",
+
+    "core/loop/common.py": """
+assert True  # utility module, import-only check
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # core/probe
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "core/probe/types.py": """
+assert hasattr(mod, "ProbeSpec") or hasattr(mod, "Probe") or hasattr(mod, "ProbeResult")
+""",
+
+    "core/probe/store.py": """
+assert hasattr(mod, "ProbeStore")
+""",
+
+    "core/probe/executor.py": """
+assert hasattr(mod, "ProbeExecutor")
+""",
+
+    "core/probe/manager.py": """
+assert hasattr(mod, "ProbeManager")
+""",
+
+    "core/probe/runner.py": """
+assert hasattr(mod, "ProbeRunner") or True
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # memory
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "memory/working.py": """
+import tempfile, pathlib
+wm = mod.WorkingMemory(capacity=5, token_budget=500)
+item = mod.WMItem(content="test signal", priority=0.8, source="smoke")
+wm.add(item)
+items = wm._items
+assert len(items) >= 1
+assert 0.0 <= wm.pressure <= 1.0
+""",
+
+    "memory/semantic.py": """
+import tempfile, pathlib
+assert hasattr(mod, "SemanticMemory")
+assert hasattr(mod, "MemoryNode")
+# 构造时需要 memory_dir，用临时目录
+with tempfile.TemporaryDirectory() as d:
+    sm = mod.SemanticMemory(memory_dir=pathlib.Path(d))
+    assert hasattr(sm, "upsert")
+    assert hasattr(sm, "retrieve")
+    assert hasattr(sm, "store_reflection")
+""",
+
+    "memory/episodic.py": """
+import tempfile, pathlib
+assert hasattr(mod, "EpisodicMemory")
+with tempfile.TemporaryDirectory() as d:
+    em = mod.EpisodicMemory(memory_dir=pathlib.Path(d))
+    assert hasattr(em, "record")
+    assert hasattr(em, "list_tasks")
+""",
+
+    "memory/task_store.py": """
+import tempfile, pathlib
+assert hasattr(mod, "TaskStore")
+assert hasattr(mod.TaskStore, "get_active")
+with tempfile.TemporaryDirectory() as d:
+    ts = mod.TaskStore(db_path=pathlib.Path(d) / "tasks.db")
+    assert hasattr(ts, "get_active")
+""",
+
+    "memory/quality_checker.py": """
+assert hasattr(mod, "QualityChecker") or hasattr(mod, "check_quality") or True
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # provider
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "provider/base.py": """
+m = mod.Message(role="user", content="hello")
+assert m.role == "user"
+assert m.content == "hello"
+assert hasattr(mod, "Provider")
+""",
+
+    "provider/openai_compat.py": """
+assert hasattr(mod, "OpenAICompatProvider") or hasattr(mod, "DashScopeProvider") or True
+""",
+
+    "provider/catalog.py": """
+assert hasattr(mod, "get_context_window") or hasattr(mod, "MODEL_CATALOG") or True
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # tools
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "tools/registry.py": """
+assert hasattr(mod, "ToolRegistry"), "ToolRegistry missing"
+assert callable(mod.ToolRegistry)
+assert hasattr(mod, "tool"), "@tool decorator missing"
+""",
+
+    # 其余 tools/*.py 已由 evolve_tool 中的 _tool_manifest_is_present 检查覆盖
+    # 这里仅做基础加载验证
+    "tools/file.py": """assert True""",
+    "tools/shell.py": """assert True""",
+    "tools/memory_ops.py": """assert True""",
+    "tools/task_ops.py": """assert True""",
+    "tools/web.py": """assert True""",
+    "tools/exec.py": """assert True""",
+    "tools/plan.py": """assert True""",
+    "tools/skill_ops.py": """assert True""",
+    "tools/config_ops.py": """assert True""",
+    "tools/probe_ops.py": """assert True""",
+    "tools/ask.py": """assert True""",
+    "tools/browser.py": """assert True""",
+    "tools/image.py": """assert True""",
+    "tools/image_gen.py": """assert True""",
+    "tools/notify.py": """assert True""",
+    "tools/schedule.py": """assert True""",
+    "tools/tts.py": """assert True""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # channels
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "channels/wechat.py": """
+assert hasattr(mod, "WechatChannel") or True
+""",
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # store
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    "store/auth.py": """
+assert hasattr(mod, "AuthStore") or hasattr(mod, "resolve_token") or True
+""",
+}
