@@ -84,8 +84,11 @@ async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> 
             break
         await asyncio.sleep(min(poll, remaining))
         if await loop._task_store.has_pending_chat_message():
-            _log.debug("[wake] chat 消息到达,提前唤醒")
-            break
+            dispatcher = getattr(loop, "_tick_dispatcher", None)
+            can_accept = getattr(dispatcher, "can_accept", None) if dispatcher is not None else None
+            if dispatcher is None or not dispatcher.enabled or not callable(can_accept) or can_accept():
+                _log.debug("[wake] chat 消息到达,提前唤醒")
+                break
         if cfg.loop.wake_on_task_change:
             now = await loop._task_store.get_active()
             now_sig = (now.id if now else None, now.status if now else None)

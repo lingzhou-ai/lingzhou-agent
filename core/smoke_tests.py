@@ -26,7 +26,14 @@ SMOKE_TESTS: dict[str, str] = {
     "core/perception/ethos.py": """
 s = mod.EthosState()
 _ = hash(s)          # 必须可哈希，这是历史 P0 bug 的根因
-e = mod.derive_ethos_state(0, 0, False, False, "neutral")
+e = mod.derive_ethos_state(
+    failure_count=0,
+    high_error_streak=0,
+    has_active_task=False,
+    has_next_step=False,
+    perception_trend="neutral",
+    emotion_down_regulate_streak=0,
+)
 assert 0.0 <= e.values.truth <= 1.0, f"truth out of range: {e.values.truth}"
 assert isinstance(e.bias.reasons, list)
 """,
@@ -105,11 +112,14 @@ assert isinstance(items2, list)
 
     "core/config.py": """
 assert hasattr(mod, "Config"), "Config class missing"
-c = mod.Config()
-assert hasattr(c, "model")
-assert hasattr(c, "memory")
-assert hasattr(c, "loop")
-assert hasattr(c, "evolution")
+assert hasattr(mod, "ProviderDefinition"), "ProviderDefinition class missing"
+# Config 需要必填字段；验证类的 schema 结构即可
+fields = mod.Config.model_fields
+assert "providers" in fields
+assert "model" in fields
+assert "memory" in fields
+assert "loop" in fields
+assert "evolution" in fields
 """,
 
     "core/skill.py": """
@@ -151,7 +161,7 @@ assert hasattr(mod, "PluginManager") or hasattr(mod, "PluginLifecycle"), \
 """,
 
     "core/worker.py": """
-assert hasattr(mod, "Worker") or hasattr(mod, "CognitionWorker") or hasattr(mod, "WorkerPool"), \
+assert hasattr(mod, "WorkerLayer") or hasattr(mod, "Worker") or hasattr(mod, "CognitionWorker"), \
     "no worker class found"
 """,
 
@@ -241,7 +251,8 @@ assert hasattr(mod, "ProbeStore")
 """,
 
     "core/probe/executor.py": """
-assert hasattr(mod, "ProbeExecutor")
+assert hasattr(mod, "execute_probe"), "execute_probe function missing"
+assert callable(mod.execute_probe)
 """,
 
     "core/probe/manager.py": """
@@ -257,12 +268,10 @@ assert hasattr(mod, "ProbeRunner") or True
     # ═══════════════════════════════════════════════════════════════════════════
 
     "memory/working.py": """
-import tempfile, pathlib
 wm = mod.WorkingMemory(capacity=5, token_budget=500)
-item = mod.WMItem(content="test signal", priority=0.8, source="smoke")
+item = mod.WMItem(kind="signal", content="test signal", priority=0.8)
 wm.add(item)
-items = wm._items
-assert len(items) >= 1
+assert len(wm._items) >= 1
 assert 0.0 <= wm.pressure <= 1.0
 """,
 

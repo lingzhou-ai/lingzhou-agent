@@ -49,14 +49,16 @@ def test_compact_tool_history_keeps_same_list_reference():
     assert history[0]["tool"] == "[compacted]"
 
 
-def test_process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch):
-    asyncio.run(_process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch))
+def test_process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch, caplog):
+    asyncio.run(_process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch, caplog))
 
 
-async def _process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch):
+async def _process_pending_chat_turn_defers_when_dispatch_queue_full_without_blocking(monkeypatch, caplog):
     from core.loop.chat import _process_pending_chat_turn
 
     released_ids: list[tuple[int, ...]] = []
+
+    caplog.set_level(logging.INFO, logger="lingzhou.loop")
 
     async def _unexpected_sleep(_delay: float):
         raise AssertionError("queue full 时不应在 chat 主循环里 sleep 阻塞")
@@ -104,6 +106,35 @@ async def _process_pending_chat_turn_defers_when_dispatch_queue_full_without_blo
     assert handled is True
     assert cycle == 7
     assert released_ids == [(11,)]
+    assert "[chat] user › hello" not in caplog.text
+
+
+def test_process_pending_chat_turn_skips_pop_when_dispatcher_is_saturated():
+    asyncio.run(_process_pending_chat_turn_skips_pop_when_dispatcher_is_saturated())
+
+
+async def _process_pending_chat_turn_skips_pop_when_dispatcher_is_saturated():
+    from core.loop.chat import _process_pending_chat_turn
+
+    class _FakeStore:
+        async def pop_pending_chat_message(self):
+            raise AssertionError("dispatcher 饱和时不应抢占 pending chat")
+
+    class _FakeDispatcher:
+        enabled = True
+
+        def can_accept(self) -> bool:
+            return False
+
+    loop = SimpleNamespace(
+        _task_store=_FakeStore(),
+        _tick_dispatcher=_FakeDispatcher(),
+    )
+
+    cycle, handled = await _process_pending_chat_turn(loop, 7)
+
+    assert handled is False
+    assert cycle == 7
 
 def test_scoped_task_store_get_active_returns_pinned():
     """_ScopedTaskStore.get_active() 必须始终返回构造时传入的 pinned task。"""

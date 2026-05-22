@@ -55,6 +55,9 @@ class ConcurrentTickDispatcher:
     def has_running(self) -> bool:
         return self._running_count > 0
 
+    def can_accept(self) -> bool:
+        return self._pending_count < self._max_queue
+
     async def shutdown(self) -> None:
         workers = list(self._workers.values())
         for worker in workers:

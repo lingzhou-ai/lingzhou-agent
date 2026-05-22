@@ -64,6 +64,13 @@ async def _resolve_reply_chat_id(
 
 async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
     original_cycle = cycle
+    dispatcher = getattr(loop, "_tick_dispatcher", None)
+    if dispatcher is not None and dispatcher.enabled:
+        can_accept = getattr(dispatcher, "can_accept", None)
+        if callable(can_accept) and not can_accept():
+            _log.debug("[chat] tick queue saturated, defer pending chat pickup")
+            return cycle, False
+
     chat_message = await loop._task_store.pop_pending_chat_message()
     if not chat_message:
         return cycle, False
@@ -90,9 +97,7 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             _log.debug("[chat] merged %d follow-up message(s) into turn (ids=%s)",
                        len(follow_ups), [m["id"] for m in follow_ups])
 
-    _log.info("[chat] user › %s", user_message)
-
-    if getattr(loop, "_tick_dispatcher", None) is not None and loop._tick_dispatcher.enabled:
+    if dispatcher is not None and dispatcher.enabled:
         active_task = await loop._task_store.get_active()
         dispatch_cycle = await loop._next_dispatch_cycle()
         chain_key = loop._resolve_tick_chain_key(active_task=active_task, chat_id=chat_id, source="chat")
@@ -109,9 +114,11 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             await loop._task_store.release_chat_messages(reserved_message_ids)
             _log.debug("[chat] tick queue full, defer chat retry chat_id=%s", chat_id)
             return original_cycle, True
+        _log.info("[chat] user › %s", user_message)
         return dispatch_cycle, True
 
     cycle += 1
+    _log.info("[chat] user › %s", user_message)
     try:
         reply = await loop._tick(
             cycle,
