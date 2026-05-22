@@ -7,6 +7,7 @@ Python 相对于 Go 的决定性优势就在这里：
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib
 import importlib.util
 import json
@@ -796,6 +797,155 @@ print("SMOKE_OK")
         except Exception as exc:
             return EvolutionResult(success=False, reason=str(exc))
 
+    # ── 竞争进化（Step 4）────────────────────────────────────────────────────────
+
+    async def competitive_evolve_tool(
+        self,
+        tool_name: str,
+        tool_path: Path,
+        feedback: str,
+        num_candidates: int = 2,
+    ) -> EvolutionResult:
+        """A/B 竞争进化：并行生成多个候选代码版本，smoke 评估后选最优者晋升生产。
+
+        strategy:
+          - 候选 0: 保守修复（系统提示：最小改动）
+          - 候选 1: 激进重写（系统提示：完全重写，更好的错误处理）
+          - 候选 2+（如有）: 中间路线，更高 temperature 探索
+        评分标准（越高越好）:
+          smoke_pass × 100 + error_handling_bonus + simplicity_bonus
+        最高分候选晋升生产（走 evolve_tool 的热重载 + backup 路径）。
+        """
+        from provider.base import Message
+
+        if num_candidates < 1:
+            num_candidates = 1
+        if num_candidates > 4:
+            num_candidates = 4  # 上限 4 个，避免 API 开销
+
+        current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        evolution_template = self._cfg.load_prompt("evolution")
+
+        base_prompt = evolution_template.replace("{{tool_name}}", tool_name)
+        base_prompt = base_prompt.replace("{{current_source}}", current_src[:3000])
+        base_prompt = base_prompt.replace("{{failure_summary}}", feedback[:1000])
+
+        # 每个候选的 system_msg + temperature 策略
+        candidate_strategies: list[tuple[str, float | None]] = [
+            (
+                "你是 lingzhou 的自进化模块。请对工具做【最小改动】修复，保持现有结构，只修改出问题的代码。输出完整 Python 代码。",
+                0.2,
+            ),
+            (
+                "你是 lingzhou 的自进化模块。请【完全重写】工具，追求更好的错误处理、更清晰的逻辑，同时修复反馈中的问题。输出完整 Python 代码。",
+                0.7,
+            ),
+            (
+                "你是 lingzhou 的自进化模块。用【折中策略】改进工具：保留核心逻辑，重构出问题的部分，补充防御性检查。输出完整 Python 代码。",
+                0.5,
+            ),
+            (
+                "你是 lingzhou 的自进化模块。从用户视角思考工具应该如何工作，然后重写使其行为更符合预期。输出完整 Python 代码。",
+                0.6,
+            ),
+        ]
+
+        _log.info("[competitive_evolve] 开始竞争进化 tool=%r candidates=%d", tool_name, num_candidates)
+
+        # 并行生成所有候选
+        async def _gen_candidate(idx: int) -> tuple[int, str]:
+            sys_msg, temp = candidate_strategies[idx % len(candidate_strategies)]
+            msgs = [
+                Message(role="system", content=sys_msg),
+                Message(role="user", content=base_prompt),
+            ]
+            try:
+                raw = await self._provider.chat(msgs, temperature=temp)
+                code = _extract_python(raw)
+                compile(code, tool_path.name, "exec")  # 基础语法检查
+                return idx, code
+            except Exception as exc:
+                _log.debug("[competitive_evolve] 候选 %d 生成失败: %s", idx, exc)
+                return idx, ""
+
+        # asyncio.gather 并行生成
+        gen_tasks = [_gen_candidate(i) for i in range(num_candidates)]
+        gen_results: list[tuple[int, str]] = list(await asyncio.gather(*gen_tasks))
+
+        # smoke test 评分
+        _project_root = Path(__file__).parent.parent
+        scored: list[tuple[int, int, str]] = []  # (score, idx, code)
+
+        for idx, code in gen_results:
+            if not code:
+                _log.debug("[competitive_evolve] 候选 %d 生成空代码，跳过", idx)
+                continue
+
+            smoke_err = self._smoke_test_module(code, tool_path, _project_root)
+            if smoke_err:
+                _log.debug("[competitive_evolve] 候选 %d smoke 失败: %s", idx, smoke_err[:100])
+                continue
+
+            score = _score_candidate(code)
+            _log.info("[competitive_evolve] 候选 %d smoke PASS score=%d", idx, score)
+            scored.append((score, idx, code))
+
+        if not scored:
+            _log.warning("[competitive_evolve] 所有候选均未通过 smoke，回退到标准 evolve_tool")
+            return await self.evolve_tool(tool_name, tool_path, feedback)
+
+        # 取最高分候选
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_idx, best_code = scored[0]
+        _log.info("[competitive_evolve] 最优候选=%d score=%d（共 %d 个通过 smoke）",
+                  best_idx, best_score, len(scored))
+
+        # 走标准热重载路径（复用 evolve_tool 的 backup + reload + verification 逻辑）
+        # 通过替换 provider 响应模拟"用 best_code 做 evolve"
+        return await self._promote_candidate(tool_name, tool_path, best_code, best_idx, best_score)
+
+    async def _promote_candidate(
+        self,
+        tool_name: str,
+        tool_path: Path,
+        code: str,
+        candidate_idx: int,
+        score: int,
+    ) -> EvolutionResult:
+        """将通过竞争评估的候选代码直接写入生产路径并热加载。"""
+        current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+
+        # 备份
+        backup_path = tool_path.with_suffix(".py.bak")
+        if self._cfg.evolution.backup and tool_path.exists():
+            backup_path.write_text(current_src, encoding="utf-8")
+            _clean_old_backups(tool_path)
+
+        tool_path.write_text(code, encoding="utf-8")
+
+        module_name = f"tools.{tool_path.stem}"
+        try:
+            self._reload_module_from_path(module_name, tool_path)
+            if not self._tool_manifest_is_present(tool_name):
+                raise RuntimeError(f"热重载后未注册目标工具: {tool_name}")
+        except Exception:
+            self._restore_text(tool_path, current_src)
+            try:
+                self._reload_module_from_path(module_name, tool_path)
+            except Exception:
+                pass
+            raise
+
+        _log.info("[competitive_evolve] 候选 %d (score=%d) 晋升为生产版本: %r",
+                  candidate_idx, score, tool_name)
+        await self._update_dreams(f"竞争进化完成：候选 {candidate_idx} 以评分 {score} 赢得 {tool_name} 改进权")
+        return EvolutionResult(
+            success=True,
+            target=tool_name,
+            new_code=code,
+            reason=f"competitive_evolve: candidate={candidate_idx} score={score}",
+        )
+
     async def _update_dreams(self, trigger_desc: str) -> None:
         """进化成功后，追加一条真实的志向到 DREAMS.md。
 
@@ -833,6 +983,42 @@ print("SMOKE_OK")
             _log.info("[evolution] DREAMS.md 追加志向: %s", aspiration[:60])
         except Exception as exc:
             _log.debug("[evolution] DREAMS.md 更新跳过: %s", exc)
+
+
+def _score_candidate(code: str) -> int:
+    """对候选代码进行静态质量评分（越高越好），用于竞争进化排名。
+
+    评分维度（启发式）：
+      +100 基础分（通过 smoke 保证）
+      +10  每有一个 except 块（防御性错误处理）
+      +5   有 logging / _log.（可观测性）
+      +5   代码行数适中（50~300 行：不太短也不太长）
+      -10  过长代码（>400 行，可能有多余内容）
+      -5   有 print() 语句（生产代码不应有）
+    """
+    score = 100
+    lines = code.splitlines()
+    n = len(lines)
+
+    # 错误处理
+    except_count = sum(1 for l in lines if l.strip().startswith("except"))
+    score += min(except_count * 10, 50)  # 最多 +50
+
+    # 日志可观测性
+    if "_log." in code or "logging." in code:
+        score += 5
+
+    # 代码长度适中
+    if 50 <= n <= 300:
+        score += 5
+    elif n > 400:
+        score -= 10
+
+    # 惩罚 print 语句
+    print_count = sum(1 for l in lines if l.strip().startswith("print("))
+    score -= print_count * 5
+
+    return score
 
 
 def _extract_python(text: str) -> str:

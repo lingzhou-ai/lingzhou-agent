@@ -250,6 +250,8 @@ class CognitionLoop:
             emotion=self._emotion,
             probe_manager=self._probe_manager,
             judgment=self._judgment,
+            execution=self._execution,
+            registry=self._registry,
         )
 
     async def open(self) -> None:

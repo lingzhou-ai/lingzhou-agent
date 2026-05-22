@@ -5,7 +5,9 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import signal
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,16 +21,56 @@ _MANIFEST = ToolManifest(
     description=(
         "在当前宿主环境中执行一次性 shell 命令（非持久会话）。"
         "返回 stdout+stderr 合并输出摘要，并受 timeout 与输出截断限制。"
+        "高风险命令会自动触发沙箱隔离并向工作记忆注入危险感知信号。"
     ),
     progress_category="mutation",
     capabilities=("completion_verify",),
-        params=[
+    params=[
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),
         ToolParam("workdir", "string", "工作目录，默认项目根目录", required=False),
         ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认不限制（0=不限制，传正整数截断）", required=False),
+        ToolParam("sandbox", "boolean", "是否在隔离沙箱中运行（临时目录 + 受限 PATH）；危险命令自动启用", required=False),
     ],
 )
+
+# ── 危险命令感知 ────────────────────────────────────────────────────────────────
+
+_RISKY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # rm 递归/强制删除（根路径、家目录、相对上级）
+    (re.compile(r'\brm\b.*-[^\s]*[rR][^\s]*\s+(/|~/|--\s*/)', re.S), "rm 递归删除系统/根路径"),
+    (re.compile(r'\brm\b.*-[^\s]*[fF][^\s]*\s+(/|~/)', re.S), "rm 强制删除根路径"),
+    # dd 磁盘写入
+    (re.compile(r'\bdd\b.+\bif=/dev/', re.S), "dd 直接读写磁盘设备"),
+    (re.compile(r'\bdd\b.+\bof=/dev/', re.S), "dd 直接写入磁盘设备"),
+    # 磁盘格式化
+    (re.compile(r'\b(mkfs|fdisk|parted)\b'), "磁盘格式化/分区操作"),
+    (re.compile(r'\bdiskutil\s+(erase|reformat)\b'), "diskutil 抹盘"),
+    # 从网络下载并直接执行
+    (re.compile(r'(curl|wget)\b.+\|\s*(ba?sh|sh|zsh|python\d*)\b', re.S), "从网络下载并管道执行脚本"),
+    # 写入裸设备文件
+    (re.compile(r'>\s*/dev/(sd[a-z]|nvme|disk\d)'), "直接写入块设备"),
+    # 系统关机/重启
+    (re.compile(r'\b(shutdown|reboot|poweroff|halt|init\s+0)\b'), "系统关机或重启"),
+    # fork 炸弹
+    (re.compile(r':\s*\(\s*\)\s*\{'), "fork 炸弹特征"),
+    # 修改根目录或系统路径权限
+    (re.compile(r'\bchmod\b.*\s(/|/etc|/usr|/bin)\b'), "修改系统目录权限"),
+    # 清空 cron
+    (re.compile(r'\bcrontab\s+-r\b'), "清空所有 cron 任务"),
+    # 清空文件系统层文件
+    (re.compile(r'\bshred\b.+(/etc|/usr|/bin|/lib)'), "shred 销毁系统文件"),
+    # 高风险数据库操作（宽泛匹配，非精确 SQL 语法）
+    (re.compile(r'\b(DROP\s+DATABASE|DROP\s+TABLE|TRUNCATE\s+TABLE)\b', re.IGNORECASE), "数据库破坏性 DDL"),
+]
+
+
+def _check_risky(command: str) -> tuple[bool, str]:
+    """检测命令是否含有高风险模式。返回 (is_risky, reason)。"""
+    for pattern, reason in _RISKY_PATTERNS:
+        if pattern.search(command):
+            return True, reason
+    return False, ""
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -102,7 +144,33 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         else preview_raw
     )
 
-    workdir = _resolve_workdir(params.get("workdir"), ctx)
+    # ── 危险感知 ─────────────────────────────────────────────────────────────
+    is_risky, risk_reason = _check_risky(command)
+    sandbox_param = params.get("sandbox")
+    # sandbox=True if: (a) 显式请求，或 (b) 命令高风险且用户未明确关闭
+    use_sandbox = bool(sandbox_param) if sandbox_param is not None else is_risky
+
+    if is_risky:
+        # 向工作记忆注入危险感知信号（不阻断执行，让灵舟自己判断）
+        try:
+            from memory.working import WMItem
+            ctx.wm.add(WMItem(
+                kind="caution",
+                content=f"shell.run 危险感知（{risk_reason}）: {command[:120]}",
+                priority=0.96,
+            ))
+        except Exception:
+            pass  # WM 不可用时不阻断
+
+    workdir_raw = params.get("workdir")
+
+    # ── 沙箱模式：临时目录 + 受限 PATH ────────────────────────────────────────
+    _sandbox_dir: str | None = None
+    if use_sandbox:
+        _sandbox_dir = tempfile.mkdtemp(prefix="lz_sandbox_")
+        workdir = Path(_sandbox_dir)
+    else:
+        workdir = _resolve_workdir(workdir_raw, ctx)
 
     # 最小化 env：过滤含 API_KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL / AUTH 的变量
     # 防止提示注入攻击通过 printenv / curl 等命令外泄 API 密钥
@@ -111,6 +179,12 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         k: v for k, v in os.environ.items()
         if not any(kw in k.upper() for kw in _SECRET_KWORDS)
     }
+    if use_sandbox:
+        # 沙箱模式：只保留最小 PATH，将 HOME 重定向到沙箱目录
+        safe_env["PATH"] = "/usr/bin:/bin:/usr/local/bin"
+        safe_env["HOME"] = _sandbox_dir or str(workdir)
+        safe_env["TMPDIR"] = _sandbox_dir or str(workdir)
+
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(workdir),
@@ -156,6 +230,10 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     summary_body = _compact_summary_text(preview_text, 120)
     status = "timeout" if timed_out else f"exit={returncode}"
     summary = f"{status} cwd={workdir}"
+    if use_sandbox:
+        summary = f"[sandbox] {summary}"
+    if is_risky:
+        summary = f"[risky:{risk_reason}] {summary}"
     if summary_body:
         summary += f" | {summary_body}"
 
@@ -172,6 +250,10 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "stdout_preview": _truncate_text(stdout, preview_limit),
         "stderr_preview": _truncate_text(stderr, preview_limit),
         "log_summary": f"shell.run {'timeout' if timed_out else f'exit={returncode}'} chars={len(combined)}",
+        "sandbox": use_sandbox,
+        "sandbox_dir": _sandbox_dir,
+        "risky": is_risky,
+        "risk_reason": risk_reason,
     }
 
     return ToolResult(
@@ -184,5 +266,7 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             "process": "finished",
             "exit_code": returncode,
             "timed_out": timed_out,
+            "sandbox": use_sandbox,
+            "risky": is_risky,
         },
     )
