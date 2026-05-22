@@ -801,7 +801,7 @@ async def _tick_finalize_impl(
             else:
                 bounds = cfg.loop.idle_no_task_bounds
                 lo, hi = (float(bounds[0]) / 1000.0, float(bounds[1]) / 1000.0) if len(bounds) >= 2 else (5.0, 300.0)
-            loop._pending_idle_gap = max(lo, min(hi, gap_f))
+            loop._pending_idle_gap = max(lo, min(hi, gap_f * (2.0 if not getattr(loop, '_last_act_progressful', True) else 1.0)))
         except (TypeError, ValueError):
             loop._pending_idle_gap = None
     else:
