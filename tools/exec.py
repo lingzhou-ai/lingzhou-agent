@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT, CAPS_RUN_SPAWN
+from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 
 _log = logging.getLogger("lingzhou.tools.exec")
 
@@ -313,7 +313,7 @@ _CAP_MANIFEST_V2 = ToolManifest(
     params=[],
     prefer_tier="reader",
     progress_category="info",
-    capabilities=(*CAPS_EXEMPT, "completion_info_only"),
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
 )
 
 
@@ -358,7 +358,7 @@ _EXEC_MANIFEST = ToolManifest(
         ToolParam("env", "object", "环境变量字典（可选）", required=False),
     ],
     progress_category="mutation",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 
@@ -665,7 +665,7 @@ _PROCESS_MANIFEST_LIST = ToolManifest(
     description="列出所有通过 exec 启动的进程。可过滤 running/finished/all。",
     params=[ToolParam("status", "string", "过滤：running/finished/all（默认 all）", required=False)],
     progress_category="info",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 _PROCESS_MANIFEST_POLL = ToolManifest(
@@ -673,7 +673,7 @@ _PROCESS_MANIFEST_POLL = ToolManifest(
     description="检查指定进程的状态。返回是否已完成、退出码、运行时间等。",
     params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
     progress_category="info",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 _PROCESS_MANIFEST_LOG = ToolManifest(
@@ -685,7 +685,7 @@ _PROCESS_MANIFEST_LOG = ToolManifest(
         ToolParam("limit", "number", "最多读多少字符，默认 2000", required=False),
     ],
     progress_category="info",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 _PROCESS_MANIFEST_WRITE = ToolManifest(
@@ -697,7 +697,7 @@ _PROCESS_MANIFEST_WRITE = ToolManifest(
         ToolParam("eof", "boolean", "写入后是否关闭输入（默认 false）", required=False),
     ],
     progress_category="mutation",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 _PROCESS_MANIFEST_KILL = ToolManifest(
@@ -705,7 +705,7 @@ _PROCESS_MANIFEST_KILL = ToolManifest(
     description="强制终止指定进程。",
     params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
     progress_category="mutation",
-    capabilities=CAPS_RUN_SPAWN,
+    capabilities=("run_spawn",),
 )
 
 
