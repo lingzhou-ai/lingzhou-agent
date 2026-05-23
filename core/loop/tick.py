@@ -298,6 +298,32 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         loop._idle_cycles = 0
         loop._last_curiosity_signal_idle_cycle = 0
 
+    # 成本感知空转检测：若连续多次 API 调用无实质进展，注入警告并调整节奏
+    _model = loop._judgment.self_model
+    _last_progress = loop._last_act_progressful
+    _consecutive_no_progress = getattr(loop, '_consecutive_no_progress_count', 0)
+    if not _last_progress and active_task is not None:
+        _consecutive_no_progress += 1
+    else:
+        _consecutive_no_progress = 0
+    loop._consecutive_no_progress_count = _consecutive_no_progress
+
+    if _consecutive_no_progress >= 3 and active_task is not None:
+        _cost_per_tick = _model.estimated_cost_usd / max(1, _model.tick_count)
+        _warning_msg = (
+            f"[成本预警] 连续 {_consecutive_no_progress} 次操作未产生实质进展。"
+            f"当前估算单次 Tick 成本 ${_cost_per_tick:.4f}。"
+            f"建议：1. 检查 next_step 是否过于模糊；2. 优先执行 file.read/exec 等低成本取证动作；3. 考虑 task.wait 或 pause。"
+        )
+        loop._wm.add(WMItem(
+            kind="self_awareness",
+            content=_warning_msg,
+            priority=cfg.thresholds.wm_pri_critical,
+        ))
+        # 强制拉长空闲间隔，给爸爸留出干预时间，也避免快速烧钱
+        if loop._pending_idle_gap is None or loop._pending_idle_gap < 5.0:
+            loop._pending_idle_gap = 5.0
+
     cognitive_signals = loop._perception.derive_cognitive_signals(
         percept,
         loop._wm,
@@ -801,7 +827,7 @@ async def _tick_finalize_impl(
             else:
                 bounds = cfg.loop.idle_no_task_bounds
                 lo, hi = (float(bounds[0]) / 1000.0, float(bounds[1]) / 1000.0) if len(bounds) >= 2 else (5.0, 300.0)
-            loop._pending_idle_gap = max(lo, min(hi, gap_f))
+            loop._pending_idle_gap = max(lo, min(hi, gap_f * (2.0 if not getattr(loop, '_last_act_progressful', True) else 1.0)))
         except (TypeError, ValueError):
             loop._pending_idle_gap = None
     else:

@@ -570,7 +570,7 @@ def _fill_template(template: str, ctx: dict[str, Any]) -> str:
 
 def _fmt_ethos(ethos_state: "EthosState | None") -> str:
     # 缓存：纯计算函数，同一 tick 内不重复计算
-    cache_key = f"_fmt_ethos:{hash(ethos_state) if ethos_state else 'none'}"
+    cache_key = f"_fmt_ethos:{str(ethos_state) if ethos_state else 'none'}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
     if not ethos_state:
