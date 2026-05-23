@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     body        TEXT NOT NULL,
     activation  REAL NOT NULL DEFAULT 0.5,
     valence     REAL NOT NULL DEFAULT 0.5,
+    importance  REAL NOT NULL DEFAULT 0.0,
     tags        TEXT NOT NULL DEFAULT '[]',
     source      TEXT NOT NULL DEFAULT '',
     embedding   TEXT,
@@ -85,6 +86,7 @@ class MemoryNode:
     valence: float = 0.5
     importance: float = 0.0
     tags: list[str] = field(default_factory=list[str])
+    source: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -215,6 +217,14 @@ class SemanticMemory:
     def _setup_fts5(self, conn: sqlite3.Connection) -> None:
         """Create FTS5 table (if absent) and populate from existing nodes; set self._fts5_ok."""
         try:
+            # 检查已有 nodes_fts 是否缺少 id 列（旧 schema 未含 UNINDEXED id）
+            # CREATE VIRTUAL TABLE IF NOT EXISTS 不更新已存在表，需要先 DROP
+            try:
+                conn.execute("SELECT id FROM nodes_fts LIMIT 0")
+            except Exception:
+                _log.warning("[semantic] nodes_fts 缺少 id 列，重建 FTS5 表")
+                conn.execute("DROP TABLE IF EXISTS nodes_fts")
+                conn.commit()
             conn.executescript(_DDL_FTS5)
             # Populate FTS5 for nodes already in DB but missing from FTS5 (idempotent)
             conn.execute("""
@@ -292,19 +302,21 @@ class SemanticMemory:
         # （INSERT OR REPLACE 会先 DELETE 旧行再 INSERT，导致 embedding 列丢失）
         self._conn.execute(
             """INSERT INTO nodes
-               (id, kind, title, body, activation, valence, tags, source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             (id, kind, title, body, activation, valence, importance, tags, source, created_at)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                  kind=excluded.kind,
                  title=excluded.title,
                  body=excluded.body,
                  activation=excluded.activation,
                  valence=excluded.valence,
+                                 importance=excluded.importance,
                  tags=excluded.tags,
                  source=excluded.source""",
             (
                 node.id, node.kind, node.title, node.body,
                 node.activation, node.valence,
+                                node.importance,
                 tags_json,
                 getattr(node, 'source', ''),
                 node.created_at,

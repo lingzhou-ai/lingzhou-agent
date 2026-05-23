@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from core.config import Config
+    from core.config import Config, EmotionConfig
 
 
 # ── 辅助 ──────────────────────────────────────────────────────────────────────
@@ -75,6 +75,7 @@ class EmotionState:
         wm_pressure: float,
         workspace_dirty: bool,
         alpha: float,
+        emotion_cfg: "EmotionConfig | None" = None,
         *,
         high_error_streak: int = 0,
         replay_trend: str = "stable",
@@ -87,14 +88,23 @@ class EmotionState:
         设计原则：感知信号 → 评价维度 → core affect → 离散情感 → 调节策略。
         LLM 不参与情绪计算（LLM 自报告自身情绪属自引用错误）。
         """
+        failure_normalization_count = getattr(emotion_cfg, "failure_normalization_count", 3.0)
+        high_error_normalization_streak = getattr(emotion_cfg, "high_error_normalization_streak", 3.0)
         prediction = clamp01(prediction_error)
         wm_trust = clamp01(1.0 - wm_pressure)
-        failures = clamp01(failure_count / 3.0)
+        failures = clamp01(failure_count / failure_normalization_count)
         blocked = 1.0 if task_status == "blocked" else 0.0
         next_s = 1.0 if has_next_step else 0.0
         has_task = 1.0 if has_active_task else 0.0
         recovering = 1.0 if replay_trend == "recovering" else 0.0
-        high_err = clamp01(high_error_streak / 3.0)
+        high_err = clamp01(high_error_streak / high_error_normalization_streak)
+        feeling_min_intensity = getattr(emotion_cfg, "feeling_min_intensity", 0.15)
+        regulation_down_regulate_arousal_high = getattr(emotion_cfg, "regulation_down_regulate_arousal_high", 0.75)
+        regulation_down_regulate_valence_low = getattr(emotion_cfg, "regulation_down_regulate_valence_low", 0.30)
+        regulation_down_regulate_worsening_valence = getattr(emotion_cfg, "regulation_down_regulate_worsening_valence", 0.45)
+        regulation_up_regulate_recovering_valence = getattr(emotion_cfg, "regulation_up_regulate_recovering_valence", 0.55)
+        regulation_up_regulate_signal_valence = getattr(emotion_cfg, "regulation_up_regulate_signal_valence", 0.60)
+        regulation_high_error_streak_guard = getattr(emotion_cfg, "regulation_high_error_streak_guard", 2)
 
         # ── OCC 评价维度 ────────────────────────────────────────────────────────
         app = Appraisal(
@@ -112,7 +122,7 @@ class EmotionState:
             ),
         )
 
-        # ── 离散情感（强度 < 0.15 过滤）──────────────────────────────────────
+        # ── 离散情感（强度低于 emotion.feeling_min_intensity 时过滤）────────────
         raw_feelings: list[tuple[str, float, str]] = [
             ("distress",   clamp01(max(0, -app.goal_congruence) * 0.8 + 0.2 * failures), "goal_failure"),
             ("frustration",clamp01(0.6 * blocked + 0.4 * prediction),                    "blocked_or_error"),
@@ -123,7 +133,7 @@ class EmotionState:
             ("joy",        clamp01(max(0, app.goal_congruence) * 0.55),                   "goal_progress"),
         ]
         feelings = sorted(
-            [Feeling(n, i, c) for n, i, c in raw_feelings if i >= 0.15],
+            [Feeling(n, i, c) for n, i, c in raw_feelings if i >= feeling_min_intensity],
             key=lambda f: -f.intensity,
         )[:6]
 
@@ -144,12 +154,24 @@ class EmotionState:
         self.dominant  = feelings[0].name if feelings else ""
 
         # ── 调节策略（Gross 1998）────────────────────────────────────────────
-        if self.arousal > 0.75 or self.valence < 0.30 or (replay_trend == "worsening" and self.valence < 0.45):
-            reason = "高唤醒/低效价或趋势恶化" if self.arousal > 0.75 or self.valence < 0.30 else "趋势恶化预警"
+        if (
+            self.arousal > regulation_down_regulate_arousal_high
+            or self.valence < regulation_down_regulate_valence_low
+            or (replay_trend == "worsening" and self.valence < regulation_down_regulate_worsening_valence)
+        ):
+            reason = (
+                "高唤醒/低效价或趋势恶化"
+                if self.arousal > regulation_down_regulate_arousal_high
+                or self.valence < regulation_down_regulate_valence_low
+                else "趋势恶化预警"
+            )
             self.regulation = Regulation("down-regulate", reason)
-        elif (replay_trend == "recovering" and self.valence < 0.55) or (recovering and self.valence < 0.60):
+        elif (
+            (replay_trend == "recovering" and self.valence < regulation_up_regulate_recovering_valence)
+            or (recovering and self.valence < regulation_up_regulate_signal_valence)
+        ):
             self.regulation = Regulation("up-regulate", "趋势改善，保持恢复势头")
-        elif high_error_streak >= 2:
+        elif high_error_streak >= regulation_high_error_streak_guard:
             self.regulation = Regulation("down-regulate", "连续高预测误差，需切换策略")
         else:
             self.regulation = Regulation("maintain", "")
@@ -182,7 +204,9 @@ class EmotionReplaySummary:
 
 def build_perception_replay(
     events: list[dict[str, Any]],
-    high_error_threshold: float = 0.7,
+    high_error_threshold: float,
+    trend_delta: float,
+    high_error_hint_streak: int,
 ) -> PerceptionReplaySummary:
     """从持久化的 perception_events 构建重放摘要。"""
     r = PerceptionReplaySummary(samples=len(events))
@@ -197,13 +221,13 @@ def build_perception_replay(
         r.high_error_streak += 1
     if len(events) >= 2:
         delta = errors[-1] - errors[0]
-        if delta >= 0.15:
+        if delta >= trend_delta:
             r.trend = "worsening"
-        elif delta <= -0.15:
+        elif delta <= -trend_delta:
             r.trend = "recovering"
         else:
             r.trend = "stable"
-    if r.high_error_streak >= 2:
+    if r.high_error_streak >= high_error_hint_streak:
         r.hints.append("预测误差持续偏高，应切换策略或补充证据再重试")
     if r.trend == "recovering":
         r.hints.append("感知趋势改善中，保持较窄恢复路径并持续验证")
@@ -212,7 +236,10 @@ def build_perception_replay(
     return r
 
 
-def build_emotion_replay(events: list[dict[str, Any]]) -> EmotionReplaySummary:
+def build_emotion_replay(
+    events: list[dict[str, Any]],
+    trend_delta: float,
+) -> EmotionReplaySummary:
     """从持久化的 emotion_events 构建重放摘要。"""
     r = EmotionReplaySummary(samples=len(events))
     if not events:
@@ -223,5 +250,5 @@ def build_emotion_replay(events: list[dict[str, Any]]) -> EmotionReplaySummary:
         r.down_regulate_streak += 1
     if len(events) >= 2:
         delta = events[-1]["valence"] - events[0]["valence"]
-        r.trend = "recovering" if delta >= 0.10 else ("worsening" if delta <= -0.10 else "stable")
+        r.trend = "recovering" if delta >= trend_delta else ("worsening" if delta <= -trend_delta else "stable")
     return r

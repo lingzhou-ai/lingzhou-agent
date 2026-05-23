@@ -208,7 +208,7 @@ def test_episodic_record_keeps_narrative_when_fts_sync_fails():
         ep._sync_narrative_fts = _boom  # type: ignore[method-assign]
         ep.record("user", "记录一条需要保留的情节", task_id="task-1")
 
-        md_text = (Path(d) / "task-task-1.md").read_text(encoding="utf-8")
+        md_text = EpisodicMemory.narrative_path_for_dir(Path(d), "task-1").read_text(encoding="utf-8")
         assert "记录一条需要保留的情节" in md_text
 
         rows = ep.query_recent_narrative(hours=24, limit=10)
@@ -216,6 +216,27 @@ def test_episodic_record_keeps_narrative_when_fts_sync_fails():
 
         turns = ep.get_recent_turns("task-1", limit=5)
         assert any(turn["content"] == "记录一条需要保留的情节" for turn in turns)
+
+
+def test_episodic_migrates_legacy_root_narrative_files():
+    """旧版根目录 task/global narrative 文件应迁移到 episodic/ 子目录。"""
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        memory_dir = Path(d)
+        legacy_task = memory_dir / "task-legacy.md"
+        legacy_global = memory_dir / "global.md"
+        legacy_task.write_text("旧任务叙事", encoding="utf-8")
+        legacy_global.write_text("旧全局叙事", encoding="utf-8")
+
+        ep = EpisodicMemory(memory_dir, max_events=0)
+
+        assert not legacy_task.exists()
+        assert not legacy_global.exists()
+        assert EpisodicMemory.narrative_path_for_dir(memory_dir, "legacy").read_text(encoding="utf-8") == "旧任务叙事"
+        assert EpisodicMemory.narrative_path_for_dir(memory_dir, None).read_text(encoding="utf-8") == "旧全局叙事"
+        assert ep.load_for_context("legacy", max_chars=200) == "旧任务叙事"
+        assert "legacy" in ep.list_tasks()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

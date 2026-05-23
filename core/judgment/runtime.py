@@ -19,24 +19,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
+from core.execution import action_key_param
 from core.self_model import SelfModel, fmt_self_model
 from tools.registry import tool_has_capability
 from .output import (
     JudgmentOutput,
     ModelHealth,
     ModelSelection,
-    _ASK_EVIDENCE_BUDGET,
     _rewrite_task_ask_to_evidence,
     _rewrite_complex_act_to_task_plan,
     _structured_tool_history_window,
     _build_team_view_from_cfg,
-    is_reader_tool,
     tool_tier,
     tool_tier_mapping,
 )
 from .context import (
     _clear_context_cache,
-    _emotion_label,
     _fill_template,
     _fmt_chat_history,
     _fmt_cognitive_signals,
@@ -106,7 +104,24 @@ class JudgmentLayer:
         self._judgment_template = cfg.load_prompt("judgment")
         _skills_dir = Path(cfg.loop.workspace_dir).expanduser() / "skills"
         self._skills = SkillRegistry(skills_dir=_skills_dir)
-        self._ref_resolver = ReferenceResolver(provider=provider)
+        self._ref_resolver = ReferenceResolver(
+            provider=provider,
+            min_confidence=cfg.thresholds.reference_min_confidence,
+            local_signal_base=cfg.thresholds.reference_local_signal_base,
+            local_signal_step=cfg.thresholds.reference_local_signal_step,
+            local_confidence_cap=cfg.thresholds.reference_local_confidence_cap,
+            max_anchors=cfg.thresholds.reference_max_anchors,
+            topic_top_k=cfg.thresholds.reference_topic_top_k,
+            recent_narrative_limit=cfg.thresholds.reference_recent_narrative_limit,
+            recent_semantic_top_k=cfg.thresholds.reference_recent_semantic_top_k,
+            candidate_cap=cfg.thresholds.reference_candidate_cap,
+            entity_section_limit=cfg.thresholds.reference_entity_section_limit,
+            anchor_text_chars=cfg.thresholds.reference_anchor_text_chars,
+            candidate_body_chars=cfg.thresholds.reference_candidate_body_chars,
+            entity_snippet_chars=cfg.thresholds.reference_entity_snippet_chars,
+            reason_temperature=cfg.temperature,
+            topic_anchor_min_chars=cfg.thresholds.reference_topic_anchor_min_chars,
+        )
         # 自我模型追踪：持久化运行态与任务连续性
         self.self_model = SelfModel()
         # 分层路由 providers：{"simple": <provider>, "complex": <provider>}
@@ -241,6 +256,8 @@ class JudgmentLayer:
         text = (err_text or "").lower()
         if " 429 " in f" {text} " or "too many requests" in text:
             return "429"
+        if " 402 " in f" {text} " or "payment required" in text or "insufficient balance" in text:
+            return "402"
         if " 401 " in f" {text} " or "unauthorized" in text:
             return "401"
         if " 403 " in f" {text} " or "forbidden" in text:
@@ -255,6 +272,9 @@ class JudgmentLayer:
         streak = max(1, failure_streak)
         if code == "429":
             return min(180.0, 30.0 * streak)
+        if code == "402":
+            # 余额耗尽 — 不会自动恢复，本次会话屏蔽 24h
+            return 86400.0
         if code in {"401", "403"}:
             return min(300.0, 120.0 + 30.0 * (streak - 1))
         if code == "400":
@@ -323,21 +343,7 @@ class JudgmentLayer:
         if prefer_tier in {"reader", "reasoner", "repair"}:
             return prefer_tier
         if phase == "continue":
-            # 高速自进化：防循环门控，连续3次相同工具且无报错，强制切 reasoner 策略调整
-            if tool_history and len(tool_history) >= 3:
-                last_tools = [h.get("tool") for h in tool_history[-3:]]
-                if len(set(last_tools)) == 1 and not self._tool_history_has_error(tool_history):
-                    return "reasoner"
-            current_tier = tool_tier(current_action, self._registry) if current_action else ""
-            if current_tier == "reasoner" and current_action:
-                return "reasoner"
-            if current_tier == "reader" and not self._tool_history_has_error(tool_history):
-                return "reader"
-            if user_message or self._tool_history_has_error(tool_history):
-                return "reasoner"
-            if tool_history and len(tool_history) >= self._cfg.loop.continue_reasoner_after_n_tools:
-                return "reasoner"
-            return "reader"
+            return "reasoner"
         if phase in {"reply", "final"}:
             return "reasoner"
         return "reasoner"
@@ -488,6 +494,112 @@ class JudgmentLayer:
                     continue
                 _log.warning("%s LLM 调用失败: %s", log_prefix, _err)
         return raw, selection, last_error
+
+    def _record_applied_skills(self, output: JudgmentOutput) -> str:
+        applied = ",".join(output.applied_skills) if output.applied_skills else "none"
+        if output.applied_skills:
+            self._last_applied_skill_names = list(output.applied_skills)
+        return applied
+
+    def _counts_as_exploration_budget(self, tool_name: str) -> bool:
+        return any(
+            tool_has_capability(self._registry, tool_name, capability)
+            for capability in ("ask_evidence", "completion_info_only", "completion_verify")
+        )
+
+    def _build_messages(self, user_content: str) -> list[Any]:
+        from provider.base import Message
+
+        system_content = (
+            self._identity_prefix + "\n\n" + self._system_prompt
+            if self._identity_prefix
+            else self._system_prompt
+        )
+        return [
+            Message(role="system", content=system_content),
+            Message(role="user", content=user_content),
+        ]
+
+    def _build_continue_context(
+        self,
+        tool_history: list[dict[str, Any]],
+        *,
+        user_message: str,
+        reply_only: bool,
+        wm_delta: list[dict[str, Any]] | None,
+    ) -> str:
+        history_json_block, history_block = _structured_tool_history_window(tool_history)
+        wm_delta_block = ""
+        if wm_delta:
+            delta_lines = [
+                f"- [{item.get('kind', '')}|p={item.get('priority', 0):.2f}] {item.get('content', '')}"
+                for item in wm_delta
+            ]
+            wm_delta_block = "## 本轮新增工作记忆（WM 更新，初始上下文之后）\n" + "\n".join(delta_lines) + "\n\n"
+        if reply_only:
+            return (
+                f"{self._last_context_text}\n\n"
+                "---\n"
+                f"{wm_delta_block}"
+                "## 结构化最近工具结果(JSON)\n"
+                f"{history_json_block}\n\n"
+                "## 本轮已执行工具历史\n"
+                f"{history_block}\n\n"
+                "你现在处于最终回复阶段。禁止再调用任何工具。"
+                "请只基于已有证据生成对用户的最终 reply_to_user。"
+                "decision 只能是 pause 或 wait，chosen_action_id 必须留空。"
+            )
+
+        hint = "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。" if user_message else ""
+        return (
+            f"{self._last_context_text}\n\n"
+            "---\n"
+            f"{wm_delta_block}"
+            "## 结构化最近工具结果(JSON)\n"
+            f"{history_json_block}\n\n"
+            "## 本轮已执行工具历史\n"
+            f"{history_block}\n\n"
+            "优先依据结构化结果判断当前状态，不要只凭模糊回忆续写。\n\n"
+            f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
+        )
+
+    def _coerce_reply_only_output(self, output: JudgmentOutput) -> JudgmentOutput:
+        if not output.reply_to_user.strip():
+            return JudgmentOutput.wait(reason="[reply-only] reply_to_user 不能为空")
+        return JudgmentOutput(
+            decision=output.decision if output.decision in {"pause", "wait"} else "pause",
+            chosen_action_id="",
+            params={},
+            rationale=output.rationale,
+            reflection=output.reflection,
+            reply_to_user=output.reply_to_user,
+            next_step=output.next_step,
+            model_strategy=dict(output.model_strategy or {}),
+        )
+
+    def _finalize_continue_output(
+        self,
+        output: JudgmentOutput,
+        *,
+        reply_only: bool,
+        user_message: str,
+        active_task: Any | None,
+        tool_history: list[dict[str, Any]],
+        selection: ModelSelection,
+    ) -> JudgmentOutput:
+        if reply_only:
+            output = self._coerce_reply_only_output(output)
+
+        applied = self._record_applied_skills(output)
+
+        _log.info(
+            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
+            len(tool_history), selection.phase, selection.tier, selection.model_ref,
+            self._last_call_meta["thinking"], applied,
+            output.decision, output.chosen_action_id,
+        )
+        return output
+
     def _build_model_routing_section(
         self,
         *,
@@ -533,15 +645,32 @@ class JudgmentLayer:
         repeat_action_count = 0
         repeat_read_count = 0
         if tool_history:
-            task_explore_count = sum(1 for item in tool_history if item.get("tool") in {"file.list", "file.read", "shell.run"})
+            def _trailing_repeat_count(matcher: Any) -> int:
+                count = 0
+                for item in reversed(tool_history):
+                    if not matcher(item):
+                        break
+                    count += 1
+                return count
+
+            task_explore_count = sum(
+                1
+                for item in tool_history
+                if self._counts_as_exploration_budget(str(item.get("tool") or ""))
+            )
             if len(tool_history) >= 2:
                 _last_tool = str(tool_history[-1].get("tool", ""))
-                repeat_action_count = sum(1 for item in reversed(tool_history) if str(item.get("tool", "")) == _last_tool)
+                _last_action_sig = f"{_last_tool}|{action_key_param(tool_history[-1].get('params') or {})}"
+                repeat_action_count = _trailing_repeat_count(
+                    lambda item: (
+                        f"{str(item.get('tool', ''))}|{action_key_param(item.get('params') or {})}"
+                        == _last_action_sig
+                    )
+                )
                 if _last_tool == "file.read":
                     _last_path = json.dumps(tool_history[-1].get("params", {}), ensure_ascii=False)
-                    repeat_read_count = sum(
-                        1 for item in reversed(tool_history)
-                        if str(item.get("tool", "")) == "file.read"
+                    repeat_read_count = _trailing_repeat_count(
+                        lambda item: str(item.get("tool", "")) == "file.read"
                         and json.dumps(item.get("params", {}), ensure_ascii=False) == _last_path
                     )
 
@@ -552,16 +681,41 @@ class JudgmentLayer:
             and not str(item.get("result") or "").startswith("ERROR[")
         )
 
-        posture = "respond" if user_message else ("converge" if task_explore_count >= 4 else "conserve")
+        posture = (
+            "respond"
+            if user_message
+            else (
+                "converge"
+                if task_explore_count >= self._cfg.thresholds.task_explore_converge_after
+                else "conserve"
+            )
+        )
         implicit_next_phase_default = None
-        if is_reader_tool(current_action, self._registry):
-            implicit_next_phase_default = {
-                "tier": "reader",
-                "trigger": f"last_action={current_action}",
-                "condition": "仅在本轮未显式设置 next_phase_tier 时生效",
-            }
+
+        def _fmt_duration_ms(value: float) -> str:
+            ms = float(value)
+            if ms >= 1000:
+                return f"{ms / 1000.0:g}s"
+            return f"{ms:g}ms"
+
+        with_task_bounds = self._cfg.loop.idle_with_task_bounds
+        no_task_bounds = self._cfg.loop.idle_no_task_bounds
+        with_task_bounds_text = f"{_fmt_duration_ms(with_task_bounds[0])}-{_fmt_duration_ms(with_task_bounds[1])}"
+        no_task_bounds_text = f"{_fmt_duration_ms(no_task_bounds[0])}-{_fmt_duration_ms(no_task_bounds[1])}"
+        default_gap_text = (
+            f"有任务 {_fmt_duration_ms(self._cfg.loop.active_idle_gap)}，"
+            f"无任务 {_fmt_duration_ms(self._cfg.loop.max_idle_gap)}"
+        )
+
         capability_mapping: dict[str, list[str]] = {}
         current_action_caps: list[str] = []
+        task_plan_calls_this_tick = sum(
+            1 for item in (tool_history or []) if str(item.get("tool") or "") == "task.plan"
+        )
+        continue_task_plan_max = self._cfg.thresholds.continue_task_plan_max_per_tick
+        tool_history_compact_threshold = self._cfg.thresholds.continue_tool_history_compact_threshold
+        tool_history_keep_last = self._cfg.thresholds.continue_tool_history_keep_last
+        tool_history_count = len(tool_history or [])
         for manifest in self._registry.list_manifests():
             for cap in manifest.capabilities:
                 capability_mapping.setdefault(cap, []).append(manifest.name)
@@ -573,6 +727,18 @@ class JudgmentLayer:
             "tool_capability_mapping": {k: sorted(v) for k, v in capability_mapping.items()},
             "current_action_capabilities": current_action_caps,
             "implicit_next_phase_default": implicit_next_phase_default,
+            "continue_phase_policy": {
+                "task_plan_calls_this_tick": task_plan_calls_this_tick,
+                "task_plan_max_per_tick": continue_task_plan_max,
+                "task_plan_blocked_next": task_plan_calls_this_tick >= continue_task_plan_max,
+                "tool_history_count": tool_history_count,
+                "tool_history_compact_threshold": tool_history_compact_threshold,
+                "tool_history_keep_last": tool_history_keep_last,
+                "tool_history_will_compact_next": (
+                    tool_history_count >= tool_history_compact_threshold
+                    and tool_history_count > tool_history_keep_last
+                ),
+            },
             "tier_descriptions": {
                 "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
                 "reasoner": "深度推理层：适合用户交互、要求判断、处理复杂状态、制定或调整计划",
@@ -585,14 +751,18 @@ class JudgmentLayer:
                 "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
                 "• tool_capability_mapping：runtime 注入的工具能力真相（如 ask_evidence / plan_bootstrap_exempt / completion_verify）。"
                 "优先按能力标签推理，不要仅凭工具名字猜类别。\n"
-                "• implicit_next_phase_default：runtime 的隐式下轮 tier 默认行为。若该字段非空，表示你本轮若不显式设置 next_phase_tier，loop 可能按这里的规则自动选择下一轮 tier。\n"
+                "• implicit_next_phase_default：兼容字段。当前 runtime 不再根据上个工具自动套用下轮 tier；"
+                "若你希望下轮走 reader / repair，必须由你显式设置 next_phase_tier。该字段通常为 null。\n"
+                "• continue_phase_policy：runtime 暴露的 tick 内计划限制真相。若 task_plan_blocked_next=true，"
+                "本 tick 再输出 task.plan 会被强制打断；应直接执行计划内工具。"
+                "若 tool_history_will_compact_next=true，下一轮会把早期工具记录折叠成 [compacted] 摘要，应尽量在压缩前完成总结或切换到执行。\n"
                 "• next_idle_gap_secs / next_idle_gap_ms：【必须设置其中之一！】你的生命节奏控制器。"
                 "next_idle_gap_secs 单位秒（小数可用，如 0.5 = 500ms），next_idle_gap_ms 单位毫秒（整数，如 500 = 500ms）；两者同时设置时 ms 优先。"
-                "范围由 idle_with_task_bounds / idle_no_task_bounds 决定（默认有任务时 100ms-30s，无任务时 5s-300s）。"
+                f"范围由 idle_with_task_bounds / idle_no_task_bounds 决定（当前有任务时 {with_task_bounds_text}，无任务时 {no_task_bounds_text}）。"
                 "你必须根据当前上下文主动选择一个合理值，不要依赖默认："
                 "已发起shell预计30s出结果 → next_idle_gap_secs=35；刚回复完用户等下一步 → next_idle_gap_secs=120；"
                 "任务推进中需快速追踪 → next_idle_gap_ms=500；实时等待短命令结束 → next_idle_gap_ms=200。"
-                "不设置此字段则用兜底值 60 秒。控制权在你手里。\n"
+                f"不设置此字段则用当前 loop 默认备用值（{default_gap_text}）。控制权在你手里。\n"
                 "• routing_overrides：临时覆盖 tier→model 映射，格式 {\"reader\": \"bailian/qwen3.6-plus\"}。"
                 "可选 tier: reader / reasoner / repair。从 catalog_models 中选择可用模型。"
                 "设为 {} 可清除覆盖。覆盖持久到显式修改，无需每轮重复设置。\n"
@@ -607,6 +777,8 @@ class JudgmentLayer:
                 "repeat_action_count": repeat_action_count,
                 "repeat_read_count": repeat_read_count,
                 "ask_evidence_hits": ask_evidence_hits,
+                "ask_evidence_budget": self._cfg.thresholds.ask_evidence_budget,
+                "task_explore_converge_after": self._cfg.thresholds.task_explore_converge_after,
                 "global_cost_posture": posture,
             },
             "routing_hint": {
@@ -664,8 +836,6 @@ class JudgmentLayer:
         thinking_override: 覆盖 cfg.thinking（如 chat 模式用 "low" 加速首轮判断）。
         routing_overrides: 临时覆盖 tier→model 映射（由 loop.py 从 model_strategy 读取）。
         """
-        from provider.base import Message
-
         try:
             # per-tick 清空静态缓存（静态 section 仅在本 tick 复用）
             self._context_cache.clear()
@@ -695,16 +865,7 @@ class JudgmentLayer:
             )
         # 缓存给内层工具循环的续判请求用
         self._last_context_text = context_text
-
-        _sys = (
-            self._identity_prefix + "\n\n" + self._system_prompt
-            if self._identity_prefix
-            else self._system_prompt
-        )
-        messages = [
-            Message(role="system", content=_sys),
-            Message(role="user", content=context_text),
-        ]
+        messages = self._build_messages(context_text)
 
         selected_provider, selection = self._select_provider(
             phase=phase,
@@ -745,9 +906,7 @@ class JudgmentLayer:
             raw=raw,
             record_parse_failure=task_store.record_failure,
         )
-        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
-        if output.applied_skills:
-            self._last_applied_skill_names = list(output.applied_skills)
+        _applied = self._record_applied_skills(output)
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
@@ -777,59 +936,15 @@ class JudgmentLayer:
             tool_history: [{"tool": str, "params": dict, "result": str}, ...]
             user_message:  原始用户消息（不再次向 LLM 重复，仅用于选择 provider tier）
         """
-        from provider.base import Message
-
         if not self._last_context_text:
             return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
-
-        history_json_block, history_block = _structured_tool_history_window(tool_history)
-        # 本轮新增 WM 条目（behavior_tracker 警告等不在 tool_history 里的感知更新）
-        wm_delta_block = ""
-        if wm_delta:
-            delta_lines = [
-                f"- [{item.get('kind', '')}|p={item.get('priority', 0):.2f}] {item.get('content', '')}"
-                for item in wm_delta
-            ]
-            wm_delta_block = "## 本轮新增工作记忆（WM 更新，初始上下文之后）\n" + "\n".join(delta_lines) + "\n\n"
-        if reply_only:
-            continuation_context = (
-                f"{self._last_context_text}\n\n"
-                "---\n"
-                f"{wm_delta_block}"
-                "## 结构化最近工具结果(JSON)\n"
-                f"{history_json_block}\n\n"
-                "## 本轮已执行工具历史\n"
-                f"{history_block}\n\n"
-                "你现在处于最终回复阶段。禁止再调用任何工具。"
-                "请只基于已有证据生成对用户的最终 reply_to_user。"
-                "decision 只能是 pause 或 wait，chosen_action_id 必须留空。"
-            )
-        else:
-            hint = (
-                "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。"
-                if user_message else ""
-            )
-            continuation_context = (
-                f"{self._last_context_text}\n\n"
-                "---\n"
-                f"{wm_delta_block}"
-                "## 结构化最近工具结果(JSON)\n"
-                f"{history_json_block}\n\n"
-                "## 本轮已执行工具历史\n"
-                f"{history_block}\n\n"
-                "优先依据结构化结果判断当前状态，不要只凭模糊回忆续写。\n\n"
-                f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
-            )
-
-        _sys = (
-            self._identity_prefix + "\n\n" + self._system_prompt
-            if self._identity_prefix
-            else self._system_prompt
+        continuation_context = self._build_continue_context(
+            tool_history,
+            user_message=user_message,
+            reply_only=reply_only,
+            wm_delta=wm_delta,
         )
-        messages = [
-            Message(role="system", content=_sys),
-            Message(role="user", content=continuation_context),
-        ]
+        messages = self._build_messages(continuation_context)
 
         current_action = "" if reply_only else str(tool_history[-1].get("tool", "")) if tool_history else ""
         phase = "reply" if reply_only else "continue"
@@ -871,47 +986,14 @@ class JudgmentLayer:
             context_text=continuation_context,
             raw=raw,
         )
-        if reply_only:
-            if not output.reply_to_user.strip():
-                output = JudgmentOutput.wait(reason="[reply-only] reply_to_user 不能为空")
-            else:
-                output = JudgmentOutput(
-                    decision=output.decision if output.decision in {"pause", "wait"} else "pause",
-                    chosen_action_id="",
-                    params={},
-                    rationale=output.rationale,
-                    reflection=output.reflection,
-                    reply_to_user=output.reply_to_user,
-                    next_step=output.next_step,
-                    model_strategy=dict(output.model_strategy or {}),
-                )
-
-        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
-        if output.applied_skills:
-            self._last_applied_skill_names = list(output.applied_skills)
-        # 前置改写：task.ask 证据预算门
-        if not reply_only and output.decision == "act" and output.chosen_action_id == "task.ask":
-            output = _rewrite_task_ask_to_evidence(
-                output,
-                user_message=user_message,
-                tool_history=tool_history,
-                registry=self._registry,
-            )
-        # 前置改写：复杂 mutation → task.plan
-        if not reply_only and output.decision == "act" and output.chosen_action_id not in {"task.plan", "task.ask"}:
-            output = _rewrite_complex_act_to_task_plan(
-                output,
-                user_message=user_message,
-                active_task=active_task,
-                registry=self._registry,
-            )
-        _log.info(
-            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
-            len(tool_history), selection.phase, selection.tier, selection.model_ref,
-            self._last_call_meta["thinking"], _applied,
-            output.decision, output.chosen_action_id,
+        return self._finalize_continue_output(
+            output,
+            reply_only=reply_only,
+            user_message=user_message,
+            active_task=active_task,
+            tool_history=tool_history,
+            selection=selection,
         )
-        return output
 
     async def _repair_output(self, context_text: str, raw: str) -> "JudgmentOutput | None":
         """对被截断或损坏的 JSON 做一次二次修复。"""
@@ -978,11 +1060,8 @@ class JudgmentLayer:
         raw: str,
         record_parse_failure: Any | None = None,
     ) -> JudgmentOutput:
-        repair_attempted = False
-
         if output.rationale.startswith("LLM 输出解析失败"):
             repaired = await self._repair_output(context_text, raw)
-            repair_attempted = True
             if repaired is not None:
                 output = repaired
             elif record_parse_failure is not None:
@@ -992,13 +1071,6 @@ class JudgmentLayer:
             return JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id \
                 and not output.parallel_actions and not output.delegate_tasks:
-            repaired = None
-            if not repair_attempted:
-                repaired = await self._repair_output(context_text, raw)
-            if repaired is not None and repaired.decision == "act" and (
-                repaired.chosen_action_id or repaired.parallel_actions or repaired.delegate_tasks
-            ):
-                return repaired
             return JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
         return output
 
@@ -1042,7 +1114,15 @@ class JudgmentLayer:
         )
         waiting_tasks_task = asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
         durable_failure_task = asyncio.create_task(_load_durable_failure_snapshot(task_store))
-        context_facts_task = asyncio.create_task(_load_context_facts_snapshot(task_store, task))
+        context_facts_task = asyncio.create_task(_load_context_facts_snapshot(
+            task_store,
+            task,
+            exclude_prefixes=self._cfg.thresholds.fact_context_exclude_prefixes,
+            task_limit=self._cfg.thresholds.fact_context_task_limit,
+            global_limit=self._cfg.thresholds.fact_context_global_limit,
+            recent_scan_multiplier=self._cfg.thresholds.fact_context_recent_scan_multiplier,
+            recent_scan_min=self._cfg.thresholds.fact_context_recent_scan_min,
+        ))
         probes_task = (
             asyncio.create_task(self._probe_manager.list_probes())
             if self._probe_manager else None
@@ -1073,7 +1153,7 @@ class JudgmentLayer:
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
         entity_section = self._ref_resolver.format_section(resolved_entities)
 
-        # 动态构建检索锚点：结合任务、情绪与近期失败，提升语义记忆命中率
+        # 动态构建检索锚点：结合任务、用户原话与近期失败，提升语义记忆命中率
         anchors: list[str] = []
         if task:
             # 优先级：下一步 > 目标 > 标题
@@ -1093,10 +1173,6 @@ class JudgmentLayer:
         if failures:
             anchors.append(failures[0].kind)
         
-        # 情绪状态锚：将当前心境作为检索上下文
-        emotion_label = _emotion_label(emotion, self._cfg)
-        anchors.append(emotion_label)
-
         # 执行语义检索：使用动态锚点集合
         memories = await _el.run_in_executor(
             None, semantic.retrieve_multi_anchor, anchors, self._cfg.memory.semantic_top_k
@@ -1110,7 +1186,12 @@ class JudgmentLayer:
         )
         axioms_val, _ = axioms_fact
         ethos_val, _ = ethos_fact
-        soul_section = _fmt_soul(axioms_val, ethos_val)
+        soul_section = _fmt_soul(
+            axioms_val,
+            ethos_val,
+            json.dumps(self._cfg.soul.ethos_baseline, ensure_ascii=False, sort_keys=True),
+            json.dumps(self._cfg.soul.hard_axioms, ensure_ascii=False),
+        )
 
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
@@ -1172,8 +1253,16 @@ class JudgmentLayer:
         }
         # STM 对话缓冲：源自情节记忆（narrative 表 role=user/assistant_reply）
         # 不走原始 chat_messages 表，记忆系统本身就是正确的历史源。
-        recent_turns = await _el.run_in_executor(None, episodic.get_recent_turns, task_id_str, 3)
-        ctx["chat_history_section"] = _fmt_chat_history(recent_turns)
+        recent_turns = await _el.run_in_executor(
+            None,
+            episodic.get_recent_turns,
+            task_id_str,
+            self._cfg.thresholds.chat_history_turn_limit,
+        )
+        ctx["chat_history_section"] = _fmt_chat_history(
+            recent_turns,
+            max_chars=self._cfg.thresholds.chat_history_max_chars,
+        )
         _validate_context_schema(ctx)
         ctx = apply_context_budget(
             ctx,

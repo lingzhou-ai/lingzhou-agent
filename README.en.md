@@ -19,18 +19,36 @@ lingzhou is not a chat wrapper. It is an event-driven runtime with:
 
 ## Quick Start
 
+Recommended install path (one command):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suuugeee/lingzhou-agent/main/scripts/install.sh | bash
+lingzhou
+```
+
+If you already cloned the source tree:
+
 ```bash
 git clone https://github.com/suuugeee/lingzhou-agent.git
 cd lingzhou-agent
-pip install -e .
+./setup-lingzhou.sh
+lingzhou
+```
 
-mkdir -p ~/.lingzhou
-cp lingzhou.json.example ~/.lingzhou/lingzhou.json
-# edit ~/.lingzhou/lingzhou.json
-# create ~/.lingzhou/.env with provider keys
+If you prefer `pipx`:
 
-lingzhou gateway start -d
-lingzhou gateway start --channel local
+```bash
+pipx install --python python3.12 git+https://github.com/suuugeee/lingzhou-agent.git
+lingzhou
+```
+
+The first `lingzhou` run automatically enters `onboard`, walks through provider setup, seeds the runtime database, and prepares the workspace under `~/.lingzhou/`.
+
+To connect an external channel such as WeChat:
+
+```bash
+lingzhou gateway setup --channel wechat
+lingzhou gateway start --channel wechat -d
 ```
 
 Runtime data is stored under `~/.lingzhou/` by default, including `state/`, `memory/`, `workspace/`, logs, and temporary artifacts. Production setups should keep this layout; the repository itself is intended to store source code, sample config, and documentation.

@@ -88,6 +88,7 @@ async def _run_one_task(
         "status": "ok",
     }]
     final_rationale = ""
+    terminal_decision = "wait"
     error = ""
 
     for round_i in range(max_rounds):
@@ -103,6 +104,7 @@ async def _run_one_task(
             _log.warning("[task_parallel:%s] decide_continue 失败(round=%d): %s", spec_id, round_i, exc)
             break
 
+        terminal_decision = output.decision or terminal_decision
         final_rationale = output.rationale or ""
 
         if output.decision != "act":
@@ -113,11 +115,6 @@ async def _run_one_task(
         if tools and tool_name not in tools:
             _log.info("[task_parallel:%s] 工具 %r 不在白名单，停止", spec_id, tool_name)
             break
-
-        # 防御：task 类工具若未显式指定 task_id，仍自动注入（双重保险）。
-        if tool_name.startswith("task.") and "task_id" not in (output.params or {}):
-            output.params = dict(output.params or {})
-            output.params["task_id"] = task.id
 
         result = await loop._execution.dispatch(output, scoped_ctx)
         tool_history.append({
@@ -141,9 +138,27 @@ async def _run_one_task(
         "error": error,
         "rounds": len(tool_history) - 1,
         "ok_steps": ok_steps,
+        "terminal_decision": terminal_decision,
     }
     await loop._task_store.update_task_result(task.id, result_data)
-    await loop._task_store.update_status(task.id, "failed" if error else "done")
+    if error:
+        await loop._task_store.update_status(task.id, "failed")
+    elif terminal_decision in {"wait", "pause"}:
+        wait_key = str(getattr(task, "parent_task_id", "") or "")
+        next_step = (str(getattr(task, "next_step", "") or "").strip() or (final_rationale or "").strip() or None)
+        await loop._task_store.mark_waiting(
+            task.id,
+            wait_kind="task",
+            wait_key=wait_key,
+            wait_json={
+                "wait_kind": "task",
+                "wait_key": wait_key,
+                "terminal_decision": terminal_decision,
+            },
+            next_step=next_step,
+        )
+    else:
+        await loop._task_store.update_status(task.id, "done")
 
     # 构建返回给主 tick 的 history entry
     steps_text = "\n".join(
@@ -152,20 +167,29 @@ async def _run_one_task(
     )
     result_text = (
         f"目标: {task.goal}\n"
+        f"最终决策: {terminal_decision}\n"
         f"结论: {final_rationale or '(无结论)'}\n"
         f"步骤:\n{steps_text or '  (无步骤)'}"
     )
     if error:
         result_text += f"\n错误: {error}"
 
-    summary = f"[{spec_id}/task:{task.id}] {ok_steps} 步完成: {(final_rationale or '(无结论)')[:200]}"
+    summary_prefix = f"[{spec_id}/task:{task.id}]"
+    if error:
+        summary = f"{summary_prefix} error: {(error or final_rationale or '(无结论)')[:200]}"
+    elif terminal_decision in {"wait", "pause"}:
+        summary = f"{summary_prefix} {terminal_decision}: {(final_rationale or '(无结论)')[:200]}"
+    else:
+        summary = f"{summary_prefix} {ok_steps} 步完成: {(final_rationale or '(无结论)')[:200]}"
+
+    entry_status = "error" if error else (terminal_decision if terminal_decision in {"wait", "pause"} else "ok")
     return {
         "tool": f"task.parallel.{spec_id}",
         "params": {"goal": task.goal, "task_id": task.id},
         "result": result_text,
         "summary": summary,
         "error": error,
-        "status": "error" if error else "ok",
+        "status": entry_status,
     }
 
 

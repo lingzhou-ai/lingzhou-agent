@@ -3,8 +3,18 @@
 ## 开发环境
 
 ```bash
-git clone https://cnb.cool/xiaolanplan/lingzhou.git
-cd lingzhou && pip install -e ".[dev]"
+git clone https://github.com/suuugeee/lingzhou-agent.git
+cd lingzhou-agent
+./setup-lingzhou.sh
+```
+
+手动路径（等价于上面的脚本）：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv .venv --python 3.12
+UV_PROJECT_ENVIRONMENT="$(pwd)/.venv" uv pip install -e ".[test]"
+ln -sf "$(pwd)/.venv/bin/lingzhou" ~/.local/bin/lingzhou
 ```
 
 ## 代码风格

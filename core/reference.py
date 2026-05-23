@@ -7,9 +7,9 @@
   只有让 LLM 参与思考，才是在构建数字生命，而不是解析器。
 
 两阶段流水线：
-  1. 本地预热（快，免费）
-     - 正则提取时间锚 / 自我介绍 / 关系提示 → ExtractedSignals
-     - FTS5 多锚点召回候选集（top-12，本地 SQLite）
+    1. 本地预热（快，免费）
+        - 轻量提取自我介绍 / 回指提示 / 主题锚点 → ExtractedSignals
+    - FTS5 多锚点召回候选集（候选预算来自 config）
   2. LLM 推理（慢，有价值）
      - 将消息 + 候选节点摘要 → 专用小 prompt → LLM 判断实体关联
      - LLM 返回：哪些节点真正被引用、关联性质（引用/状态变化/隐式/自我介绍）
@@ -29,36 +29,17 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from core.config import ThresholdsConfig
+
 if TYPE_CHECKING:
     from memory.semantic import SemanticMemory
     from memory.episodic import EpisodicMemory
     from provider.base import Provider
 
 _log = logging.getLogger("lingzhou.reference")
+_REFERENCE_DEFAULTS = ThresholdsConfig()
 
-
-# ── 正则信号表（本地预热用，无 LLM）─────────────────────────────────────────
-_TIME_TABLE: list[tuple[re.Pattern[str], str, int]] = [
-    (re.compile(r"刚才|刚刚|方才"),            "just_now",    1),
-    (re.compile(r"今天|今日"),                  "today",      12),
-    (re.compile(r"昨天|昨日"),                  "yesterday",  36),
-    (re.compile(r"前天"),                       "2days_ago",  60),
-    (re.compile(r"上次|上回|上一次|之前|以前"), "last_time",  168),
-    (re.compile(r"上周|上星期"),                "last_week",  200),
-    (re.compile(r"(\d+)\s*天前"),              "n_days_ago",  -1),   # -1 → group(1)*24h
-    (re.compile(r"(\d+)\s*小时前"),            "n_hours_ago", -2),   # -2 → group(1)h
-]
-_TIME_STRIP = re.compile(
-    r"刚才|刚刚|方才|今天|今日|昨天|昨日|前天"
-    r"|上次|上回|上一次|之前|以前|上周|上星期"
-    r"|\d+\s*天前|\d+\s*小时前"
-)
-_SELF_INTRO = re.compile(
-    r"我[是叫名字为叫做]{0,3}([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9]{0,9})"
-)
-_RELATION_HINT = re.compile(
-    r"你(之前|推荐|提到|说过|建议|告诉我|分析|写的|做的|建的|提出|讨论|提议)"
-)
+_TOPIC_PUNCT_PATTERN = re.compile(r"[，。！？；、,.!?]+")
 
 # LLM 推理提示（专用小 prompt，与 judgment bundle 完全解耦）
 _REASON_SYSTEM = """\
@@ -71,7 +52,10 @@ _REASON_SYSTEM = """\
   state     — 消息描述了该实体的状态变化（如"离职""完成""取消"）
   implicit  — 消息通过"上次的""你推荐的"等隐式引用该实体
   self_intro — 消息是自我介绍，与人物节点对应
-  temporal  — 消息时间线与该实体创建/修改时间高度吻合
+    temporal  — 消息中的时间感知与候选节点 created_at / 最近叙事上下文吻合
+
+可结合用户消息中的相对时间表达（如"昨天""刚才""上次"）自行判断 temporal 关联，
+不要假定外部已经把这些时间词换算成固定小时窗口。
 
 输出格式：JSON 数组，不加 markdown。每项字段：
   node_id          — 候选节点的 id（原样输出，不得修改）
@@ -84,11 +68,8 @@ _REASON_SYSTEM = """\
 
 @dataclass
 class ExtractedSignals:
-    """正则预热阶段提取的检索信号。"""
-    time_anchors: list[tuple[str, int]] = field(default_factory=list[tuple[str, int]])
+    """轻量预热阶段提取的检索信号。"""
     topic_anchors: list[str] = field(default_factory=list[str])
-    self_name: str = ""
-    has_relation_hint: bool = False
 
 
 @dataclass
@@ -98,16 +79,9 @@ class ResolvedEntity:
     title: str
     kind: str
     confidence: float
-    snippet: str                    # body 前 120 字
+    snippet: str                    # body 前若干字（由 config 控制）
     signal_types: list[str]         # 本地检索路径（调试用）
     relationship_note: str = ""     # LLM 推理给出的关联说明
-
-    def confidence_label(self) -> str:
-        if self.confidence >= 0.80:
-            return "高"
-        if self.confidence >= 0.62:
-            return "中"
-        return "低"
 
 
 class ReferenceResolver:
@@ -117,12 +91,75 @@ class ReferenceResolver:
     Provider 不可用时自动降级为纯本地评分。
     """
 
-    _MIN_CONFIDENCE: float = 0.55   # 低于此值不注入 entity_section
-
-    def __init__(self, provider: "Provider | None" = None) -> None:
+    def __init__(
+        self,
+        provider: "Provider | None" = None,
+        *,
+        min_confidence: float | None = None,
+        local_signal_base: float | None = None,
+        local_signal_step: float | None = None,
+        local_confidence_cap: float | None = None,
+        max_anchors: int | None = None,
+        topic_top_k: int | None = None,
+        recent_narrative_limit: int | None = None,
+        recent_semantic_top_k: int | None = None,
+        candidate_cap: int | None = None,
+        entity_section_limit: int | None = None,
+        anchor_text_chars: int | None = None,
+        candidate_body_chars: int | None = None,
+        entity_snippet_chars: int | None = None,
+        reason_temperature: float | None = None,
+        topic_anchor_min_chars: int | None = None,
+    ) -> None:
         self._provider = provider
         self._last_llm_error: str = ""
         self._last_llm_error_code: str = ""
+        self._min_confidence = float(
+            _REFERENCE_DEFAULTS.reference_min_confidence if min_confidence is None else min_confidence
+        )
+        self._local_signal_base = float(
+            _REFERENCE_DEFAULTS.reference_local_signal_base if local_signal_base is None else local_signal_base
+        )
+        self._local_signal_step = float(
+            _REFERENCE_DEFAULTS.reference_local_signal_step if local_signal_step is None else local_signal_step
+        )
+        self._local_confidence_cap = float(
+            _REFERENCE_DEFAULTS.reference_local_confidence_cap if local_confidence_cap is None else local_confidence_cap
+        )
+        self._max_anchors = int(
+            _REFERENCE_DEFAULTS.reference_max_anchors if max_anchors is None else max_anchors
+        )
+        self._topic_top_k = int(
+            _REFERENCE_DEFAULTS.reference_topic_top_k if topic_top_k is None else topic_top_k
+        )
+        self._recent_narrative_limit = int(
+            _REFERENCE_DEFAULTS.reference_recent_narrative_limit
+            if recent_narrative_limit is None else recent_narrative_limit
+        )
+        self._recent_semantic_top_k = int(
+            _REFERENCE_DEFAULTS.reference_recent_semantic_top_k
+            if recent_semantic_top_k is None else recent_semantic_top_k
+        )
+        self._candidate_cap = int(
+            _REFERENCE_DEFAULTS.reference_candidate_cap if candidate_cap is None else candidate_cap
+        )
+        self._entity_section_limit = int(
+            _REFERENCE_DEFAULTS.reference_entity_section_limit if entity_section_limit is None else entity_section_limit
+        )
+        self._anchor_text_chars = int(
+            _REFERENCE_DEFAULTS.reference_anchor_text_chars if anchor_text_chars is None else anchor_text_chars
+        )
+        self._candidate_body_chars = int(
+            _REFERENCE_DEFAULTS.reference_candidate_body_chars if candidate_body_chars is None else candidate_body_chars
+        )
+        self._entity_snippet_chars = int(
+            _REFERENCE_DEFAULTS.reference_entity_snippet_chars if entity_snippet_chars is None else entity_snippet_chars
+        )
+        self._reason_temperature = reason_temperature
+        self._topic_anchor_min_chars = int(
+            _REFERENCE_DEFAULTS.reference_topic_anchor_min_chars
+            if topic_anchor_min_chars is None else topic_anchor_min_chars
+        )
 
     @property
     def last_llm_error(self) -> str:
@@ -150,34 +187,15 @@ class ReferenceResolver:
             return "timeout"
         return "other"
 
-    # ── 阶段一：正则信号提取（< 1ms）────────────────────────────────────────
+    # ── 阶段一：轻量信号提取（< 1ms）────────────────────────────────────────
 
     def extract_signals(self, message: str) -> ExtractedSignals:
         sigs = ExtractedSignals()
-        for pattern, label, hours in _TIME_TABLE:
-            m = pattern.search(message)
-            if not m:
-                continue
-            if hours == -1:
-                try:
-                    sigs.time_anchors.append((f"{int(m.group(1))}days_ago", int(m.group(1)) * 24))
-                except (IndexError, ValueError):
-                    pass
-            elif hours == -2:
-                try:
-                    sigs.time_anchors.append((f"{int(m.group(1))}hours_ago", int(m.group(1))))
-                except (IndexError, ValueError):
-                    pass
-            else:
-                sigs.time_anchors.append((label, hours))
-        m2 = _SELF_INTRO.search(message)
-        if m2:
-            sigs.self_name = m2.group(1).strip()
-        sigs.has_relation_hint = bool(_RELATION_HINT.search(message))
-        cleaned = _TIME_STRIP.sub("", message).strip()
-        cleaned = _RELATION_HINT.sub("", cleaned).strip()
-        if len(cleaned) >= 2:
-            sigs.topic_anchors.append(cleaned[:200])
+        cleaned = re.sub(r"\s+", " ", message).strip()
+        cleaned = _TOPIC_PUNCT_PATTERN.sub(" ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) >= self._topic_anchor_min_chars:
+            sigs.topic_anchors.append(cleaned[: self._anchor_text_chars])
         return sigs
 
     # ── 阶段二：本地候选召回（FTS5，O(log n)）────────────────────────────────
@@ -190,7 +208,7 @@ class ReferenceResolver:
         episodic: "EpisodicMemory",
         source: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """返回 {node_id: node_dict}，最多 12 个候选节点。"""
+        """返回 {node_id: node_dict}，最多 reference_candidate_cap 个候选节点。"""
         seen: set[str] = set()
         candidates: dict[str, dict[str, Any]] = {}
 
@@ -203,24 +221,22 @@ class ReferenceResolver:
                     candidates[nid] = nd
 
         # 话题 + 整条消息 → 多锚点召回
-        anchors = ([message[:200]] + sigs.topic_anchors)[:3]
-        _add(semantic.retrieve_multi_anchor(anchors, top_k=8, source=source), "topic")
+        anchors: list[str] = []
+        for anchor in [message[: self._anchor_text_chars], *sigs.topic_anchors]:
+            if anchor and anchor not in anchors:
+                anchors.append(anchor)
+            if len(anchors) >= self._max_anchors:
+                break
+        _add(semantic.retrieve_multi_anchor(anchors, top_k=self._topic_top_k, source=source), "topic")
 
-        # 时间窗叙事 → 二次召回
-        for _label, hours_back in sigs.time_anchors:
-            if hours_back <= 0:
-                continue
-            recent = episodic.query_recent_narrative(hours=hours_back, limit=5)
-            for row in recent:
-                content = row.get("content", "")[:200]
-                if content:
-                    _add(semantic.retrieve(content, top_k=3, source=source), "time")
+        # 最近叙事预热 → 只提供最近上下文，不替用户解释时间词
+        recent_rows = episodic.list_recent_narrative(limit=self._recent_narrative_limit)
+        for row in recent_rows:
+            content = row.get("content", "")[: self._anchor_text_chars]
+            if content:
+                _add(semantic.retrieve(content, top_k=self._recent_semantic_top_k, source=source), "recent")
 
-        # 自我介绍 → 直接人名召回
-        if sigs.self_name:
-            _add(semantic.retrieve(sigs.self_name, top_k=3, source=source), "named")
-
-        return dict(list(candidates.items())[:12])
+        return dict(list(candidates.items())[: self._candidate_cap])
 
     # ── 阶段三：LLM 推理（核心思考）────────────────────────────────────────
 
@@ -239,9 +255,10 @@ class ReferenceResolver:
         # 构造候选节点摘要（控制 token 数）
         cand_lines: list[str] = []
         for nid, nd in candidates.items():
-            body_snippet = nd.get("body", "")[:80].replace("\n", " ")
+            body_snippet = nd.get("body", "")[: self._candidate_body_chars].replace("\n", " ")
+            created_at = str(nd.get("created_at", ""))
             cand_lines.append(
-                f'  {{"id":"{nid}","kind":"{nd.get("kind","")}","title":"{nd.get("title","")}","body":"{body_snippet}"}}'
+                f'  {{"id":"{nid}","kind":"{nd.get("kind","")}","title":"{nd.get("title","")}","created_at":"{created_at}","body":"{body_snippet}"}}'
             )
         cand_block = "[\n" + ",\n".join(cand_lines) + "\n]"
 
@@ -253,7 +270,7 @@ class ReferenceResolver:
                     LLMMessage(role="system", content=_REASON_SYSTEM),
                     LLMMessage(role="user", content=user_content),
                 ],
-                temperature=0.0,
+                temperature=self._reason_temperature,
             )
         except Exception as exc:
             err_text = str(exc) or repr(exc)
@@ -310,7 +327,7 @@ class ReferenceResolver:
                 if nid not in candidates:
                     continue
                 confidence = float(item.get("confidence", 0.0))
-                if confidence < self._MIN_CONFIDENCE:
+                if confidence < self._min_confidence:
                     continue
                 nd = candidates[nid]
                 entities.append(ResolvedEntity(
@@ -318,7 +335,7 @@ class ReferenceResolver:
                     title=nd.get("title", nid),
                     kind=nd.get("kind", "unknown"),
                     confidence=round(confidence, 2),
-                    snippet=nd.get("body", "")[:120],
+                    snippet=nd.get("body", "")[: self._entity_snippet_chars],
                     signal_types=nd.get("_sig", []),
                     relationship_note=str(item.get("relationship_note", "")),
                 ))
@@ -326,22 +343,21 @@ class ReferenceResolver:
             # 降级路径：本地评分（简单计数信号数）
             for nid, nd in candidates.items():
                 sigs_hit = nd.get("_sig", [])
-                # 信号数越多置信越高：1→0.58，2→0.68，3→0.76
-                base = 0.50 + len(set(sigs_hit)) * 0.09
-                if base < self._MIN_CONFIDENCE:
+                base = self._local_signal_base + len(set(sigs_hit)) * self._local_signal_step
+                if base < self._min_confidence:
                     continue
                 entities.append(ResolvedEntity(
                     node_id=nid,
                     title=nd.get("title", nid),
                     kind=nd.get("kind", "unknown"),
-                    confidence=round(min(base, 0.80), 2),
-                    snippet=nd.get("body", "")[:120],
+                    confidence=round(min(base, self._local_confidence_cap), 2),
+                    snippet=nd.get("body", "")[: self._entity_snippet_chars],
                     signal_types=sigs_hit,
                     relationship_note="（本地评分，LLM 不可用）",
                 ))
 
         entities.sort(key=lambda e: e.confidence, reverse=True)
-        return entities[:5]
+        return entities[: self._entity_section_limit]
 
     # ── 格式化注入 entity_section ────────────────────────────────────────────
 
@@ -353,7 +369,7 @@ class ReferenceResolver:
         for e in entities:
             note = f" — {e.relationship_note}" if e.relationship_note and "本地评分" not in e.relationship_note else ""
             lines.append(
-                f"- [{e.kind}] {e.title}（置信:{e.confidence_label()}{note}）"
+                f"- [{e.kind}] {e.title}（confidence:{e.confidence:.2f}{note}）"
             )
             if e.snippet:
                 lines.append(f"  {e.snippet}")

@@ -422,11 +422,25 @@ print("SMOKE_OK")
         from provider.base import Message
         import json
 
+        _dims = ("truth", "caution", "continuity", "curiosity", "care")
+        baseline_seed = self._cfg.soul.ethos_baseline
+
         # 读取当前 ethos_baseline
         current_json, _ = await ctx.task_store.get_fact("soul:ethos_baseline")
-        current_baseline: dict[str, float] = json.loads(current_json) if current_json else {}
-        if not current_baseline:
-            return EvolutionResult(success=False, target="ethos_baseline", reason="no baseline yet")
+        current_raw = json.loads(current_json) if current_json else {}
+        if not isinstance(current_raw, dict):
+            current_raw = {}
+        missing_dims = [dim for dim in _dims if dim not in current_raw]
+        current_baseline: dict[str, float] = {
+            dim: float(current_raw.get(dim, baseline_seed[dim]))
+            for dim in _dims
+        }
+        if current_json and missing_dims:
+            baseline_source = "DB + config fallback"
+        elif current_json:
+            baseline_source = "DB"
+        else:
+            baseline_source = "config fallback"
 
         # 读取近期 reflection（语义记忆中 kind=reflection，取最近 5 条）
         try:
@@ -445,7 +459,8 @@ print("SMOKE_OK")
 
         # 读取 hard_axioms（不允许降低的维度下限）
         axioms_json, _ = await ctx.task_store.get_fact("soul:hard_axioms")
-        hard_axioms: list[str] = json.loads(axioms_json) if axioms_json else []
+        hard_axioms: list[str] = json.loads(axioms_json) if axioms_json else list(self._cfg.soul.hard_axioms)
+        axioms_source = "DB" if axioms_json else "config fallback"
 
         messages = [
             Message(role="system", content=(
@@ -454,9 +469,9 @@ print("SMOKE_OK")
                 "每个值在 [0.0, 1.0] 之间。不要有任何其他文字。"
             )),
             Message(role="user", content=(
-                f"当前 ethos_baseline：\n{json.dumps(current_baseline, ensure_ascii=False)}\n\n"
+                f"当前 ethos_baseline（{baseline_source}）：\n{json.dumps(current_baseline, ensure_ascii=False)}\n\n"
                 f"近期 reflection 片段：\n{reflection_text[:1500]}\n\n"
-                f"hard_axioms（这些约束对应的维度不允许降低）：\n{chr(10).join(hard_axioms) if hard_axioms else '（无）'}\n\n"
+                f"hard_axioms（{axioms_source}；这些约束对应的维度不允许降低）：\n{chr(10).join(hard_axioms) if hard_axioms else '（无）'}\n\n"
                 "请根据近期反思，判断当前价值基线是否需要微调（每个维度调整幅度不超过 ±0.15）。\n"
                 "如不需要调整，直接原样返回当前值。\n"
                 "只输出 JSON，例如：{\"truth\": 0.72, \"caution\": 0.68, \"continuity\": 0.65, \"curiosity\": 0.58, \"care\": 0.61}"
@@ -701,7 +716,6 @@ print("SMOKE_OK")
 
                 # 后进化验证：AST 解析全部 Python 文件（纯 Python，无子进程）
                 import ast as _ast
-                from pathlib import Path
                 _root = Path(__file__).parent.parent
                 _all_ok = True
                 _errors = []

@@ -108,7 +108,7 @@ async def _curiosity_signal_does_not_auto_create_task():
 
             tasks = await loop.task_store.list_tasks(limit=20)
             assert tasks == []
-            # WM 注入已移除（016e0a56），改为纯事实观测；
+            # curiosity 仍然只注入感知信号，不直接创建任务；
             # 验证 _last_curiosity_signal_idle_cycle 已被标记（防止重复触发）
             assert loop._last_curiosity_signal_idle_cycle == loop._idle_cycles
         finally:
@@ -116,7 +116,464 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
-def test_should_not_auto_steer_short_continuation_message():
+def test_self_drive_signal_does_not_auto_create_task():
+    asyncio.run(_self_drive_signal_does_not_auto_create_task())
+
+
+def test_crash_recovery_uses_runtime_emotion_fallback():
+    from core.loop.startup import _inject_crash_recovery
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        state_dir = Path(d)
+        (state_dir / "survival.json").write_text(
+            json.dumps(
+                {
+                    "tick": 7,
+                    "ts": "2026-05-22T10:00:00Z",
+                    "active_task_title": "恢复任务",
+                    "last_action": "task.resume",
+                    "emotion": {},
+                    "exit_type": "crash",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        wm = WorkingMemory(capacity=10)
+        loop = SimpleNamespace(
+            _cfg=SimpleNamespace(state_dir=state_dir),
+            _wm=wm,
+            _emotion=SimpleNamespace(valence=0.44, arousal=0.66),
+        )
+
+        _inject_crash_recovery(loop)
+
+        items = wm.get_top(5)
+        assert len(items) == 1
+        assert items[0]["kind"] == "crash_recovery"
+        assert "valence=0.44" in items[0]["content"]
+        assert "arousal=0.66" in items[0]["content"]
+
+
+async def _self_drive_signal_does_not_auto_create_task():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            loop._behavior._wait_streak = cfg.thresholds.curiosity_idle_min_cycles
+
+            await loop._maybe_inject_self_drive()
+
+            tasks = await loop.task_store.list_tasks(limit=20)
+            assert tasks == []
+
+            wm_items = loop._wm.get_top(10)
+            self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
+            assert len(self_drive_items) == 1
+            assert "task.add" in self_drive_items[0]["content"]
+            assert "source=self_drive" in self_drive_items[0]["content"]
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
+def test_self_drive_signal_bypasses_idle_judge_aggregation():
+    asyncio.run(_self_drive_signal_bypasses_idle_judge_aggregation())
+
+
+def test_continue_phase_uses_configured_task_plan_max_per_tick():
+    asyncio.run(_continue_phase_uses_configured_task_plan_max_per_tick())
+
+
+def test_continue_phase_rejudges_after_task_plan_limit_block():
+    asyncio.run(_continue_phase_rejudges_after_task_plan_limit_block())
+
+
+async def _continue_phase_uses_configured_task_plan_max_per_tick():
+    from core.config import Config
+    from core.loop.continue_phase import _run_continue_phase
+    from tools.registry import ToolResult
+    from memory.working import WorkingMemory
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "loop": {
+            "max_tool_rounds": 2,
+        },
+        "thresholds": {
+            "continue_task_plan_max_per_tick": 2,
+        },
+    })
+
+    dispatched: list[str] = []
+
+    class _Store:
+        async def has_pending_chat_message(self) -> bool:
+            return False
+
+    class _Judgment:
+        async def decide_continue(self, *args, **kwargs):
+            return _judgment_output(
+                decision="act",
+                chosen_action_id="task.plan",
+                params={"plan": [{"step": "执行真实工具", "status": "in_progress"}]},
+            )
+
+    class _Execution:
+        async def dispatch(self, action, ctx):
+            dispatched.append(action.chosen_action_id or action.decision)
+            return ToolResult(summary="计划已更新")
+
+    class _Behavior:
+        def on_act(self, *args, **kwargs):
+            return []
+
+        def apply_cognitive_probe(self, signals):
+            return None
+
+        def on_edit_failure(self, error):
+            return []
+
+        def on_act_result(self, tool_id, result_summary):
+            return None
+
+    class _Episodic:
+        def record(self, **kwargs):
+            return None
+
+    loop = SimpleNamespace(
+        _cfg=cfg,
+        _emotion=SimpleNamespace(valence=0.5, arousal=0.5),
+        _task_store=_Store(),
+        _judgment=_Judgment(),
+        _pending_routing_overrides=None,
+        _registry=_tool_registry(),
+        _wm=WorkingMemory(capacity=20),
+        _behavior=_Behavior(),
+        _execution=_Execution(),
+        _episodic=_Episodic(),
+        _bootstrap_mode="none",
+    )
+
+    tool_history = [{
+        "tool": "task.plan",
+        "params": {"plan": [{"step": "理解范围", "status": "completed"}]},
+        "result": "计划已创建",
+        "status": "ok",
+        "error": "",
+        "summary": "计划已创建",
+        "state_delta": {},
+    }]
+
+    action, result = await _run_continue_phase(
+        loop=loop,
+        ctx=SimpleNamespace(),
+        user_message="",
+        active_task=SimpleNamespace(id=1),
+        cognitive_signals=SimpleNamespace(),
+        action=_judgment_output(decision="act", chosen_action_id="task.plan", params={"plan": []}),
+        result=ToolResult(summary="初始计划"),
+        tool_history=tool_history,
+    )
+
+    assert dispatched == ["task.plan"]
+    assert action.chosen_action_id == "task.plan"
+    assert result.summary == "计划已更新"
+    assert sum(1 for item in tool_history if item.get("tool") == "task.plan") == 2
+
+
+async def _continue_phase_rejudges_after_task_plan_limit_block():
+    from core.config import Config
+    from core.loop.continue_phase import _run_continue_phase
+    from tools.registry import ToolResult
+    from memory.working import WorkingMemory
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "loop": {
+            "max_tool_rounds": 3,
+        },
+        "thresholds": {
+            "continue_task_plan_max_per_tick": 1,
+        },
+    })
+
+    dispatched: list[str] = []
+    judgment_calls = 0
+
+    class _Store:
+        async def has_pending_chat_message(self) -> bool:
+            return False
+
+    class _Judgment:
+        async def decide_continue(self, *args, **kwargs):
+            nonlocal judgment_calls
+            judgment_calls += 1
+            if judgment_calls == 1:
+                return _judgment_output(
+                    decision="act",
+                    chosen_action_id="task.plan",
+                    params={"plan": [{"step": "继续拆解", "status": "in_progress"}]},
+                )
+            return _judgment_output(
+                decision="act",
+                chosen_action_id="shell.run",
+                params={"command": "pytest -q"},
+            )
+
+    class _Execution:
+        async def dispatch(self, action, ctx):
+            dispatched.append(action.chosen_action_id or action.decision)
+            return ToolResult(summary="执行完成")
+
+    class _Behavior:
+        def on_act(self, *args, **kwargs):
+            return []
+
+        def apply_cognitive_probe(self, signals):
+            return None
+
+        def on_edit_failure(self, error):
+            return []
+
+        def on_act_result(self, tool_id, result_summary):
+            return None
+
+    class _Episodic:
+        def record(self, **kwargs):
+            return None
+
+    wm = WorkingMemory(capacity=20)
+    loop = SimpleNamespace(
+        _cfg=cfg,
+        _emotion=SimpleNamespace(valence=0.5, arousal=0.5),
+        _task_store=_Store(),
+        _judgment=_Judgment(),
+        _pending_routing_overrides=None,
+        _registry=_tool_registry(),
+        _wm=wm,
+        _behavior=_Behavior(),
+        _execution=_Execution(),
+        _episodic=_Episodic(),
+        _bootstrap_mode="none",
+    )
+
+    tool_history = [{
+        "tool": "task.plan",
+        "params": {"plan": [{"step": "理解范围", "status": "completed"}]},
+        "result": "计划已创建",
+        "status": "ok",
+        "error": "",
+        "summary": "计划已创建",
+        "state_delta": {},
+    }]
+
+    action, result = await _run_continue_phase(
+        loop=loop,
+        ctx=SimpleNamespace(),
+        user_message="",
+        active_task=SimpleNamespace(id=1),
+        cognitive_signals=SimpleNamespace(),
+        action=_judgment_output(decision="act", chosen_action_id="task.plan", params={"plan": []}),
+        result=ToolResult(summary="初始计划"),
+        tool_history=tool_history,
+    )
+
+    assert judgment_calls == 2
+    assert dispatched == ["shell.run"]
+    assert action.chosen_action_id == "shell.run"
+    assert result.summary == "执行完成"
+    assert any(item.get("tool") == "task.plan" and item.get("error") == "ContinueTaskPlanLimit" for item in tool_history)
+    assert any(item.get("tool") == "shell.run" for item in tool_history)
+    assert any(item["kind"] == "self_awareness" and "[计划阻断]" in item["content"] for item in wm.get_top())
+
+
+def test_continue_phase_uses_configured_tool_history_compaction_threshold():
+    asyncio.run(_continue_phase_uses_configured_tool_history_compaction_threshold())
+
+
+async def _continue_phase_uses_configured_tool_history_compaction_threshold():
+    from core.config import Config
+    from core.loop.continue_phase import _run_continue_phase
+    from tools.registry import ToolResult
+    from memory.working import WorkingMemory
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "loop": {
+            "max_tool_rounds": 2,
+        },
+        "thresholds": {
+            "continue_tool_history_compact_threshold": 2,
+            "continue_tool_history_keep_last": 1,
+        },
+    })
+
+    seen_histories: list[list[dict[str, Any]]] = []
+
+    class _Store:
+        async def has_pending_chat_message(self) -> bool:
+            return False
+
+    class _Judgment:
+        async def decide_continue(self, tool_history, **kwargs):
+            seen_histories.append([dict(item) for item in tool_history])
+            return _judgment_output(decision="wait", rationale="证据已足够")
+
+    class _Execution:
+        async def dispatch(self, action, ctx):
+            return ToolResult(summary="等待下一轮")
+
+    loop = SimpleNamespace(
+        _cfg=cfg,
+        _emotion=SimpleNamespace(valence=0.5, arousal=0.5),
+        _task_store=_Store(),
+        _judgment=_Judgment(),
+        _pending_routing_overrides=None,
+        _registry=_tool_registry(),
+        _wm=WorkingMemory(capacity=20),
+        _execution=_Execution(),
+        _episodic=SimpleNamespace(record=lambda **kwargs: None),
+        _bootstrap_mode="none",
+    )
+
+    tool_history = [
+        {
+            "tool": "memory.search",
+            "params": {"query": "legacy runtime"},
+            "result": "命中 1 条",
+            "status": "ok",
+            "error": "",
+            "summary": "命中 1 条",
+            "state_delta": {},
+        },
+        {
+            "tool": "task.list",
+            "params": {"status": "all"},
+            "result": "命中 1 条任务",
+            "status": "ok",
+            "error": "",
+            "summary": "命中 1 条任务",
+            "state_delta": {},
+        },
+    ]
+
+    await _run_continue_phase(
+        loop=loop,
+        ctx=SimpleNamespace(),
+        user_message="",
+        active_task=SimpleNamespace(id=1),
+        cognitive_signals=SimpleNamespace(),
+        action=_judgment_output(decision="act", chosen_action_id="memory.search", params={"query": "legacy runtime"}),
+        result=ToolResult(summary="初始结果"),
+        tool_history=tool_history,
+    )
+
+    assert len(seen_histories) == 1
+    assert seen_histories[0][0]["tool"] == "[compacted]"
+    assert "早期 1 条工具调用已压缩" in seen_histories[0][0]["result"]
+    assert seen_histories[0][1]["tool"] == "task.list"
+
+
+async def _self_drive_signal_bypasses_idle_judge_aggregation():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.judgment import JudgmentOutput
+    from core.loop import CognitionLoop
+    from core.loop.tick import _TickJudgmentPrep, _decide_initial_action
+    from memory.working import WMItem
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.loop.judge_every = 3
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        called = {"value": False}
+
+        async def _fake_decide(*args, **kwargs):
+            called["value"] = True
+            return JudgmentOutput.wait(reason="llm saw self_drive")
+
+        loop._judgment.decide = _fake_decide  # type: ignore[method-assign]
+        loop._wm.add(WMItem(kind="self_drive", content="[自驱信号] test", priority=0.9))
+
+        try:
+            action = await _decide_initial_action(
+                loop,
+                cfg,
+                cycle=1,
+                user_message="",
+                active_task=None,
+                prep=_TickJudgmentPrep(
+                    percept=None,
+                    perception_replay=None,
+                    cognitive_signals=None,
+                    ethos_state=None,
+                    signals=None,
+                    hard_boundaries=[],
+                ),
+            )
+
+            assert called["value"] is True
+            assert action.rationale == "llm saw self_drive"
+            assert loop._ticks_since_judge == 0
+        finally:
+            await loop.provider.close()
+
+
+def test_short_continuation_message_is_also_forwarded_to_active_task_inbox():
     from core.loop.tick import _should_steer_active_task_from_user_message
     from memory.task_store import Task
 
@@ -130,7 +587,27 @@ def test_should_not_auto_steer_short_continuation_message():
         next_step="继续分析这个问题",
     )
 
-    assert _should_steer_active_task_from_user_message(task, "继续分析") is False
+    assert _should_steer_active_task_from_user_message(task, "继续分析") is True
+
+
+def test_task_steer_any_nonempty_user_message_is_forwarded_to_active_task_inbox():
+    from core.loop.tick import _should_steer_active_task_from_user_message
+    from memory.task_store import Task
+
+    task = Task(
+        id=1,
+        title="alpha beta",
+        status="in_progress",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="alpha beta",
+        next_step="alpha beta",
+    )
+
+    message = "alpha beta gamma delta"
+    assert _should_steer_active_task_from_user_message(task, message) is True
+    assert _should_steer_active_task_from_user_message(task, "继续分析") is True
+    assert _should_steer_active_task_from_user_message(task, "   ") is False
 
 
 def test_distinct_user_message_is_queued_into_active_task_inbox():
@@ -160,13 +637,215 @@ async def _distinct_user_message_is_queued_into_active_task_inbox():
             )
 
             assert updated is not None
-            assert updated.extras["inbox_messages"] == ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+            assert len(updated.extras["inbox_messages"]) == 1
+            assert updated.extras["inbox_messages"][0] == "收到新的用户消息：请你使用 puppeteer 去搜索。"
 
             persisted = await store.get_task_by_id(task_id)
             assert persisted is not None
-            assert persisted.extras["inbox_messages"] == ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+            assert persisted.extras["inbox_messages"] == updated.extras["inbox_messages"]
         finally:
             await store.close()
+
+
+def test_invalid_routing_overrides_clear_previous_pending_state():
+    asyncio.run(_invalid_routing_overrides_clear_previous_pending_state())
+
+
+async def _invalid_routing_overrides_clear_previous_pending_state():
+    from core.loop.tick import _apply_tick_model_strategy
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "routing-overrides.db")
+        await store.open()
+        try:
+            await store.set_fact("pref:routing_overrides", '{"reader":"demo/model"}', scope="system")
+            loop = cast(Any, SimpleNamespace(
+                _cfg=SimpleNamespace(
+                    loop=SimpleNamespace(
+                        idle_with_task_bounds=[100, 30000],
+                        idle_no_task_bounds=[5000, 300000],
+                    )
+                ),
+                _task_store=store,
+                _pending_routing_overrides={"reader": "demo/model"},
+                _pending_tier="reader",
+                _pending_idle_gap=1.0,
+                _pending_thinking_override="low",
+            ))
+            action = _judgment_output(
+                decision="wait",
+                model_strategy={
+                    "routing_overrides": {
+                        "invalid": "demo/ignored",
+                        "reader": "",
+                    }
+                },
+            )
+
+            await _apply_tick_model_strategy(loop, action, None)
+
+            stored_value, found = await store.get_fact("pref:routing_overrides")
+            assert loop._pending_routing_overrides is None
+            assert found is True
+            assert stored_value == ""
+        finally:
+            await store.close()
+
+
+def test_run_tick_maintenance_uses_configured_global_md_warn_lines():
+    asyncio.run(_run_tick_maintenance_uses_configured_global_md_warn_lines())
+
+
+def test_run_tick_maintenance_uses_configured_low_pressure_skip_threshold():
+    asyncio.run(_run_tick_maintenance_uses_configured_low_pressure_skip_threshold())
+
+
+async def _run_tick_maintenance_uses_configured_global_md_warn_lines():
+    from core.config import Config
+    from core.loop.tick import _run_tick_maintenance
+
+    class _WM:
+        def __init__(self) -> None:
+            self.pressure = 1.0
+            self.items: list[Any] = []
+
+        def add(self, item: Any) -> None:
+            self.items.append(item)
+
+    class _Soul:
+        def __init__(self) -> None:
+            self.synced = False
+
+        async def sync_md(self) -> None:
+            self.synced = True
+
+    class _DB:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        async def execute(self, sql: str) -> None:
+            self.commands.append(sql)
+
+    with tempfile.TemporaryDirectory() as d:
+        memory_dir = Path(d) / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "episodic").mkdir(parents=True, exist_ok=True)
+        (memory_dir / "episodic" / "global.md").write_text("a\nb\nc\n", encoding="utf-8")
+
+        cfg = Config.model_validate({
+            "providers": {
+                "bailian": {
+                    "type": "openai_compat",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_env": "DASHSCOPE_API_KEY",
+                }
+            },
+            "model": "bailian/qwen3.6-plus",
+            "temperature": 0.7,
+            "timeout": 60.0,
+            "loop": {
+                "memory_dir": str(memory_dir),
+                "consolidate_every": 1,
+            },
+            "memory": {
+                "global_md_warn_bytes": 999999,
+                "global_md_warn_lines": 2,
+            },
+            "thresholds": {
+                "wm_pressure_task": 0.8,
+            },
+        })
+
+        db = _DB()
+        soul = _Soul()
+        wm = _WM()
+        loop = cast(Any, SimpleNamespace(
+            _cfg=cfg,
+            _wm=wm,
+            _soul=soul,
+            _task_store=SimpleNamespace(_db=db),
+            consolidated=False,
+        ))
+
+        async def _consolidate(active_task: Any) -> None:
+            loop.consolidated = True
+
+        loop._consolidate = _consolidate
+
+        await _run_tick_maintenance(loop, active_task=None, cycle=1)
+
+        assert loop.consolidated is True
+        assert soul.synced is True
+        assert db.commands == ["PRAGMA wal_checkpoint(TRUNCATE)"]
+        assert any("global.md 当前 3 行" in item.content for item in wm.items)
+
+
+async def _run_tick_maintenance_uses_configured_low_pressure_skip_threshold():
+    from core.config import Config
+    from core.loop.tick import _run_tick_maintenance
+
+    class _WM:
+        def __init__(self, pressure: float) -> None:
+            self.pressure = pressure
+
+    class _Soul:
+        def __init__(self) -> None:
+            self.synced = False
+
+        async def sync_md(self) -> None:
+            self.synced = True
+
+    class _DB:
+        async def execute(self, sql: str) -> None:
+            return None
+
+    async def _run_case(skip_threshold: float) -> bool:
+        with tempfile.TemporaryDirectory() as d:
+            memory_dir = Path(d) / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            cfg = Config.model_validate({
+                "providers": {
+                    "bailian": {
+                        "type": "openai_compat",
+                        "base_url": "https://example.invalid/v1",
+                        "api_key_env": "DASHSCOPE_API_KEY",
+                    }
+                },
+                "model": "bailian/qwen3.6-plus",
+                "temperature": 0.7,
+                "timeout": 60.0,
+                "loop": {
+                    "memory_dir": str(memory_dir),
+                    "consolidate_every": 1,
+                },
+                "memory": {
+                    "consolidate_low_pressure_skip_threshold": skip_threshold,
+                    "global_md_warn_bytes": 999999,
+                    "global_md_warn_lines": 999999,
+                },
+                "thresholds": {
+                    "wm_pressure_task": 0.95,
+                },
+            })
+
+            loop = cast(Any, SimpleNamespace(
+                _cfg=cfg,
+                _wm=_WM(pressure=0.86),
+                _soul=_Soul(),
+                _task_store=SimpleNamespace(_db=_DB()),
+                consolidated=False,
+            ))
+
+            async def _consolidate(active_task: Any) -> None:
+                loop.consolidated = True
+
+            loop._consolidate = _consolidate
+            await _run_tick_maintenance(loop, active_task=None, cycle=1)
+            return bool(loop.consolidated)
+
+    assert await _run_case(0.90) is False
+    assert await _run_case(0.80) is True
 
 
 def test_dev_model_switch_syncs_routing_entries_following_primary_model():

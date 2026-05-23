@@ -182,7 +182,10 @@ async def browser_navigate(params: dict[str, Any], ctx: ToolContext) -> ToolResu
 
     try:
         code, stdout, stderr = await _browser_run("navigate", url, "--snapshot")
-        if code != 0:
+        # agent-browser 在部分服务器环境下即使导航成功也返回非零退出码（如 -1）。
+        # 以 stdout 内容为主要成功判据：有有效快照 → 成功，退出码仅作参考。
+        has_content = not _snapshot_looks_blank(stdout)
+        if code != 0 and not has_content:
             detail = (stderr or stdout or "").strip()
             err, label = _classify_navigate_failure(code, stdout, stderr)
             return ToolResult(
@@ -191,7 +194,7 @@ async def browser_navigate(params: dict[str, Any], ctx: ToolContext) -> ToolResu
                 evidence=detail[:500],
                 metadata={"url": url, "exit_code": code, "failure_kind": label},
             )
-        if _snapshot_looks_blank(stdout):
+        if not has_content:
             return ToolResult(
                 summary=f"导航失败[页面空白](exit={code}): 页面已打开，但快照为空或只有空白骨架",
                 error="NavigateBlankPage",

@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from core.config import run_result_memory_affect
 from core.worker import WorkerLayer
 from tools.registry import ToolResult, ToolContext, tool_has_capability, tool_name_has_capability
 
@@ -155,9 +156,9 @@ def _active_plan_step(task: Any | None) -> str:
 def _run_status_from_result(result: ToolResult) -> str:
     if (
         isinstance(result.state_delta, dict)
+        and result.metadata.get("session_id")
         and result.state_delta.get("process") == "started"
         and result.state_delta.get("background")
-        and result.metadata.get("session_id")
     ):
         return "running"
     if result.error and not result.skipped:
@@ -263,15 +264,42 @@ def _record_run_outcome(
         body_parts.append(f"error={result.error}")
     if result.evidence:
         body_parts.append(f"evidence={result.evidence[:1200]}")
+    activation, valence = run_result_memory_affect(
+        getattr(ctx.config, "memory", None),
+        is_failure=is_failure or status == "failed",
+    )
     ctx.semantic.upsert(MemoryNode(
         id=f"run-result-{run_id}",
         kind="run_result",
         title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
         body="\n".join(body_parts)[:4000],
-        activation=0.82 if is_failure or status == "failed" else 0.72,
-        valence=0.35 if is_failure or status == "failed" else 0.65,
+        activation=activation,
+        valence=valence,
         tags=tags,
     ))
+
+
+def record_run_result(
+    ctx: ToolContext,
+    run_id: int,
+    task_id: int,
+    tool_name: str,
+    worker_type: str,
+    status: str,
+    progress: str,
+    result: ToolResult,
+) -> None:
+    """兼容导出：保留旧函数名，内部统一走 _record_run_outcome。"""
+    _record_run_outcome(
+        ctx,
+        run_id=run_id,
+        task_id=task_id,
+        tool_name=tool_name,
+        worker_type=worker_type,
+        status=status,
+        progress=progress,
+        result=result,
+    )
 
 
 def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None:
@@ -507,15 +535,36 @@ class ExecutionLayer:
                     worker_type=worker_type,
                     model_tier=task_tier,
                 )
+                _log.info(
+                    "[run-start] run=%s task=%s tool=%s worker=%s tier=%s",
+                    run_id,
+                    active_task.id if active_task else 0,
+                    action.chosen_action_id or "-",
+                    worker_type,
+                    task_tier or "-",
+                )
+
+        def _stamp_result_metadata(tool_result: ToolResult) -> ToolResult:
+            tool_result.metadata.setdefault("tool_name", action.chosen_action_id or "")
+            tool_result.metadata.setdefault("worker_type", worker_type)
+            if run_id is not None:
+                tool_result.metadata.setdefault("run_id", run_id)
+            return tool_result
 
         entry = self._registry.get(action.chosen_action_id)
         if not entry:
-            result = ToolResult(
+            _log.warning(
+                "[exec-miss] run=%s task=%s tool=%s not registered",
+                run_id or 0,
+                active_task.id if active_task else 0,
+                action.chosen_action_id or "-",
+            )
+            result = _stamp_result_metadata(ToolResult(
                 summary=f"工具不存在: {action.chosen_action_id!r}",
                 error="ToolNotFound",
                 skipped=True,
                 kind="error",
-            )
+            ))
             await self._finalize_run(run_id, result, ctx)
             return result
 
@@ -531,8 +580,18 @@ class ExecutionLayer:
             if mute_found and raw_mute:
                 try:
                     mute_data = json.loads(raw_mute)
-                    if float(mute_data.get("muted_until") or 0) > time.time():
-                        result = ToolResult(
+                    muted_until = float(mute_data.get("muted_until") or 0)
+                    if muted_until > time.time():
+                        _log.info(
+                            "[exec-mute] run=%s task=%s tool=%s reason=%s count=%s muted_until=%s",
+                            run_id or 0,
+                            active_task.id if active_task else 0,
+                            action.chosen_action_id or "-",
+                            mute_data.get("reason") or "-",
+                            mute_data.get("count") or 0,
+                            int(muted_until),
+                        )
+                        result = _stamp_result_metadata(ToolResult(
                             summary=(
                                 f"跳过已知稳定失败动作 {action.chosen_action_id!r}："
                                 f" {mute_data.get('last_summary', '')[:200]}"
@@ -540,7 +599,7 @@ class ExecutionLayer:
                             error="KnownStableFailure",
                             skipped=True,
                             kind="error",
-                        )
+                        ))
                         await self._finalize_run(run_id, result, ctx)
                         return result
                 except Exception:
@@ -558,24 +617,39 @@ class ExecutionLayer:
                 _cur_step = (active_task.current_step or "").strip()
                 if _in_progress_steps and not _cur_step:
                     _step_name = _in_progress_steps[0]
-                    result = ToolResult(
+                    _log.info(
+                        "[exec-gate] run=%s task=%s tool=%s blocked step=%s",
+                        run_id or 0,
+                        active_task.id if active_task else 0,
+                        action.chosen_action_id or "-",
+                        _step_name,
+                    )
+                    result = _stamp_result_metadata(ToolResult(
                         summary=f"当前步骤未对齐，请先完成「{_step_name}」再执行变更操作",
                         error="PlanStepMismatch",
                         skipped=True,
                         kind="error",
-                    )
+                    ))
                     await self._finalize_run(run_id, result, ctx)
                     return result
 
         try:
             result = await self._workers.dispatch(worker_type, entry, action, ctx)
         except Exception as exc:
+            _log.exception(
+                "[exec-error] run=%s task=%s tool=%s worker=%s dispatch raised",
+                run_id or 0,
+                active_task.id if active_task else 0,
+                action.chosen_action_id or "-",
+                worker_type,
+            )
             result = ToolResult(
                 summary=f"工具执行异常: {exc}",
                 evidence=str(exc),
                 error=str(exc),
                 kind="execute_result",
             )
+        result = _stamp_result_metadata(result)
 
         _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
         _log.info(
@@ -663,6 +737,18 @@ class ExecutionLayer:
             error_text=result.error or "",
             session_id=str(result.metadata.get("session_id") or ""),
             progress=progress,
+        )
+        _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _log.info(
+            "[run-finalize] run=%s task=%s status=%s tool=%s worker=%s progress=%s error=%s state=%s",
+            run_id,
+            active_task_id or 0,
+            status,
+            str(result.metadata.get("tool_name") or "-"),
+            str(result.metadata.get("worker_type") or "-"),
+            _clip_log_text(progress or "") or "-",
+            _error_log or "-",
+            _state_log or "-",
         )
         if _should_record_run_outcome(status):
             _record_run_outcome(

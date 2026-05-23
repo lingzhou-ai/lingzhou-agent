@@ -33,6 +33,13 @@ e = mod.derive_ethos_state(
     has_next_step=False,
     perception_trend="neutral",
     emotion_down_regulate_streak=0,
+    seed_values={
+        "truth": 0.85,
+        "caution": 0.70,
+        "continuity": 0.65,
+        "curiosity": 0.60,
+        "care": 0.55,
+    },
 )
 assert 0.0 <= e.values.truth <= 1.0, f"truth out of range: {e.values.truth}"
 assert isinstance(e.bias.reasons, list)

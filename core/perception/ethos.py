@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from core.perception.emotion import clamp01
 
 
+_ETHOS_DIMENSIONS = ("truth", "caution", "continuity", "curiosity", "care")
+
+
 @dataclass
 class EthosValues:
     truth: float = 0.65         # 诚实优先
@@ -43,6 +46,21 @@ class EthosState:
         ))
 
 
+def _resolve_ethos_seed_values(
+    baseline: dict[str, float] | None,
+    seed_values: dict[str, float] | None,
+) -> tuple[dict[str, float], dict[str, float]]:
+    base = baseline or seed_values or {}
+    fallback = seed_values or baseline or {}
+    missing = [key for key in _ETHOS_DIMENSIONS if key not in base and key not in fallback]
+    if missing:
+        raise ValueError(
+            "derive_ethos_state requires explicit baseline or seed_values for ethos dimensions: "
+            + ", ".join(missing)
+        )
+    return base, fallback
+
+
 def derive_ethos_state(
     failure_count: int,
     high_error_streak: int,
@@ -51,9 +69,29 @@ def derive_ethos_state(
     perception_trend: str,
     emotion_down_regulate_streak: int,
     baseline: dict[str, float] | None = None,
+    seed_values: dict[str, float] | None = None,
     ema_alpha: float = 0.9,
     floor_truth: float = 0.50,
     floor_caution: float = 0.45,
+    prefer_verification_caution_min: float = 0.70,
+    prefer_verification_failure_count: int = 2,
+    prefer_narrow_failure_count: int = 2,
+    prefer_narrow_error_streak: int = 2,
+    preserve_continuity_min: float = 0.70,
+    avoid_overclaiming_down_regulate_streak: int = 2,
+    failure_adjust_count: int = 1,
+    failure_truth_delta: float = 0.10,
+    failure_caution_delta: float = 0.10,
+    failure_curiosity_delta: float = -0.08,
+    high_error_adjust_streak: int = 2,
+    high_error_truth_delta: float = 0.10,
+    high_error_caution_delta: float = 0.12,
+    high_error_care_delta: float = -0.08,
+    active_task_continuity_delta: float = 0.12,
+    next_step_continuity_delta: float = 0.08,
+    next_step_care_delta: float = 0.06,
+    recovering_curiosity_delta: float = 0.08,
+    recovering_care_delta: float = 0.04,
 ) -> EthosState:
     """每 tick 从信号确定性推导 EthosState（含 EMA 基线混合）。
 
@@ -62,23 +100,30 @@ def derive_ethos_state(
 
     ema_alpha / floor_truth / floor_caution 均从 cfg.soul.* 传入，不再硬编码。
     """
-    v = EthosValues()
-    if failure_count > 0:
-        v.truth   = clamp01(v.truth   + 0.10)
-        v.caution = clamp01(v.caution + 0.10)
-        v.curiosity = clamp01(v.curiosity - 0.08)
-    if high_error_streak >= 2:
-        v.truth   = clamp01(v.truth   + 0.10)
-        v.caution = clamp01(v.caution + 0.12)
-        v.care    = clamp01(v.care    - 0.08)
+    base, fallback = _resolve_ethos_seed_values(baseline, seed_values)
+    v = EthosValues(
+        truth=float(base.get("truth", fallback["truth"])),
+        caution=float(base.get("caution", fallback["caution"])),
+        continuity=float(base.get("continuity", fallback["continuity"])),
+        curiosity=float(base.get("curiosity", fallback["curiosity"])),
+        care=float(base.get("care", fallback["care"])),
+    )
+    if failure_count >= failure_adjust_count:
+        v.truth   = clamp01(v.truth   + failure_truth_delta)
+        v.caution = clamp01(v.caution + failure_caution_delta)
+        v.curiosity = clamp01(v.curiosity + failure_curiosity_delta)
+    if high_error_streak >= high_error_adjust_streak:
+        v.truth   = clamp01(v.truth   + high_error_truth_delta)
+        v.caution = clamp01(v.caution + high_error_caution_delta)
+        v.care    = clamp01(v.care    + high_error_care_delta)
     if has_active_task:
-        v.continuity = clamp01(v.continuity + 0.12)
+        v.continuity = clamp01(v.continuity + active_task_continuity_delta)
     if has_next_step:
-        v.continuity = clamp01(v.continuity + 0.08)
-        v.care       = clamp01(v.care       + 0.06)
+        v.continuity = clamp01(v.continuity + next_step_continuity_delta)
+        v.care       = clamp01(v.care       + next_step_care_delta)
     if perception_trend == "recovering":
-        v.curiosity = clamp01(v.curiosity + 0.08)
-        v.care      = clamp01(v.care      + 0.04)
+        v.curiosity = clamp01(v.curiosity + recovering_curiosity_delta)
+        v.care      = clamp01(v.care      + recovering_care_delta)
     # EMA 混合历史基线（演化速率由 ema_alpha 控制，从 cfg.soul.ethos_ema_alpha 传入）
     if baseline:
         a = ema_alpha
@@ -93,16 +138,16 @@ def derive_ethos_state(
 
     bias = EthosBias()
     reasons: list[str] = []
-    if v.caution > 0.70 or failure_count >= 2:
+    if v.caution > prefer_verification_caution_min or failure_count >= prefer_verification_failure_count:
         bias.prefer_verification = True
         reasons.append("谨慎度高，优先验证")
-    if failure_count >= 2 or high_error_streak >= 2:
+    if failure_count >= prefer_narrow_failure_count or high_error_streak >= prefer_narrow_error_streak:
         bias.prefer_narrow_scope = True
         reasons.append("多次失败，收窄操作范围")
-    if v.continuity > 0.70 and has_active_task:
+    if v.continuity > preserve_continuity_min and has_active_task:
         bias.preserve_continuity = True
         reasons.append("任务连续性优先")
-    if emotion_down_regulate_streak >= 2:
+    if emotion_down_regulate_streak >= avoid_overclaiming_down_regulate_streak:
         bias.avoid_overclaiming = True
         reasons.append("情绪持续下调，避免过度承诺")
     bias.reasons = reasons

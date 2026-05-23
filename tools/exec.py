@@ -312,6 +312,7 @@ _CAP_MANIFEST_V2 = ToolManifest(
     description="返回 shell 执行能力画像（可用命令、默认限制、环境语义、exec/process 支持）",
     params=[],
     prefer_tier="reader",
+    progress_category="info",
     capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
 )
 
@@ -356,6 +357,7 @@ _EXEC_MANIFEST = ToolManifest(
         ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认 500", required=False),
         ToolParam("env", "object", "环境变量字典（可选）", required=False),
     ],
+    progress_category="mutation",
     capabilities=("run_spawn",),
 )
 
@@ -662,6 +664,7 @@ _PROCESS_MANIFEST_LIST = ToolManifest(
     name="process.list",
     description="列出所有通过 exec 启动的进程。可过滤 running/finished/all。",
     params=[ToolParam("status", "string", "过滤：running/finished/all（默认 all）", required=False)],
+    progress_category="info",
     capabilities=("run_spawn",),
 )
 
@@ -669,6 +672,7 @@ _PROCESS_MANIFEST_POLL = ToolManifest(
     name="process.poll",
     description="检查指定进程的状态。返回是否已完成、退出码、运行时间等。",
     params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
+    progress_category="info",
     capabilities=("run_spawn",),
 )
 
@@ -680,6 +684,7 @@ _PROCESS_MANIFEST_LOG = ToolManifest(
         ToolParam("offset", "number", "从第几个字符开始读，默认 0", required=False),
         ToolParam("limit", "number", "最多读多少字符，默认 2000", required=False),
     ],
+    progress_category="info",
     capabilities=("run_spawn",),
 )
 
@@ -691,6 +696,7 @@ _PROCESS_MANIFEST_WRITE = ToolManifest(
         ToolParam("data", "string", "要写入的文本", required=False),
         ToolParam("eof", "boolean", "写入后是否关闭输入（默认 false）", required=False),
     ],
+    progress_category="mutation",
     capabilities=("run_spawn",),
 )
 
@@ -698,6 +704,7 @@ _PROCESS_MANIFEST_KILL = ToolManifest(
     name="process.kill",
     description="强制终止指定进程。",
     params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
+    progress_category="mutation",
     capabilities=("run_spawn",),
 )
 

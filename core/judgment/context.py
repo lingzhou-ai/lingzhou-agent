@@ -115,12 +115,12 @@ def _fmt_task(task: "Task | None") -> str:
             if in_progress_step:
                 lines.append(
                     f"⚠️ 计划信号：步骤 [{in_progress_step}] 当前处于 in_progress。"
-                    "若没有更强的新证据或 inbox 转向，优先直接推进这一步，而不是重新 plan。"
+                    "若没有更强的新证据或 inbox 新消息，优先直接推进这一步，而不是重新 plan。"
                 )
-    # inbox_messages：由 task.steer 注入的转向信号，应先评估它是否改变当前方向
+    # inbox_messages：由 task.steer / tick 注入的新用户消息，应先评估它是否改变当前方向
     inbox: list = task.extras.get("inbox_messages") or [] if isinstance(task.extras, dict) else []
     if isinstance(inbox, list) and inbox:
-        lines.append(f"⚠️ 转向信号（inbox {len(inbox)} 条，先评估这些新信号是否改变当前方向）:")
+        lines.append(f"⚠️ 新增用户消息（inbox {len(inbox)} 条，先评估这些新消息是否改变当前方向）:")
         for i, msg in enumerate(inbox[:5], 1):
             lines.append(f"  [{i}] {str(msg)[:120]}")
     if last_run_status:
@@ -166,18 +166,22 @@ async def _load_context_facts_snapshot(
     task_store: "TaskStore",
     task: "Task | None",
     *,
+    exclude_prefixes: list[str] | tuple[str, ...] | None = None,
     task_limit: int = 6,
     global_limit: int = 4,
+    recent_scan_multiplier: int = 3,
+    recent_scan_min: int = 12,
 ) -> list[tuple[str, str]]:
     seen: set[str] = set()
     selected: list[tuple[str, str]] = []
     task_prefix = f"task:{task.id}:" if task else ""
+    exclude_prefixes_tuple = tuple(exclude_prefixes) if exclude_prefixes is not None else _FACT_CONTEXT_EXCLUDE_PREFIXES
 
     async def _add_facts(items: list[tuple[str, str]], limit: int) -> None:
         for key, value in items:
             if key in seen:
                 continue
-            if key.startswith(_FACT_CONTEXT_EXCLUDE_PREFIXES):
+            if exclude_prefixes_tuple and key.startswith(exclude_prefixes_tuple):
                 continue
             if key.startswith("task:") and task_prefix and not key.startswith(task_prefix):
                 continue
@@ -194,7 +198,8 @@ async def _load_context_facts_snapshot(
 
     current_global = len(selected)
     if global_limit > 0:
-        recent_facts = await task_store.list_facts(limit=max(global_limit * 3, 12))
+        recent_scan_limit = max(global_limit * recent_scan_multiplier, recent_scan_min)
+        recent_facts = await task_store.list_facts(limit=recent_scan_limit)
         before = len(selected)
         await _add_facts(recent_facts, current_global + global_limit)
         if len(selected) == before and not selected:
@@ -463,6 +468,10 @@ def _fmt_config_snapshot(cfg: "Config") -> str:
     """
     ev = cfg.evolution
     lo = cfg.loop
+    me = cfg.memory
+    th = cfg.thresholds
+    em = cfg.emotion
+    so = cfg.soul
     lines = [
         "# 可调运行时参数（通过 config.set <key> <json_value> 修改）",
         "",
@@ -484,6 +493,94 @@ def _fmt_config_snapshot(cfg: "Config") -> str:
         f"  active_idle_gap: {lo.active_idle_gap}ms",
         f"  max_idle_gap: {lo.max_idle_gap}ms",
         f"  chat_reply_timeout: {lo.chat_reply_timeout}s",
+        "",
+        "## Emotion guardrails (emotion.*)",
+        f"  failure_normalization_count: {em.failure_normalization_count}",
+        f"  high_error_normalization_streak: {em.high_error_normalization_streak}",
+        f"  feeling_min_intensity: {em.feeling_min_intensity}",
+        f"  mood_valence_high: {em.mood_valence_high}",
+        f"  mood_valence_low: {em.mood_valence_low}",
+        f"  mood_arousal_high: {em.mood_arousal_high}",
+        f"  regulation_down_regulate_arousal_high: {em.regulation_down_regulate_arousal_high}",
+        f"  regulation_down_regulate_valence_low: {em.regulation_down_regulate_valence_low}",
+        f"  regulation_down_regulate_worsening_valence: {em.regulation_down_regulate_worsening_valence}",
+        f"  regulation_up_regulate_recovering_valence: {em.regulation_up_regulate_recovering_valence}",
+        f"  regulation_up_regulate_signal_valence: {em.regulation_up_regulate_signal_valence}",
+        f"  regulation_high_error_streak_guard: {em.regulation_high_error_streak_guard}",
+        f"  reflection_valence_history_weight: {em.reflection_valence_history_weight}",
+        f"  reflection_valence_hint_weight: {em.reflection_valence_hint_weight}",
+        "",
+        "## Memory guardrails (memory.*)",
+        f"  consolidate_threshold: {me.consolidate_threshold}",
+        f"  consolidate_low_pressure_skip_threshold: {me.consolidate_low_pressure_skip_threshold}",
+        f"  global_md_warn_bytes: {me.global_md_warn_bytes}",
+        f"  global_md_warn_lines: {me.global_md_warn_lines}",
+        "",
+        "## Ethos guardrails (soul.*)",
+        f"  ethos_ema_alpha: {so.ethos_ema_alpha}",
+        f"  ethos_floor_truth: {so.ethos_floor_truth}",
+        f"  ethos_floor_caution: {so.ethos_floor_caution}",
+        f"  ethos_prefer_verification_caution_min: {so.ethos_prefer_verification_caution_min}",
+        f"  ethos_prefer_verification_failure_count: {so.ethos_prefer_verification_failure_count}",
+        f"  ethos_prefer_narrow_failure_count: {so.ethos_prefer_narrow_failure_count}",
+        f"  ethos_prefer_narrow_error_streak: {so.ethos_prefer_narrow_error_streak}",
+        f"  ethos_preserve_continuity_min: {so.ethos_preserve_continuity_min}",
+        f"  ethos_avoid_overclaiming_down_regulate_streak: {so.ethos_avoid_overclaiming_down_regulate_streak}",
+        f"  ethos_failure_adjust_count: {so.ethos_failure_adjust_count}",
+        f"  ethos_failure_truth_delta: {so.ethos_failure_truth_delta}",
+        f"  ethos_failure_caution_delta: {so.ethos_failure_caution_delta}",
+        f"  ethos_failure_curiosity_delta: {so.ethos_failure_curiosity_delta}",
+        f"  ethos_high_error_adjust_streak: {so.ethos_high_error_adjust_streak}",
+        f"  ethos_high_error_truth_delta: {so.ethos_high_error_truth_delta}",
+        f"  ethos_high_error_caution_delta: {so.ethos_high_error_caution_delta}",
+        f"  ethos_high_error_care_delta: {so.ethos_high_error_care_delta}",
+        f"  ethos_active_task_continuity_delta: {so.ethos_active_task_continuity_delta}",
+        f"  ethos_next_step_continuity_delta: {so.ethos_next_step_continuity_delta}",
+        f"  ethos_next_step_care_delta: {so.ethos_next_step_care_delta}",
+        f"  ethos_recovering_curiosity_delta: {so.ethos_recovering_curiosity_delta}",
+        f"  ethos_recovering_care_delta: {so.ethos_recovering_care_delta}",
+        "",
+        "## Replay guardrails (thresholds.*)",
+        f"  prediction_error_task: {th.prediction_error_task}",
+        f"  perception_replay_trend_delta: {th.perception_replay_trend_delta}",
+        f"  perception_replay_high_error_hint_streak: {th.perception_replay_high_error_hint_streak}",
+        f"  emotion_replay_trend_delta: {th.emotion_replay_trend_delta}",
+        "",
+        "## Judgment guardrails (thresholds.*)",
+        f"  judgment_error_streak_guard: {th.judgment_error_streak_guard}",
+        f"  judgment_require_more_evidence_worsening_failure_count: {th.judgment_require_more_evidence_worsening_failure_count}",
+        f"  judgment_prefer_narrow_failure_count: {th.judgment_prefer_narrow_failure_count}",
+        f"  judgment_posture_narrow_failure_count: {th.judgment_posture_narrow_failure_count}",
+        f"  judgment_posture_narrow_down_regulate_failure_count: {th.judgment_posture_narrow_down_regulate_failure_count}",
+        f"  judgment_posture_pause_worsening_failure_count: {th.judgment_posture_pause_worsening_failure_count}",
+        "",
+        "## Reference guardrails (thresholds.*)",
+        f"  reference_min_confidence: {th.reference_min_confidence}",
+        f"  reference_local_signal_base: {th.reference_local_signal_base}",
+        f"  reference_local_signal_step: {th.reference_local_signal_step}",
+        f"  reference_local_confidence_cap: {th.reference_local_confidence_cap}",
+        f"  reference_max_anchors: {th.reference_max_anchors}",
+        f"  reference_topic_top_k: {th.reference_topic_top_k}",
+        f"  reference_recent_narrative_limit: {th.reference_recent_narrative_limit}",
+        f"  reference_recent_semantic_top_k: {th.reference_recent_semantic_top_k}",
+        f"  reference_candidate_cap: {th.reference_candidate_cap}",
+        f"  reference_entity_section_limit: {th.reference_entity_section_limit}",
+        f"  reference_anchor_text_chars: {th.reference_anchor_text_chars}",
+        f"  reference_candidate_body_chars: {th.reference_candidate_body_chars}",
+        f"  reference_entity_snippet_chars: {th.reference_entity_snippet_chars}",
+        f"  reference_topic_anchor_min_chars: {th.reference_topic_anchor_min_chars}",
+        "",
+        "## Context facts guardrails (thresholds.*)",
+        f"  fact_context_exclude_prefixes: {json.dumps(th.fact_context_exclude_prefixes, ensure_ascii=False)}",
+        f"  fact_context_task_limit: {th.fact_context_task_limit}",
+        f"  fact_context_global_limit: {th.fact_context_global_limit}",
+        f"  fact_context_recent_scan_multiplier: {th.fact_context_recent_scan_multiplier}",
+        f"  fact_context_recent_scan_min: {th.fact_context_recent_scan_min}",
+        "",
+        "## Chat history guardrails (thresholds.*)",
+        f"  chat_history_turn_limit: {th.chat_history_turn_limit}",
+        f"  chat_history_max_chars: {th.chat_history_max_chars}",
+        "",
     ]
     return "\n".join(lines)
 
@@ -521,33 +618,30 @@ def _fmt_percept(percept: "Percept") -> str:
     )
 
 
-def _fmt_soul(axioms_val: str, ethos_val: str) -> str:
-    cache_key = f"_fmt_soul:{hash(axioms_val)}:{hash(ethos_val)}"
+def _fmt_soul(
+    axioms_val: str,
+    ethos_val: str,
+    config_ethos_val: str = "",
+    config_axioms_val: str = "",
+) -> str:
+    cache_key = (
+        f"_fmt_soul:{hash(axioms_val)}:{hash(ethos_val)}:"
+        f"{hash(config_ethos_val)}:{hash(config_axioms_val)}"
+    )
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
     parts: list[str] = []
     if axioms_val:
         parts.append(f"绝对禁忌（hard_axioms）: {axioms_val}")
+    elif config_axioms_val:
+        parts.append(f"绝对禁忌（hard_axioms，config fallback）: {config_axioms_val}")
     if ethos_val:
         parts.append(f"价值基线（ethos_baseline）: {ethos_val}")
+    elif config_ethos_val:
+        parts.append(f"价值基线（ethos_baseline，config fallback）: {config_ethos_val}")
     result = "\n".join(parts) if parts else "（Soul 未初始化，运行 `init` 命令生成）"
     _context_fmt_cache[cache_key] = result
     return result
-
-
-def _emotion_label(emotion: "EmotionState", cfg: "Config") -> str:
-    ec = cfg.emotion
-    valence_high, valence_low = ec.mood_valence_high, ec.mood_valence_low
-    arousal_high = ec.mood_arousal_high
-    if emotion.valence < valence_low and emotion.arousal > arousal_high:
-        return "焦虑"
-    if emotion.valence < valence_low:
-        return "沮丧"
-    if emotion.valence > valence_high and emotion.arousal > arousal_high:
-        return "兴奋"
-    if emotion.valence > valence_high:
-        return "稳定"
-    return "中性"
 
 
 def _fill_template(template: str, ctx: dict[str, Any]) -> str:

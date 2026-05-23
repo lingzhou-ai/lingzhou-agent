@@ -11,7 +11,7 @@ from pathlib import Path
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class ProviderDefinition(BaseModel):
@@ -301,6 +301,10 @@ class MemoryConfig(BaseModel):
     semantic_top_k: int = Field(default=5, ge=1, description="语义检索返回条目数")
     failure_limit: int = Field(default=10, ge=1, description="注入 bundle 的失败记录数")
     consolidate_threshold: float = Field(default=0.90, ge=0.0, le=1.0, description="WM 压力超过此値触发整合；提高阈値可减少快照频率，让更多证据在 WM 中存活更长")
+    consolidate_low_pressure_skip_threshold: float = Field(
+        default=0.85, ge=0.0, le=1.0,
+        description="maintenance 阶段的 WM 低压跳过门槛；低于此值时，即使到 consolidate 周期也可跳过整合",
+    )
     convergence_bonus: float = Field(default=0.15, ge=0.0, le=1.0, description="多锚点召回的收敛奖励系数：每增加一个独立线索命中，相关度提升此比例")
     max_events: int = Field(default=500, ge=10, description="events.jsonl 最大条目数，超出后裁剪最旧记录")
     semantic_decay_lambda: float = Field(default=0.1, ge=0.0, le=10.0, description="语义记忆激活衰减率（Ebbinghaus，λ/天）；0 表示不衰减")
@@ -330,12 +334,93 @@ class MemoryConfig(BaseModel):
         default=20, ge=1,
         description="对话轮数结晶间隔：每 N 轮 reflection 蒸馏一次 event 节点写入语义记忆",
     )
+    global_md_warn_bytes: int = Field(
+        default=80000, ge=1,
+        description="global.md 体积告警阈值（字节）；超过后在 maintenance 阶段向 WM 注入记忆压力感知信号",
+    )
+    global_md_warn_lines: int = Field(
+        default=600, ge=1,
+        description="global.md 行数告警阈值；超过后在 maintenance 阶段向 WM 注入记忆压力感知信号",
+    )
+    run_result_success_activation: float = Field(
+        default=0.72, ge=0.0, le=1.0,
+        description="语义记忆中 run_result 成功节点的 activation；值越高，后续检索越容易回想成功执行证据",
+    )
+    run_result_failure_activation: float = Field(
+        default=0.82, ge=0.0, le=1.0,
+        description="语义记忆中 run_result 失败节点的 activation；默认高于成功，用于放大失败证据的可回忆性",
+    )
+    run_result_success_valence: float = Field(
+        default=0.65, ge=0.0, le=1.0,
+        description="语义记忆中 run_result 成功节点的 valence；供后续检索与情绪线索参考",
+    )
+    run_result_failure_valence: float = Field(
+        default=0.35, ge=0.0, le=1.0,
+        description="语义记忆中 run_result 失败节点的 valence；默认低于成功，用于保留负反馈线索",
+    )
+
+
+def run_result_memory_affect(memory_cfg: Any | None, *, is_failure: bool) -> tuple[float, float]:
+    cfg = memory_cfg if memory_cfg is not None else MemoryConfig()
+    if is_failure:
+        return (
+            float(getattr(cfg, "run_result_failure_activation", 0.82)),
+            float(getattr(cfg, "run_result_failure_valence", 0.35)),
+        )
+    return (
+        float(getattr(cfg, "run_result_success_activation", 0.72)),
+        float(getattr(cfg, "run_result_success_valence", 0.65)),
+    )
 
 
 class EmotionConfig(BaseModel):
     baseline_valence: float = Field(default=0.6, ge=0.0, le=1.0, description="情感基线效价")
     baseline_arousal: float = Field(default=0.5, ge=0.0, le=1.0, description="情感基线唤醒")
     ema_alpha: float = Field(default=0.15, ge=0.0, le=1.0, description="EMA 平滑系数")
+    failure_normalization_count: float = Field(
+        default=3.0, gt=0.0,
+        description="failure_count 归一化到 1.0 的基准值；越小表示单次失败对情绪推导的负面影响越大",
+    )
+    high_error_normalization_streak: float = Field(
+        default=3.0, gt=0.0,
+        description="high_error_streak 归一化到 1.0 的基准值；越小表示连续高误差对控制感的冲击越大",
+    )
+    feeling_min_intensity: float = Field(
+        default=0.15, ge=0.0, le=1.0,
+        description="离散情感写入 EmotionState.feelings 的最小强度门槛；低于此值的情感不进入显式 feelings 列表",
+    )
+    regulation_down_regulate_arousal_high: float = Field(
+        default=0.75, ge=0.0, le=1.0,
+        description="arousal 高于此阈值时触发 down-regulate",
+    )
+    regulation_down_regulate_valence_low: float = Field(
+        default=0.30, ge=0.0, le=1.0,
+        description="valence 低于此阈值时触发 down-regulate",
+    )
+    regulation_down_regulate_worsening_valence: float = Field(
+        default=0.45, ge=0.0, le=1.0,
+        description="replay_trend=worsening 且 valence 低于此阈值时触发 down-regulate",
+    )
+    regulation_up_regulate_recovering_valence: float = Field(
+        default=0.55, ge=0.0, le=1.0,
+        description="replay_trend=recovering 且 valence 低于此阈值时触发 up-regulate",
+    )
+    regulation_up_regulate_signal_valence: float = Field(
+        default=0.60, ge=0.0, le=1.0,
+        description="recovering 信号存在且 valence 低于此阈值时触发 up-regulate",
+    )
+    regulation_high_error_streak_guard: int = Field(
+        default=2, ge=1,
+        description="high_error_streak 达到此阈值时触发 down-regulate",
+    )
+    reflection_valence_history_weight: float = Field(
+        default=0.8, ge=0.0,
+        description="reflection 中显式 valence hint 与当前 valence 融合时，历史当前值的权重",
+    )
+    reflection_valence_hint_weight: float = Field(
+        default=0.2, ge=0.0,
+        description="reflection 中显式 valence hint 与当前 valence 融合时，hint 的权重",
+    )
 
     # Russell (1980) 环形情绪模型象限边界——display 层 + judgment 层共用同一套
     mood_valence_high: float = Field(default=0.65, ge=0.0, le=1.0, description="高效价区下边界（正向情绪）")
@@ -416,6 +501,82 @@ class SoulConfig(BaseModel):
         default=0.45, ge=0.0, le=1.0,
         description="caution 维度运行时下限；防止极端场景下完全崩溃，可调低以允许更大幅度的演化"
     )
+    ethos_prefer_verification_caution_min: float = Field(
+        default=0.72, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：caution 达到此阈值时偏向 verification posture",
+    )
+    ethos_prefer_verification_failure_count: int = Field(
+        default=3, ge=1,
+        description="兼容旧 judgment config snapshot：failure_count 达到此值时偏向 verification posture",
+    )
+    ethos_prefer_narrow_failure_count: int = Field(
+        default=3, ge=1,
+        description="兼容旧 judgment config snapshot：failure_count 达到此值时偏向 narrow posture",
+    )
+    ethos_prefer_narrow_error_streak: int = Field(
+        default=4, ge=1,
+        description="兼容旧 judgment config snapshot：error streak 达到此值时偏向 narrow posture",
+    )
+    ethos_preserve_continuity_min: float = Field(
+        default=0.60, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：continuity 低于此值时避免打断当前任务链",
+    )
+    ethos_avoid_overclaiming_down_regulate_streak: int = Field(
+        default=5, ge=1,
+        description="兼容旧 judgment config snapshot：down-regulate streak 达到此值时增强谨慎性",
+    )
+    ethos_failure_adjust_count: int = Field(
+        default=2, ge=1,
+        description="兼容旧 judgment config snapshot：failure 调整基准次数",
+    )
+    ethos_failure_truth_delta: float = Field(
+        default=0.11, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：failure 后 truth 调整幅度",
+    )
+    ethos_failure_caution_delta: float = Field(
+        default=0.10, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：failure 后 caution 调整幅度",
+    )
+    ethos_failure_curiosity_delta: float = Field(
+        default=0.08, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：failure 后 curiosity 调整幅度",
+    )
+    ethos_high_error_adjust_streak: int = Field(
+        default=4, ge=1,
+        description="兼容旧 judgment config snapshot：连续高错误调整阈值",
+    )
+    ethos_high_error_truth_delta: float = Field(
+        default=0.10, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：高错误 streak 后 truth 调整幅度",
+    )
+    ethos_high_error_caution_delta: float = Field(
+        default=0.12, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：高错误 streak 后 caution 调整幅度",
+    )
+    ethos_high_error_care_delta: float = Field(
+        default=0.07, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：高错误 streak 后 care 调整幅度",
+    )
+    ethos_active_task_continuity_delta: float = Field(
+        default=0.08, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：存在 active task 时 continuity 调整幅度",
+    )
+    ethos_next_step_continuity_delta: float = Field(
+        default=0.06, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：存在 next_step 时 continuity 调整幅度",
+    )
+    ethos_next_step_care_delta: float = Field(
+        default=0.05, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：存在 next_step 时 care 调整幅度",
+    )
+    ethos_recovering_curiosity_delta: float = Field(
+        default=0.09, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：recovering 状态下 curiosity 调整幅度",
+    )
+    ethos_recovering_care_delta: float = Field(
+        default=0.07, ge=0.0, le=1.0,
+        description="兼容旧 judgment config snapshot：recovering 状态下 care 调整幅度",
+    )
 
 class ThresholdsConfig(BaseModel):
     """内部感知驱动任务的触发阈值。
@@ -456,6 +617,155 @@ class ThresholdsConfig(BaseModel):
     shell_max_output_chars: int = Field(
         default=500, ge=0,
         description="shell.run 默认输出预览字符数；工具调用时可被 params.max_output_chars 覆盖"
+    )
+    ask_evidence_budget: int = Field(
+        default=2, ge=1,
+        description="调用 task.ask 前要求的最小有效本地取证次数；runtime rewrite 与 judgment 提示词共用此阈值",
+    )
+    perception_replay_trend_delta: float = Field(
+        default=0.15, ge=0.0,
+        description="感知重放中判定 worsening / recovering 的最小趋势差值",
+    )
+    perception_replay_high_error_hint_streak: int = Field(
+        default=3, ge=1,
+        description="兼容旧 judgment config snapshot：high_error streak 达到此值时在 perception replay 注入提示",
+    )
+    emotion_replay_trend_delta: float = Field(
+        default=0.10, ge=0.0,
+        description="情绪重放中判定 worsening / recovering 的最小趋势差值",
+    )
+    task_explore_converge_after: int = Field(
+        default=4, ge=1,
+        description="tool_history 中探索类动作累计达到此次数后，model_routing 的 global_cost_posture 从 conserve 切到 converge",
+    )
+    continue_task_plan_max_per_tick: int = Field(
+        default=1, ge=1,
+        description="单个 tick 的 continue phase 中最多允许多少次 task.plan；超过后 runtime 强制打断并要求下一 tick 直接执行计划内工具",
+    )
+    continue_tool_history_compact_threshold: int = Field(
+        default=6, ge=1,
+        description="continue phase 中 tool_history 达到此条数后压缩早期条目，避免上下文爆炸",
+    )
+    continue_tool_history_keep_last: int = Field(
+        default=3, ge=1,
+        description="continue phase 压缩 tool_history 时保留最近多少条完整记录，其余折叠为 [compacted] 摘要",
+    )
+    judgment_error_streak_guard: int = Field(
+        default=2, ge=1,
+        description="JudgmentSignals 中 error streak 的统一门槛；达到后 require_more_evidence / prefer_narrow_scope / pause posture 会被触发",
+    )
+    judgment_require_more_evidence_worsening_failure_count: int = Field(
+        default=1, ge=1,
+        description="perception_trend=worsening 时，failure_count 达到此值触发 require_more_evidence",
+    )
+    judgment_prefer_narrow_failure_count: int = Field(
+        default=2, ge=1,
+        description="failure_count 达到此值时，JudgmentSignals.prefer_narrow_scope=true",
+    )
+    judgment_posture_narrow_failure_count: int = Field(
+        default=3, ge=1,
+        description="failure_count 达到此值时，JudgmentSignals.posture=narrow",
+    )
+    judgment_posture_narrow_down_regulate_failure_count: int = Field(
+        default=1, ge=1,
+        description="emotion_state.regulation.strategy=down-regulate 时，failure_count 达到此值触发 posture=narrow",
+    )
+    judgment_posture_pause_worsening_failure_count: int = Field(
+        default=2, ge=1,
+        description="perception_trend=worsening 时，failure_count 达到此值触发 posture=pause（若未先进入 narrow）",
+    )
+    reference_min_confidence: float = Field(
+        default=0.55, ge=0.0, le=1.0,
+        description="ReferenceResolver 最低置信度阈值；低于此值的候选不会进入最终实体段",
+    )
+    reference_local_signal_base: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="reference 本地信号评分基线；命中启发式时从该值起算",
+    )
+    reference_local_signal_step: float = Field(
+        default=0.09, ge=0.0, le=1.0,
+        description="reference 本地信号每条命中启发式增加的置信度步长",
+    )
+    reference_local_confidence_cap: float = Field(
+        default=0.8, ge=0.0, le=1.0,
+        description="reference 本地启发式评分上限，避免单靠 lexical hints 过度自信",
+    )
+    reference_max_anchors: int = Field(
+        default=3, ge=1,
+        description="reference 解析时最多提取多少个 anchor",
+    )
+    reference_topic_top_k: int = Field(
+        default=8, ge=1,
+        description="topic anchor 语义检索返回的 top-k 候选数",
+    )
+    reference_recent_narrative_limit: int = Field(
+        default=5, ge=1,
+        validation_alias=AliasChoices("reference_recent_narrative_limit", "reference_time_recent_limit"),
+        description="reference recent 预热池先读取多少条最新叙事记录",
+    )
+    reference_recent_semantic_top_k: int = Field(
+        default=3, ge=1,
+        validation_alias=AliasChoices("reference_recent_semantic_top_k", "reference_time_semantic_top_k"),
+        description="recent 叙事预热二次语义检索返回的 top-k 候选数",
+    )
+    reference_candidate_cap: int = Field(
+        default=12, ge=1,
+        description="reference 归并后的最大候选总数",
+    )
+    reference_entity_section_limit: int = Field(
+        default=5, ge=1,
+        description="最终 entity_section 最多保留多少条实体",
+    )
+    reference_anchor_text_chars: int = Field(
+        default=200, ge=1,
+        description="anchor 文本截断预算（字符）",
+    )
+    reference_candidate_body_chars: int = Field(
+        default=80, ge=1,
+        description="候选节点正文摘要预算（字符）",
+    )
+    reference_entity_snippet_chars: int = Field(
+        default=120, ge=1,
+        description="entity_section 中每条 snippet 的字符预算",
+    )
+    reference_topic_anchor_min_chars: int = Field(
+        default=2, ge=1,
+        description="topic anchor 进入检索前要求的最小字符数",
+    )
+    fact_context_exclude_prefixes: list[str] = Field(
+        default_factory=lambda: [
+            "control:",
+            "durable_failure:",
+            "evolution:",
+            "pref:",
+            "run:",
+            "soul:",
+        ],
+        description="构造 facts snapshot 时需要排除的 key 前缀",
+    )
+    fact_context_task_limit: int = Field(
+        default=6, ge=0,
+        description="task 作用域 facts snapshot 的保留上限",
+    )
+    fact_context_global_limit: int = Field(
+        default=4, ge=0,
+        description="global 作用域 facts snapshot 的保留上限",
+    )
+    fact_context_recent_scan_multiplier: int = Field(
+        default=3, ge=1,
+        description="recent facts 扫描窗口倍数，用于先扩大扫描再截断输出",
+    )
+    fact_context_recent_scan_min: int = Field(
+        default=12, ge=1,
+        description="recent facts 扫描窗口的最小条数",
+    )
+    chat_history_turn_limit: int = Field(
+        default=3, ge=0,
+        description="judgment 上下文中保留的最近对话轮数",
+    )
+    chat_history_max_chars: int = Field(
+        default=300, ge=0,
+        description="chat history 格式化后的最大字符预算",
     )
     # 工作记忆（WM）优先级基准（微调注入顺序，不影响功能语义）
     wm_pri_signal: float = Field(default=0.90, ge=0.0, le=1.0, description="调度信号、执行成功结果的 WM 优先级")
@@ -528,6 +838,15 @@ class Config(BaseModel):
             "显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair，"
             "兼容 simple/complex），value 为 'provider/model-id' 列表。\n"
             "示例: {\"reader\": [\"bailian/qwen-plus\", \"copilot/gpt-5.4\"]}"
+        ),
+    )
+    model_prices: dict[str, dict[str, float]] = Field(
+        default_factory=dict,
+        description=(
+            "按量模型定价（USD / 1M tokens），用于成本追踪。"
+            "key 为模型 id（不含 provider 前缀），value 含 input/output 两个字段。\n"
+            "订阅制模型（如 copilot/*）无需填写，成本始终为 0。\n"
+            "示例: {\"qwen3.6-plus\": {\"input\": 0.50, \"output\": 2.00}}"
         ),
     )
 

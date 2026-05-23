@@ -162,12 +162,12 @@ def test_select_tier_logic():
     # prefer_tier 优先
     assert layer._select_tier(phase="initial", user_message="", prefer_tier="reader") == "reader"
 
-    # continue + reader tool + no error → reader
+    # continue 默认不再因 reader 工具而隐式降到 reader
     tier = layer._select_tier(
         phase="continue", user_message="",
         current_action="file.read", tool_history=[],
     )
-    assert tier == "reader"
+    assert tier == "reasoner"
 
     # continue + reasoner tool → reasoner
     tier2 = layer._select_tier(
@@ -503,6 +503,235 @@ def test_model_routing_section_uses_effective_thinking():
     assert payload["implicit_next_phase_default"] is None
 
 
+def test_fmt_config_snapshot_exposes_judgment_signal_thresholds():
+    from core.config import Config
+    from core.judgment.context import _fmt_config_snapshot
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "emotion": {
+            "failure_normalization_count": 4.0,
+            "high_error_normalization_streak": 5.0,
+            "feeling_min_intensity": 0.25,
+            "regulation_down_regulate_arousal_high": 0.8,
+            "regulation_high_error_streak_guard": 3,
+        },
+        "soul": {
+            "ethos_prefer_verification_caution_min": 0.72,
+            "ethos_prefer_verification_failure_count": 3,
+            "ethos_prefer_narrow_error_streak": 4,
+            "ethos_avoid_overclaiming_down_regulate_streak": 5,
+            "ethos_failure_adjust_count": 2,
+            "ethos_failure_truth_delta": 0.11,
+            "ethos_high_error_adjust_streak": 4,
+            "ethos_recovering_curiosity_delta": 0.09,
+        },
+        "thresholds": {
+            "prediction_error_task": 0.8,
+            "perception_replay_trend_delta": 0.2,
+            "perception_replay_high_error_hint_streak": 3,
+            "emotion_replay_trend_delta": 0.12,
+            "judgment_error_streak_guard": 4,
+            "judgment_posture_narrow_failure_count": 5,
+            "judgment_posture_pause_worsening_failure_count": 3,
+        },
+    })
+
+    text = _fmt_config_snapshot(cfg)
+    assert "## Emotion guardrails (emotion.*)" in text
+    assert "failure_normalization_count: 4.0" in text
+    assert "high_error_normalization_streak: 5.0" in text
+    assert "feeling_min_intensity: 0.25" in text
+    assert "regulation_down_regulate_arousal_high: 0.8" in text
+    assert "regulation_high_error_streak_guard: 3" in text
+    assert "## Ethos guardrails (soul.*)" in text
+    assert "ethos_prefer_verification_caution_min: 0.72" in text
+    assert "ethos_prefer_verification_failure_count: 3" in text
+    assert "ethos_prefer_narrow_error_streak: 4" in text
+    assert "ethos_avoid_overclaiming_down_regulate_streak: 5" in text
+    assert "ethos_failure_adjust_count: 2" in text
+    assert "ethos_failure_truth_delta: 0.11" in text
+    assert "ethos_high_error_adjust_streak: 4" in text
+    assert "ethos_recovering_curiosity_delta: 0.09" in text
+    assert "## Replay guardrails (thresholds.*)" in text
+    assert "prediction_error_task: 0.8" in text
+    assert "perception_replay_trend_delta: 0.2" in text
+    assert "perception_replay_high_error_hint_streak: 3" in text
+    assert "emotion_replay_trend_delta: 0.12" in text
+    assert "## Judgment guardrails (thresholds.*)" in text
+    assert "judgment_error_streak_guard: 4" in text
+    assert "judgment_posture_narrow_failure_count: 5" in text
+    assert "judgment_posture_pause_worsening_failure_count: 3" in text
+
+
+def test_fmt_config_snapshot_exposes_reference_thresholds():
+    from core.config import Config
+    from core.judgment.context import _fmt_config_snapshot
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "memory": {
+            "consolidate_threshold": 0.74,
+            "consolidate_low_pressure_skip_threshold": 0.81,
+            "global_md_warn_bytes": 12345,
+            "global_md_warn_lines": 67,
+        },
+        "emotion": {
+            "reflection_valence_history_weight": 0.7,
+            "reflection_valence_hint_weight": 0.3,
+        },
+        "thresholds": {
+            "reference_min_confidence": 0.61,
+            "reference_local_signal_base": 0.42,
+            "reference_local_signal_step": 0.11,
+            "reference_local_confidence_cap": 0.77,
+            "reference_max_anchors": 2,
+            "reference_topic_top_k": 7,
+            "reference_recent_narrative_limit": 4,
+            "reference_recent_semantic_top_k": 6,
+            "reference_candidate_cap": 9,
+            "reference_entity_section_limit": 3,
+            "reference_anchor_text_chars": 180,
+            "reference_candidate_body_chars": 70,
+            "reference_entity_snippet_chars": 90,
+            "reference_topic_anchor_min_chars": 4,
+            "fact_context_exclude_prefixes": ["pref:", "run:"],
+            "fact_context_task_limit": 8,
+            "fact_context_global_limit": 5,
+            "fact_context_recent_scan_multiplier": 4,
+            "fact_context_recent_scan_min": 10,
+            "chat_history_turn_limit": 2,
+            "chat_history_max_chars": 180,
+        },
+    })
+
+    text = _fmt_config_snapshot(cfg)
+    assert "## Reference guardrails (thresholds.*)" in text
+    assert "reference_min_confidence: 0.61" in text
+    assert "reference_local_signal_base: 0.42" in text
+    assert "reference_local_signal_step: 0.11" in text
+    assert "reference_local_confidence_cap: 0.77" in text
+    assert "reference_max_anchors: 2" in text
+    assert "reference_topic_top_k: 7" in text
+    assert "reference_recent_narrative_limit: 4" in text
+    assert "reference_recent_semantic_top_k: 6" in text
+    assert "reference_candidate_cap: 9" in text
+    assert "reference_entity_section_limit: 3" in text
+    assert "reference_anchor_text_chars: 180" in text
+    assert "reference_candidate_body_chars: 70" in text
+    assert "reference_entity_snippet_chars: 90" in text
+    assert "reference_time_recent_limit" not in text
+    assert "reference_time_semantic_top_k" not in text
+    assert "reflection_valence_history_weight: 0.7" in text
+    assert "reflection_valence_hint_weight: 0.3" in text
+    assert "## Memory guardrails (memory.*)" in text
+    assert "consolidate_threshold: 0.74" in text
+    assert "consolidate_low_pressure_skip_threshold: 0.81" in text
+    assert "global_md_warn_bytes: 12345" in text
+    assert "global_md_warn_lines: 67" in text
+    assert "reference_topic_anchor_min_chars: 4" in text
+    assert "reference_time_phrase_hours" not in text
+    assert "reference_days_ago_pattern" not in text
+    assert "reference_hours_ago_pattern" not in text
+    assert "reference_named_top_k" not in text
+    assert "reference_self_intro_terms" not in text
+    assert "reference_self_intro_name_max_chars" not in text
+    assert "reference_relation_hint_terms" not in text
+    assert "## Context facts guardrails (thresholds.*)" in text
+    assert 'fact_context_exclude_prefixes: ["pref:", "run:"]' in text
+    assert "fact_context_task_limit: 8" in text
+    assert "fact_context_global_limit: 5" in text
+    assert "fact_context_recent_scan_multiplier: 4" in text
+    assert "fact_context_recent_scan_min: 10" in text
+    assert "## Chat history guardrails (thresholds.*)" in text
+    assert "chat_history_turn_limit: 2" in text
+    assert "chat_history_max_chars: 180" in text
+    assert "## Task steering guardrails (thresholds.*)" not in text
+    assert "task_steer_ascii_term_min_chars" not in text
+    assert "task_steer_cjk_term_min_chars" not in text
+    assert "task_steer_cjk_term_max_chars" not in text
+    assert "task_steer_message_min_chars" not in text
+    assert "task_steer_message_min_terms" not in text
+    assert "task_steer_message_overlap_threshold" not in text
+
+
+def test_fmt_soul_uses_config_ethos_fallback_when_db_missing():
+    from core.judgment.context import _fmt_soul
+
+    text = _fmt_soul(
+        "",
+        "",
+        '{"truth": 0.85, "caution": 0.70}',
+        '["不绕过监督"]',
+    )
+
+    assert "绝对禁忌（hard_axioms，config fallback）" in text
+    assert '"不绕过监督"' in text
+    assert "价值基线（ethos_baseline，config fallback）" in text
+    assert '"truth": 0.85' in text
+
+
+def test_fmt_chat_history_uses_configured_max_chars():
+    from core.judgment.context import _fmt_chat_history
+
+    text = _fmt_chat_history([
+        {"role": "user", "content": "abcdefghi"},
+        {"role": "assistant", "content": "123456789"},
+    ], max_chars=5)
+
+    assert "用户: abcde…" in text
+    assert "我: 12345…" in text
+
+
+def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
+    from core.judgment.output import is_plan_alignment_exempt, tool_tier, tool_tier_mapping
+
+    registry = _tool_registry()
+
+    assert tool_tier("task.ask", registry) == "reasoner"
+    assert tool_tier("task.plan", registry) == "reasoner"
+    assert tool_tier("shell.run", registry) == "reasoner"
+    assert tool_tier("schedule.add", registry) == "reasoner"
+    assert tool_tier("memory.snapshot", registry) == "reasoner"
+    assert tool_tier("task.resume", registry) == "reasoner"
+    assert tool_tier("web.search", registry) == "reasoner"
+    assert tool_tier("image.analyze", registry) == "reasoner"
+    assert tool_tier("image.generate", registry) == "reasoner"
+    assert tool_tier("task.list", registry) == "reader"
+
+    mapping = tool_tier_mapping(registry)
+    assert "task.ask" in mapping["reasoner"]
+    assert "task.plan" in mapping["reasoner"]
+    assert "schedule.add" in mapping["reasoner"]
+    assert "memory.snapshot" in mapping["reasoner"]
+    assert "task.resume" in mapping["reasoner"]
+    assert "web.search" in mapping["reasoner"]
+    assert "image.analyze" in mapping["reasoner"]
+    assert "image.generate" in mapping["reasoner"]
+    assert "task.list" in mapping["reader"]
+
+    assert is_plan_alignment_exempt("task.ask", registry) is True
+    assert is_plan_alignment_exempt("task.plan", registry) is True
+
+
 async def test_reference_failure_is_exposed_in_model_routing_section():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -548,7 +777,7 @@ async def test_reference_failure_is_exposed_in_model_routing_section():
     assert "400 Bad Request" in payload["reference_resolution"]["last_error"]
 
 
-def test_model_routing_section_exposes_implicit_reader_default():
+def test_model_routing_section_no_longer_exposes_implicit_reader_default():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from tools.registry import ToolRegistry
@@ -582,8 +811,381 @@ def test_model_routing_section_exposes_implicit_reader_default():
         effective_thinking="low",
     ))
 
-    assert payload["implicit_next_phase_default"]["tier"] == "reader"
-    assert payload["implicit_next_phase_default"]["trigger"] == "last_action=file.read"
+    assert payload["implicit_next_phase_default"] is None
+    assert "必须由你显式设置 next_phase_tier" in payload["delegation_guide"]
+
+
+def test_model_routing_section_uses_configured_idle_bounds_and_defaults():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "loop": {
+            "idle_with_task_bounds": [250, 45000],
+            "idle_no_task_bounds": [8000, 120000],
+            "active_idle_gap": 1500,
+            "max_idle_gap": 90000,
+        },
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="继续分析",
+        current_action="file.read",
+        tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "ok"}],
+        effective_thinking="low",
+    ))
+
+    guide = payload["delegation_guide"]
+    assert "当前有任务时 250ms-45s，无任务时 8s-120s" in guide
+    assert "当前 loop 默认备用值（有任务 1.5s，无任务 90s）" in guide
+
+
+def test_model_routing_section_counts_exploration_budget_by_capability():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="memory.search",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 2 条"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 3 条任务"},
+            {"tool": "shell.run", "params": {"command": "pytest -q"}, "result": "1 passed"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["budget_state"]["task_explore_count"] == 3
+    assert payload["budget_state"]["ask_evidence_hits"] == 2
+    assert payload["budget_state"]["ask_evidence_budget"] == 2
+    assert payload["budget_state"]["task_explore_converge_after"] == 4
+    assert payload["budget_state"]["global_cost_posture"] == "conserve"
+
+
+def test_model_routing_section_uses_configured_explore_converge_threshold():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "thresholds": {
+            "task_explore_converge_after": 3,
+        },
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="memory.search",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 2 条"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 3 条任务"},
+            {"tool": "shell.run", "params": {"command": "pytest -q"}, "result": "1 passed"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["budget_state"]["task_explore_count"] == 3
+    assert payload["budget_state"]["task_explore_converge_after"] == 3
+    assert payload["budget_state"]["global_cost_posture"] == "converge"
+
+
+def test_model_routing_section_repeat_counts_only_trailing_streak():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="file.read",
+        tool_history=[
+            {"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "alpha"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
+            {"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "alpha"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["budget_state"]["repeat_action_count"] == 1
+    assert payload["budget_state"]["repeat_read_count"] == 1
+
+    trailing = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="file.read",
+        tool_history=[
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
+            {"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "alpha"},
+            {"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "alpha"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert trailing["budget_state"]["repeat_action_count"] == 2
+    assert trailing["budget_state"]["repeat_read_count"] == 2
+
+
+def test_model_routing_section_repeat_action_count_uses_action_key_signature():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="memory.search",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 1 条"},
+            {"tool": "memory.search", "params": {"query": "other runtime"}, "result": "命中 1 条"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["budget_state"]["repeat_action_count"] == 1
+
+    trailing = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="memory.search",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 1 条"},
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 1 条"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert trailing["budget_state"]["repeat_action_count"] == 2
+
+
+def test_model_routing_section_exposes_continue_phase_task_plan_policy():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "thresholds": {
+            "continue_task_plan_max_per_tick": 2,
+        },
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="task.plan",
+        tool_history=[
+            {"tool": "task.plan", "params": {"plan": [{"step": "a", "status": "in_progress"}]}, "result": "计划已创建"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["continue_phase_policy"]["task_plan_calls_this_tick"] == 1
+    assert payload["continue_phase_policy"]["task_plan_max_per_tick"] == 2
+    assert payload["continue_phase_policy"]["task_plan_blocked_next"] is False
+    assert "continue_phase_policy" in payload["delegation_guide"]
+
+
+def test_model_routing_section_marks_task_plan_blocked_when_limit_reached():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="task.plan",
+        tool_history=[
+            {"tool": "task.plan", "params": {"plan": [{"step": "a", "status": "in_progress"}]}, "result": "计划已创建"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["continue_phase_policy"]["task_plan_max_per_tick"] == 1
+    assert payload["continue_phase_policy"]["task_plan_blocked_next"] is True
+
+
+def test_model_routing_section_exposes_tool_history_compaction_policy():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "thresholds": {
+            "continue_tool_history_compact_threshold": 2,
+            "continue_tool_history_keep_last": 1,
+        },
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="memory.search",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "legacy runtime"}, "result": "命中 1 条"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
+        ],
+        effective_thinking="low",
+    ))
+
+    assert payload["continue_phase_policy"]["tool_history_count"] == 2
+    assert payload["continue_phase_policy"]["tool_history_compact_threshold"] == 2
+    assert payload["continue_phase_policy"]["tool_history_keep_last"] == 1
+    assert payload["continue_phase_policy"]["tool_history_will_compact_next"] is True
+    assert "tool_history_will_compact_next=true" in payload["delegation_guide"]
 
 
 def test_fmt_durable_failures_exposes_policy_and_muted_actions():
@@ -657,7 +1259,7 @@ async def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
 
 async def test_decide_continue_uses_passed_thinking_override():
     from core.config import Config
-    from core.judgment import JudgmentLayer
+    from core.judgment import JudgmentLayer, ModelSelection
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -700,6 +1302,72 @@ async def test_decide_continue_uses_passed_thinking_override():
     assert layer.last_call_meta["thinking"] == "low"
 
 
+async def test_decide_continue_updates_last_call_meta_after_fallback():
+    from core.config import Config
+    from core.judgment import JudgmentLayer, ModelSelection
+
+    class _FailingProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            raise RuntimeError("primary unavailable")
+
+        async def close(self):
+            return None
+
+    class _FallbackProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_FailingProvider(), _tool_registry(), cfg)
+    layer._last_context_text = "cached context"
+    layer._last_call_meta["skills"] = "cached-skill"
+    fallback_provider = _FallbackProvider()
+
+    def _fake_select_provider(**kwargs):
+        prefer_tier = kwargs.get("prefer_tier")
+        if prefer_tier == "reasoner":
+            return fallback_provider, ModelSelection(
+                phase="continue",
+                tier="reasoner",
+                model_ref="bailian/qwen-reasoner-fallback",
+                thinking="high",
+            )
+        return layer._provider, ModelSelection(
+            phase="continue",
+            tier="reader",
+            model_ref="bailian/qwen-reader-primary",
+            thinking="off",
+        )
+
+    layer._select_provider = _fake_select_provider  # type: ignore[method-assign]
+
+    out = await layer.decide_continue(
+        [{"tool": "file.list", "params": {"path": "/tmp"}, "result": "ok"}],
+        user_message="继续",
+        prefer_tier="reader",
+    )
+
+    assert out.decision == "wait"
+    assert layer.last_call_meta["model_ref"] == "bailian/qwen-reasoner-fallback"
+    assert layer.last_call_meta["tier"] == "reasoner"
+    assert layer.last_call_meta["skills"] == "cached-skill"
+
+
 def test_action_made_progress_result_aware():
     from core.judgment import JudgmentOutput
     from core.loop.progress import _action_made_progress, _result_fingerprint
@@ -718,6 +1386,10 @@ def test_action_made_progress_result_aware():
     write_action = _judgment_output(decision="act", chosen_action_id="file.write", params={"path": "/tmp/x"})
     write_res = ToolResult(summary="写入成功: /tmp/x")
     assert _action_made_progress(write_action, write_res)[0] is True
+
+    config_set_action = _judgment_output(decision="act", chosen_action_id="config.set", params={"key": "loop.max_idle_gap"})
+    empty_mutation = ToolResult(summary="")
+    assert _action_made_progress(config_set_action, empty_mutation)[0] is True
 
     fail_action = _judgment_output(decision="act", chosen_action_id="file.read", params={"path": "/tmp/missing"})
     fail_res = ToolResult(summary="文件不存在: /tmp/missing", error="FileNotFound")
@@ -769,6 +1441,45 @@ async def _write_success_stall_meta_reflection_records_task_hint():
         await store.close()
 
 
+def test_success_stall_reflection_tracks_capability_based_tool():
+    asyncio.run(_success_stall_reflection_tracks_capability_based_tool())
+
+
+async def _success_stall_reflection_tracks_capability_based_tool():
+    from core.loop.tick import _maybe_record_success_stall_reflection_impl
+    from memory.task_store import TaskStore
+    from tools.registry import ToolResult
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "stall-capability.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("分析任务枚举空转", goal="避免重复 task.list")
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            loop = cast(Any, SimpleNamespace(
+                _task_store=store,
+                _registry=_tool_registry(),
+                _last_act_progressful=False,
+                _success_stall_task_id=None,
+                _success_stall_streak=0,
+            ))
+            action = _judgment_output(decision="act", chosen_action_id="task.list", params={"status": "all"})
+            result = ToolResult(summary="命中 3 条任务")
+
+            await _maybe_record_success_stall_reflection_impl(loop, task, action, result, cycle=7)
+            await _maybe_record_success_stall_reflection_impl(loop, task, action, result, cycle=8)
+
+            raw, found = await store.get_fact(f"task:{task_id}:meta_reflection")
+            assert found
+            payload = json.loads(raw)
+            assert payload["tool_name"] == "task.list"
+            assert "停止重复 task.list" in payload["proposal"]
+        finally:
+            await store.close()
+
+
 def test_fallback_reply_for_user_describes_waiting_state():
     from core.loop.logging import _fallback_reply_for_user
     from tools.registry import ToolResult
@@ -816,11 +1527,153 @@ def test_fallback_reply_for_user_does_not_echo_tool_summary_on_success():
     assert "/tmp/a.py" not in reply
 
 
+@pytest.mark.asyncio
+async def test_finalize_tick_user_reply_does_not_synthesize_progress_reply_on_nonfailure_reply_only_empty():
+    from core.loop.tick import _finalize_tick_user_reply
+    from tools.registry import ToolResult
+
+    class _Judgment:
+        async def decide_continue(self, *args, **kwargs):
+            return _judgment_output(decision="wait", rationale="继续等待更多证据")
+
+    class _Store:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, str]] = []
+
+        async def get_fact(self, key: str):
+            return "", False
+
+        async def add_chat_message(self, role: str, content: str, chat_id: str = ""):
+            self.messages.append((role, content, chat_id))
+            return len(self.messages)
+
+    cfg = cast(Any, SimpleNamespace(
+        thinking="off",
+        loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="minimal"),
+    ))
+    store = _Store()
+    loop = cast(Any, SimpleNamespace(
+        _judgment=_Judgment(),
+        _pending_routing_overrides=None,
+        _task_store=store,
+    ))
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="file.read",
+        rationale="已拿到证据，等待下一步判断。",
+    )
+    result = ToolResult(summary="读取完成")
+
+    await _finalize_tick_user_reply(
+        loop,
+        cfg,
+        action,
+        result,
+        tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "读取完成"}],
+        user_message="继续",
+        active_task=None,
+        chat_id=None,
+    )
+
+    assert action.reply_to_user == ""
+    assert store.messages == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_tick_user_reply_keeps_disaster_fallback_for_reply_only_failure():
+    from core.loop.tick import _finalize_tick_user_reply
+    from tools.registry import ToolResult
+
+    class _Judgment:
+        async def decide_continue(self, *args, **kwargs):
+            return _judgment_output(decision="wait", rationale="[reply-only] reply_to_user 不能为空")
+
+    class _Store:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, str]] = []
+
+        async def get_fact(self, key: str):
+            return "", False
+
+        async def add_chat_message(self, role: str, content: str, chat_id: str = ""):
+            self.messages.append((role, content, chat_id))
+            return len(self.messages)
+
+    cfg = cast(Any, SimpleNamespace(
+        thinking="off",
+        loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="minimal"),
+    ))
+    store = _Store()
+    loop = cast(Any, SimpleNamespace(
+        _judgment=_Judgment(),
+        _pending_routing_overrides=None,
+        _task_store=store,
+    ))
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="file.read",
+        rationale="我已经收集到关键证据。",
+    )
+    result = ToolResult(summary="读取完成")
+
+    await _finalize_tick_user_reply(
+        loop,
+        cfg,
+        action,
+        result,
+        tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "读取完成"}],
+        user_message="继续",
+        active_task=None,
+        chat_id=None,
+    )
+
+    assert action.reply_to_user.startswith("状态: progressed")
+
+
+@pytest.mark.asyncio
+async def test_persist_tick_user_reply_does_not_append_skill_suffix():
+    from core.loop.tick import _persist_tick_user_reply
+
+    class _Store:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, str, str]] = []
+
+        async def add_chat_message(self, role: str, content: str, chat_id: str = ""):
+            self.messages.append((role, content, chat_id))
+            return len(self.messages)
+
+    store = _Store()
+    loop = cast(Any, SimpleNamespace(_task_store=store))
+    action = _judgment_output(
+        decision="pause",
+        rationale="证据已足够，直接回复用户。",
+        reply_to_user="这是最终答复。",
+    )
+    action.applied_skills = ["runtime.bootstrap", "task_planning"]
+
+    await _persist_tick_user_reply(
+        loop,
+        action,
+        active_task=None,
+        chat_id="",
+    )
+
+    assert action.reply_to_user == "这是最终答复。"
+    assert store.messages == [("assistant", "这是最终答复。", "")]
+
+
 def test_infer_valence_from_text_uses_explicit_hint_only():
     from core.loop.common import _infer_valence_from_text
+    from core.config import EmotionConfig
 
-    assert _infer_valence_from_text("继续推进，暂无结构化情绪提示", 0.6) == 0.6
-    assert _infer_valence_from_text("root cause found; valence=0.2", 0.6) == pytest.approx(0.52)
+    default_cfg = EmotionConfig()
+    assert _infer_valence_from_text("继续推进，暂无结构化情绪提示", 0.6, default_cfg) == 0.6
+    assert _infer_valence_from_text("root cause found; valence=0.2", 0.6, default_cfg) == pytest.approx(0.52)
+    assert _infer_valence_from_text(
+        "root cause found; valence=0.2",
+        0.6,
+        EmotionConfig(reflection_valence_history_weight=0.5, reflection_valence_hint_weight=0.5),
+    ) == pytest.approx(0.4)
 
 
 def test_should_continue_within_tick_for_autonomous_act():
@@ -848,7 +1701,7 @@ def test_should_continue_within_tick_for_autonomous_act():
     assert _preferred_continue_tier(
         _judgment_output(decision="act", chosen_action_id="memory.search"),
         user_message="继续分析这个问题",
-    ) == "reader"
+    ) is None
     assert _preferred_continue_tier(
         _judgment_output(
             decision="act",
@@ -859,7 +1712,7 @@ def test_should_continue_within_tick_for_autonomous_act():
     ) == "reader"
 
 
-def test_rewrite_task_ask_to_task_list_before_asking_for_id():
+def test_rewrite_task_ask_does_not_override_llm_decision_before_asking_for_id():
     from core.judgment.runtime import _rewrite_task_ask_to_evidence
 
     action = _judgment_output(
@@ -875,10 +1728,9 @@ def test_rewrite_task_ask_to_task_list_before_asking_for_id():
         registry=_tool_registry(),
     )
 
-    assert rewritten.chosen_action_id == "task.list"
-    assert rewritten.params == {"status": "all", "limit": 10}
-    assert rewritten.reply_to_user == ""
-    assert rewritten.model_strategy["next_phase_tier"] == "reasoner"
+    assert rewritten is action
+    assert rewritten.chosen_action_id == "task.ask"
+    assert rewritten.params == {"question": "请提供相关 task id"}
 
 
 async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
@@ -935,6 +1787,51 @@ async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
     assert "禁止再调用任何工具" in provider.last_messages[1].content
 
 
+async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime_repair():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.calls += 1
+            return '{"decision":"act","params":{"key":"loop.min_act_gap","value":100},"rationale":"应该改配置"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    layer = JudgmentLayer(provider, _tool_registry(), cfg)
+    layer._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "task.list", "params": {"status": "all"}, "result": "命中 3 条任务"}],
+        user_message="把 tick 设置到 100 毫秒一次",
+        prefer_tier="reasoner",
+    )
+
+    assert out.decision == "wait"
+    assert out.chosen_action_id == ""
+    assert out.params == {}
+    assert out.rationale == "act 决策缺少 chosen_action_id"
+    assert provider.calls == 1
+
+
 async def test_decide_continue_includes_structured_tool_history_window():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -989,7 +1886,7 @@ async def test_decide_continue_includes_structured_tool_history_window():
     assert '"state_delta": {' in provider.last_messages[1].content
 
 
-async def test_decide_continue_rewrites_complex_act_to_task_plan_without_existing_plan():
+async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from memory.task_store import Task
@@ -1039,10 +1936,9 @@ async def test_decide_continue_rewrites_complex_act_to_task_plan_without_existin
     )
 
     assert out.decision == "act"
-    assert out.chosen_action_id == "task.plan"
-    assert out.params["task_id"] == 11
-    assert out.params["plan"][0]["status"] == "in_progress"
-    assert out.params["plan"][1] == {"step": "再修复 chat 回复链路", "status": "pending"}
+    assert out.chosen_action_id == "shell.run"
+    assert out.params == {"command": "pytest -q"}
+    assert out.next_step == "再修复 chat 回复链路"
 
 
 def test_rewrite_task_ask_keeps_direct_question_after_evidence():
@@ -1064,11 +1960,12 @@ def test_rewrite_task_ask_keeps_direct_question_after_evidence():
         registry=_tool_registry(),
     )
 
+    assert rewritten is action
     assert rewritten.chosen_action_id == "task.ask"
     assert rewritten.params["question"] == "还需要你补充具体 id 吗？"
 
 
-def test_rewrite_task_ask_requires_evidence_budget_before_asking():
+def test_rewrite_task_ask_leaves_evidence_budget_decision_to_llm():
     from core.judgment.runtime import _rewrite_task_ask_to_evidence
 
     action = _judgment_output(
@@ -1086,12 +1983,37 @@ def test_rewrite_task_ask_requires_evidence_budget_before_asking():
         registry=_tool_registry(),
     )
 
-    assert rewritten.chosen_action_id == "task.list"
-    assert rewritten.params == {"status": "all", "limit": 10}
-    assert "1/2" in rewritten.rationale
+    assert rewritten is action
+    assert rewritten.chosen_action_id == "task.ask"
+    assert rewritten.params == {"question": "还需要你补充具体 id 吗？"}
 
 
-def test_rewrite_complex_user_act_to_task_plan_before_mutation():
+def test_rewrite_task_ask_ignores_configured_evidence_budget_for_passthrough():
+    from core.judgment.runtime import _rewrite_task_ask_to_evidence
+
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="task.ask",
+        params={"question": "请补充 task id"},
+    )
+
+    rewritten = _rewrite_task_ask_to_evidence(
+        action,
+        user_message="继续分析",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 1 条相关记忆"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
+        ],
+        registry=_tool_registry(),
+        evidence_budget=3,
+    )
+
+    assert rewritten is action
+    assert rewritten.chosen_action_id == "task.ask"
+    assert rewritten.params == {"question": "请补充 task id"}
+
+
+def test_rewrite_complex_user_act_keeps_llm_chosen_mutation():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
     from memory.task_store import Task
 
@@ -1118,12 +2040,10 @@ def test_rewrite_complex_user_act_to_task_plan_before_mutation():
         registry=_tool_registry(),
     )
 
-    assert rewritten.chosen_action_id == "task.plan"
-    assert rewritten.params["task_id"] == 7
-    assert rewritten.params["plan"][0]["status"] == "in_progress"
-    assert rewritten.params["plan"][0]["step"].startswith("执行 shell.run")
-    assert rewritten.params["plan"][1] == {"step": "再修复 chat 回复链路", "status": "pending"}
-    assert rewritten.reply_to_user == ""
+    assert rewritten is action
+    assert rewritten.chosen_action_id == "shell.run"
+    assert rewritten.params == {"command": "rg \"chat\" core -n"}
+    assert rewritten.next_step == "再修复 chat 回复链路"
 
 
 def test_rewrite_complex_user_act_keeps_read_action_without_plan():
@@ -1152,10 +2072,11 @@ def test_rewrite_complex_user_act_keeps_read_action_without_plan():
         registry=_tool_registry(),
     )
 
+    assert rewritten is action
     assert rewritten.chosen_action_id == "file.read"
 
 
-def test_rewrite_complex_user_act_uses_structural_next_step_not_keyword_regex():
+def test_rewrite_complex_user_act_keeps_structural_next_step_without_rewrite():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
     from memory.task_store import Task
 
@@ -1181,8 +2102,9 @@ def test_rewrite_complex_user_act_uses_structural_next_step_not_keyword_regex():
         registry=_tool_registry(),
     )
 
-    assert rewritten.chosen_action_id == "task.plan"
-    assert rewritten.params["plan"][1] == {"step": "汇总结果并修复失败项", "status": "pending"}
+    assert rewritten is action
+    assert rewritten.chosen_action_id == "shell.run"
+    assert rewritten.next_step == "汇总结果并修复失败项"
 
 
 def test_rewrite_complex_user_act_respects_plan_alignment_exempt_capability():
@@ -1220,6 +2142,7 @@ def test_rewrite_complex_user_act_respects_plan_alignment_exempt_capability():
         registry=ToolRegistry(),
     )
 
+    assert rewritten is action
     assert rewritten.chosen_action_id == "debug.plan.exempt"
 
 
@@ -1239,7 +2162,7 @@ def test_preferred_continue_tier_uses_manifest_reader_tier():
     reg = ToolRegistry()
     action = _judgment_output(decision="act", chosen_action_id="debug.reader.inspect")
 
-    assert _preferred_continue_tier(action, user_message="继续分析", registry=reg) == "reader"
+    assert _preferred_continue_tier(action, user_message="继续分析", registry=reg) is None
     assert _should_continue_within_tick(
         action,
         user_message="继续分析",
@@ -1340,6 +2263,10 @@ def test_fmt_context_facts_surfaces_task_and_recent_general_facts():
     asyncio.run(_fmt_context_facts_surfaces_task_and_recent_general_facts())
 
 
+def test_load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limits():
+    asyncio.run(_load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limits())
+
+
 async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
     from core.judgment.context import _fmt_context_facts, _load_context_facts_snapshot
     from memory.task_store import TaskStore
@@ -1362,6 +2289,49 @@ async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
         assert 'legacy_runtime.workspace_memory.primary_carrier' in text
         assert 'pref:routing_overrides' not in text
         await store.close()
+
+
+async def _load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limits():
+    from core.judgment.context import _load_context_facts_snapshot
+
+    class _Store:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str | None, int]] = []
+
+        async def list_facts(self, prefix=None, limit=0):
+            self.calls.append((prefix, limit))
+            if prefix == 'task:7:':
+                return [
+                    ('task:7:a', 'A'),
+                    ('task:7:b', 'B'),
+                    ('task:7:c', 'C'),
+                ][:limit]
+            return [
+                ('pref:hidden', 'P'),
+                ('soul:visible', 'S'),
+                ('evolution:visible', 'E'),
+                ('misc:1', 'M1'),
+                ('run:hidden', 'R'),
+            ][:limit]
+
+    store = _Store()
+    facts = await _load_context_facts_snapshot(
+        cast(Any, store),
+        cast(Any, SimpleNamespace(id=7)),
+        exclude_prefixes=['pref:', 'run:'],
+        task_limit=2,
+        global_limit=2,
+        recent_scan_multiplier=4,
+        recent_scan_min=9,
+    )
+
+    assert store.calls == [('task:7:', 2), (None, 9)]
+    assert facts == [
+        ('task:7:a', 'A'),
+        ('task:7:b', 'B'),
+        ('soul:visible', 'S'),
+        ('evolution:visible', 'E'),
+    ]
 
 
 def test_tool_result_log_fields_include_state_delta():
@@ -1449,7 +2419,9 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
             )
             task = await store.get_task_by_id(task_id)
             assert task is not None
-            task.extras["inbox_messages"] = ["收到新的用户指令：请你使用 puppeteer 去搜索。"]
+            task.extras["inbox_messages"] = [
+                "收到新的用户消息：请你使用 puppeteer 去搜索。"
+            ]
 
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assemble_context(
@@ -1463,7 +2435,8 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
                 user_message="请你使用 puppeteer 去搜索。",
             )
 
-            assert "收到新的用户指令：请你使用 puppeteer 去搜索。" in text
+            assert "⚠️ 新增用户消息（inbox 1 条，先评估这些新消息是否改变当前方向）:" in text
+            assert "收到新的用户消息：请你使用 puppeteer 去搜索。" in text
         finally:
             await store.close()
 
@@ -1522,6 +2495,91 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
             )
 
             assert "帮我检查当前状态" in text
+        finally:
+            await store.close()
+
+
+def test_assemble_context_semantic_anchors_do_not_bucket_emotion():
+    asyncio.run(_assemble_context_semantic_anchors_do_not_bucket_emotion())
+
+
+async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    captured: list[str] = []
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "回归情绪锚测试",
+                goal="确认 semantic anchors 不再使用情绪桶标签",
+                next_step="检查 semantic 检索锚点",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            semantic = SemanticMemory(Path(d) / "memory", decay_lambda=0.0)
+
+            def _capture_retrieve_multi_anchor(anchors, top_k):
+                captured.extend(str(a) for a in anchors)
+                return []
+
+            semantic.retrieve_multi_anchor = cast(Any, _capture_retrieve_multi_anchor)
+
+            emotion = EmotionState.from_config(cfg)
+            emotion.valence = 0.10
+            emotion.arousal = 0.95
+
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            await layer._assemble_context(
+                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                WorkingMemory(capacity=20),
+                store,
+                EpisodicMemory(Path(d) / "memory"),
+                semantic,
+                emotion,
+                active_task=task,
+                user_message="",
+            )
+
+            assert captured
+            assert "检查 semantic 检索锚点" in captured
+            assert "焦虑" not in captured
+            assert "沮丧" not in captured
+            assert "兴奋" not in captured
+            assert "稳定" not in captured
+            assert "中性" not in captured
         finally:
             await store.close()
 

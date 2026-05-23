@@ -1,7 +1,7 @@
 """memory/episodic.py — 情节记忆（EpisodicMemory）。
 
 双层存储（解决 O(n) P0 问题）：
-  1. task-{id}.md / global.md  — 人类可读叙事（保持原行为；直接截取末尾注入 LLM context）
+    1. episodic/task-{id}.md / episodic/global.md  — 人类可读叙事（直接截取末尾注入 LLM context）
   2. episodic.db               — 结构化事件 + 叙事 FTS5 索引
      - events 表：替代 O(n) events.jsonl 扫描，O(log n) 索引查询
      - narrative 表 + narrative_fts：支持跨任务叙事全文检索
@@ -92,6 +92,9 @@ class EpisodicMemory:
     def __init__(self, memory_dir: Path, max_events: int = 0) -> None:
         self._dir = memory_dir
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._narrative_dir = self._dir / "episodic"
+        self._narrative_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_narrative_files()
         self._max_events = max_events
         self._db_path = memory_dir / "episodic.db"
         self._conn = self._open_db()
@@ -152,9 +155,60 @@ class EpisodicMemory:
 
     # ── 叙事层（.md + narrative DB）─────────────────────────────────────────
 
+    @staticmethod
+    def _narrative_filename(task_id: str | None) -> str:
+        return f"task-{task_id}.md" if task_id else "global.md"
+
+    @classmethod
+    def narrative_path_for_dir(cls, memory_dir: Path, task_id: str | None) -> Path:
+        return Path(memory_dir) / "episodic" / cls._narrative_filename(task_id)
+
+    @classmethod
+    def legacy_narrative_path_for_dir(cls, memory_dir: Path, task_id: str | None) -> Path:
+        return Path(memory_dir) / cls._narrative_filename(task_id)
+
     def _task_path(self, task_id: str | None) -> Path:
-        name = f"task-{task_id}.md" if task_id else "global.md"
-        return self._dir / name
+        return self.narrative_path_for_dir(self._dir, task_id)
+
+    def _legacy_task_path(self, task_id: str | None) -> Path:
+        return self.legacy_narrative_path_for_dir(self._dir, task_id)
+
+    def _resolve_task_path(self, task_id: str | None) -> Path:
+        path = self._task_path(task_id)
+        if path.exists():
+            return path
+        legacy = self._legacy_task_path(task_id)
+        return legacy if legacy.exists() else path
+
+    def _iter_legacy_narrative_files(self) -> list[Path]:
+        paths: list[Path] = []
+        global_path = self._legacy_task_path(None)
+        if global_path.exists():
+            paths.append(global_path)
+        paths.extend(sorted(self._dir.glob("task-*.md")))
+        return paths
+
+    def _iter_narrative_files(self) -> list[Path]:
+        files: dict[str, Path] = {}
+        global_path = self._task_path(None)
+        if global_path.exists():
+            files[global_path.name] = global_path
+        for md_path in sorted(self._narrative_dir.glob("task-*.md")):
+            files.setdefault(md_path.name, md_path)
+        for legacy_path in self._iter_legacy_narrative_files():
+            files.setdefault(legacy_path.name, legacy_path)
+        return [files[name] for name in sorted(files)]
+
+    def _migrate_legacy_narrative_files(self) -> None:
+        """将旧版根目录 narrative 文件迁移到 episodic/ 子目录（幂等）。"""
+        for legacy_path in self._iter_legacy_narrative_files():
+            target = self._narrative_dir / legacy_path.name
+            if target.exists():
+                continue
+            try:
+                legacy_path.rename(target)
+            except OSError as exc:
+                _log.warning("[episodic] 迁移 narrative 文件失败: %s -> %s (%s)", legacy_path, target, exc)
 
     def _insert_narrative_row(
         self,
@@ -252,7 +306,7 @@ class EpisodicMemory:
           head:tail = 1:3，尾部权重更高（近期上下文更重要）。
         比纯末尾截断保留了任务起点信息，避免 LLM 对长任务"失忆"。
         """
-        path = self._task_path(task_id)
+        path = self._resolve_task_path(task_id)
         if not path.exists():
             return ""
         text = path.read_text(encoding="utf-8")
@@ -322,7 +376,18 @@ class EpisodicMemory:
 
     def list_tasks(self) -> list[str]:
         """返回已有情节记忆的任务 ID 列表。"""
-        return [p.stem.removeprefix("task-") for p in self._dir.glob("task-*.md")]
+        return [p.stem.removeprefix("task-") for p in self._iter_narrative_files() if p.name.startswith("task-")]
+
+    def list_recent_narrative(self, limit: int = 10) -> list[dict[str, Any]]:
+        """返回最新若干条叙事记录（不解释用户时间词，仅供 recent 预热）。"""
+        try:
+            rows = self._conn.execute(
+                "SELECT task_id, role, content, ts FROM narrative ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
 
     def query_recent_narrative(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
         """时间窗叙事查询：返回最近 hours 小时内的叙事记录（供实体共指消解使用）。
@@ -527,7 +592,7 @@ class EpisodicMemory:
         # 2. 降级：.md 文件关键词扫描
         if total < max_chars:
             keywords = [kw.lower() for kw in query.split() if kw]
-            for md_path in sorted(self._dir.glob("*.md")):
+            for md_path in self._iter_narrative_files():
                 # 跳过当前任务自身的 .md
                 if exclude_task_id and md_path.name == f"task-{exclude_task_id}.md":
                     continue

@@ -19,6 +19,7 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
         "真正发送给用户的话应写入 reply_to_user；task.ask 只负责把这次外部依赖记入执行轨迹。\n"
         "choices 可选：最多 4 个预定义选项，用户可从中选择或自由回答。"
     ),
+    prefer_tier="reasoner",
     progress_category="info",
     capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[

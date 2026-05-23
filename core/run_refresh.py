@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any, cast
 
+from core.config import run_result_memory_affect
 from core.execution import build_meta_reflection, record_meta_reflection
 from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory, MemoryNode
@@ -77,6 +78,7 @@ def _record_refreshed_run_outcome(
     progress: str,
     summary: str,
     error: str,
+    memory_cfg: Any | None = None,
 ) -> None:
     if episodic is not None:
         episodic.record_event(
@@ -93,6 +95,10 @@ def _record_refreshed_run_outcome(
         )
     if semantic is None:
         return
+    activation, valence = run_result_memory_affect(
+        memory_cfg,
+        is_failure=status == "failed" or bool(error),
+    )
     semantic.upsert(MemoryNode(
         id=f"run-result-{run.id}",
         kind="run_result",
@@ -104,8 +110,8 @@ def _record_refreshed_run_outcome(
             f"summary={summary}\n"
             f"error={error}"
         )[:4000],
-        activation=0.82 if status == "failed" or error else 0.72,
-        valence=0.35 if status == "failed" or error else 0.65,
+        activation=activation,
+        valence=valence,
         tags=[x for x in [status, run.tool_name, run.worker_type, f"task:{run.task_id}" if run.task_id else ""] if x],
     ))
 
@@ -187,14 +193,18 @@ async def _refresh_run_via_fact_monitor(
     *,
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
+    memory_cfg: Any | None = None,
 ) -> dict[str, Any]:
     key = str(monitor.get("key") or "").strip()
     raw, found = await task_store.get_fact(key)
     if not found:
+        _log.debug("[run-monitor] fact key=%s run=%s snapshot missing", key, run.id)
         return {"run_id": run.id, "task_id": run.task_id, "status": run.status}
 
     status, progress, payload = _parse_run_monitor_snapshot(raw, monitor)
     crystal = progress if progress and progress != run.progress else ""
+    if crystal:
+        _log.debug("[run-monitor] fact key=%s run=%s progress=%s", key, run.id, progress[:200])
     output_json = dict(run.output_json)
     output_json["monitor_snapshot"] = payload
     output_json["monitor_key"] = key
@@ -211,6 +221,14 @@ async def _refresh_run_via_fact_monitor(
     if status in {"succeeded", "failed", "cancelled"}:
         summary = progress or (str(payload.get("summary") or "") if isinstance(payload, dict) else raw) or f"run {status}"
         error = str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")
+        _log.info(
+            "[run-monitor] fact key=%s run=%s status=%s progress=%s error=%s",
+            key,
+            run.id,
+            status,
+            (progress or "-")[:200],
+            (error or "-")[:200],
+        )
         if run.task_id:
             await task_store.update_task_result(
                 run.task_id,
@@ -232,6 +250,7 @@ async def _refresh_run_via_fact_monitor(
             progress=progress,
             summary=summary,
             error=error,
+            memory_cfg=memory_cfg,
         )
         await _finalize_refreshed_run_learning(
             task_store,
@@ -260,6 +279,7 @@ async def _refresh_run_via_process_monitor(
     manager: Any,
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
+    memory_cfg: Any | None = None,
 ) -> dict[str, Any]:
     session_id = str(monitor.get("session_id") or run.session_id or "").strip()
     if not session_id or manager is None:
@@ -342,6 +362,7 @@ async def _refresh_run_via_process_monitor(
         progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
         summary=output_json.get("stdout", "")[:200] or f"process {status}",
         error=str(output_json.get("error") or ""),
+        memory_cfg=memory_cfg,
     )
     await _finalize_refreshed_run_learning(
         task_store,
@@ -361,6 +382,7 @@ async def refresh_running_runs(
     *,
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
+    memory_cfg: Any | None = None,
 ) -> list[dict[str, Any]]:
     """刷新所有 running runs，优先走内建 exec 监控，其次走通用 fact-backed run_monitor 协议。"""
     try:
@@ -368,19 +390,32 @@ async def refresh_running_runs(
     except Exception:
         _MANAGER = None
 
+    runs = await task_store.list_runs(status="running", limit=20)
+    if runs:
+        _log.debug("[run-refresh] scanning running runs count=%d", len(runs))
+
     updates: list[dict[str, Any]] = []
-    for run in await task_store.list_runs(status="running", limit=20):
+    for run in runs:
         monitor = _run_monitor_config(run)
         if monitor is not None:
             if str(monitor.get("kind") or "") == "fact":
-                updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic))
+                updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
             elif str(monitor.get("kind") or "") == "process":
-                updates.append(await _refresh_run_via_process_monitor(task_store, run, monitor, manager=_MANAGER, episodic=episodic, semantic=semantic))
+                updates.append(await _refresh_run_via_process_monitor(task_store, run, monitor, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
             else:
                 updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
         if run.worker_type != "exec-worker" or not run.session_id or _MANAGER is None:
             updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
-        updates.append(await _refresh_run_via_process_monitor(task_store, run, {"kind": "process", "session_id": run.session_id}, manager=_MANAGER, episodic=episodic, semantic=semantic))
+        updates.append(await _refresh_run_via_process_monitor(task_store, run, {"kind": "process", "session_id": run.session_id}, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
+    if updates:
+        terminal = sum(1 for item in updates if str(item.get("status") or "") in {"succeeded", "failed", "cancelled"})
+        running = sum(1 for item in updates if str(item.get("status") or "") == "running")
+        _log.debug(
+            "[run-refresh] scanned=%d terminal=%d running=%d",
+            len(updates),
+            terminal,
+            running,
+        )
     return updates

@@ -19,6 +19,7 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
         "plan 是一个步骤列表，每步有 step（描述）和 status（pending/in_progress/completed）。\n"
         "至多一个步骤标记为 in_progress。适合非平凡的、多步骤工作。"
     ),
+    prefer_tier="reasoner",
     progress_category="info",
     capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[

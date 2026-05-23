@@ -196,11 +196,11 @@ async def _skill_evolve_uses_judgment_provider_and_registry(monkeypatch):
 
     ctx = ToolContext(
         config=_test_config(),
-        wm=None,
-        task_store=None,
-        episodic=None,
-        semantic=None,
-        emotion=None,
+        wm=cast(Any, None),
+        task_store=cast(Any, None),
+        episodic=cast(Any, None),
+        semantic=cast(Any, None),
+        emotion=cast(Any, None),
         judgment=SimpleNamespace(_provider=provider, _registry=registry),
     )
 
@@ -233,6 +233,1123 @@ async def _config_set_rejects_unknown_interval_key(monkeypatch):
         assert res.error == "UnknownConfigKey"
         assert "固定 tick interval 已废弃" in res.summary
         assert cfg_path.read_text(encoding="utf-8") == before
+
+
+def test_subagent_filtered_registry_blocks_parent_mutations():
+    from core.subagent import _DEFAULT_BLOCKED_TOOLS, _FilteredRegistry
+    from tools.registry import ToolRegistry
+
+    registry = ToolRegistry()
+    registry.discover(_proj_root() / "tools")
+    filtered = _FilteredRegistry(registry, None, set(_DEFAULT_BLOCKED_TOOLS))
+
+    assert filtered.get("memory.set_fact") is None
+    assert filtered.get("schedule.add") is None
+    assert filtered.get("task.plan") is None
+    assert filtered.get("memory.search") is not None
+    assert filtered.get("memory.add_wm") is not None
+    assert filtered.get("task.ask") is not None
+
+
+def test_subagent_runner_restores_parent_registry_after_child_exception():
+    asyncio.run(_subagent_runner_restores_parent_registry_after_child_exception())
+
+
+async def _subagent_runner_restores_parent_registry_after_child_exception():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, tool
+
+    @tool(ToolManifest(
+        name="probe.raise_registry",
+        description="测试子灵异常后 registry 是否恢复",
+        progress_category="info",
+    ))
+    async def _probe_raise_registry(params: dict[str, Any], ctx: Any) -> Any:
+        raise RuntimeError("registry restore probe")
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.raise_registry",
+                    params={},
+                    rationale="probe registry restore",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="恢复 registry", max_ticks=2, allowed_tools=["probe.raise_registry"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment()),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert "工具执行异常: registry restore probe" in result.last_summary
+            assert execution._registry is registry  # type: ignore[attr-defined]
+            assert execution._registry.get("task.ask") is not None  # type: ignore[attr-defined]
+            assert execution._registry.get("probe.raise_registry") is not None  # type: ignore[attr-defined]
+        finally:
+            await store.close()
+
+
+def test_subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
+    asyncio.run(_subagent_task_store_view_exposes_local_state_to_subsequent_ticks())
+
+
+async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
+    from core.subagent import _SubagentTaskStoreView
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "child active task",
+                goal="verify local task result overlay",
+                status="in_progress",
+                result_json={"summary": "before"},
+            )
+            view = _SubagentTaskStoreView(store)
+
+            await view.set_fact("control:durable_failure_policy", json.dumps({"threshold": 5}), scope="system")
+            fact, found = await view.get_fact("control:durable_failure_policy")
+            assert found is True
+            assert json.loads(fact)["threshold"] == 5
+            facts = await view.list_facts(prefix="control:", limit=5)
+            assert any(key == "control:durable_failure_policy" for key, _ in facts)
+
+            await view.update_task_result(task_id, {"last_run_status": "failed", "summary": "child summary"})
+            active_task = await view.get_active()
+            assert active_task is not None
+            assert active_task.id == task_id
+            assert active_task.result_json["last_run_status"] == "failed"
+            assert active_task.result_json["summary"] == "child summary"
+            fetched_task = await view.get_task_by_id(task_id)
+            assert fetched_task is not None
+            assert fetched_task.result_json["last_run_status"] == "failed"
+            listed_tasks = await view.list_tasks(status="in_progress", limit=5)
+            assert any(item.id == task_id and item.result_json.get("last_run_status") == "failed" for item in listed_tasks)
+
+            run_id = await view.add_run(
+                task_id=7,
+                run_type="llm",
+                worker_type="llm-worker",
+                status="running",
+                tool_name="probe.local",
+                input_json={"query": "child"},
+            )
+            await view.update_run(run_id, status="failed", progress="phase-2", error_text="boom")
+
+            run = await view.get_run_by_id(run_id)
+            assert run is not None
+            assert run.status == "failed"
+            assert run.progress == "phase-2"
+            runs = await view.list_runs(task_id=7, limit=5)
+            assert any(item.id == run_id and item.error_text == "boom" for item in runs)
+
+            await view.add_meta_reflection(
+                reflection_id="local-r1",
+                target_kind="threshold",
+                trigger="failure_pattern",
+                loop_level="single",
+                diagnosis="child diagnosis",
+                proposal="child proposal",
+                verification_plan="rerun once",
+                decision="apply",
+                task_id=7,
+                run_id=run_id,
+                tool_name="probe.local",
+            )
+
+            reflections = await view.list_meta_reflections(limit=5)
+            assert any(item.id == "local-r1" and item.run_id == run_id for item in reflections)
+            filtered = await view.list_meta_reflections(limit=5, loop_level="single")
+            assert any(item.id == "local-r1" for item in filtered)
+        finally:
+            await store.close()
+
+
+def test_subagent_task_store_view_hides_parent_waiting_tasks_from_child_context():
+    asyncio.run(_subagent_task_store_view_hides_parent_waiting_tasks_from_child_context())
+
+
+async def _subagent_task_store_view_hides_parent_waiting_tasks_from_child_context():
+    from core.subagent import _SubagentTaskStoreView
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            waiting_task_id = await store.add_task(
+                "parent waiting task",
+                goal="should not leak into child waiting context",
+                status="waiting",
+                wait_kind="external",
+                wait_key="user-input",
+                next_step="wait for parent input",
+            )
+            view = _SubagentTaskStoreView(store)
+
+            waiting_tasks = await view.list_tasks(status="waiting", limit=5)
+
+            assert waiting_tasks == []
+            parent_waiting = await store.list_tasks(status="waiting", limit=5)
+            assert any(item.id == waiting_task_id for item in parent_waiting)
+        finally:
+            await store.close()
+
+
+def test_subagent_runner_uses_virtual_active_task_instead_of_parent_task():
+    asyncio.run(_subagent_runner_uses_virtual_active_task_instead_of_parent_task())
+
+
+async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+
+    observed: dict[str, Any] = {}
+
+    @tool(ToolManifest(
+        name="probe.capture_active_task",
+        description="测试子灵 active task 使用本地虚拟 task 而非父灵 task",
+        progress_category="info",
+    ))
+    async def _probe_capture_active_task(params: dict[str, Any], ctx: Any) -> Any:
+        task = await ctx.task_store.get_active()
+        observed["tool_task"] = task
+        assert task is not None
+        await ctx.task_store.update_task_result(task.id, {"probe_marker": "child-local"})
+        return ToolResult(summary=f"active-task={task.id}:{task.title}", kind="execute_result", priority=0.5)
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+            self._seen_tasks: list[Any] = []
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            task = await args[2].get_active()
+            self._seen_tasks.append(task)
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.capture_active_task",
+                    params={},
+                    rationale="probe virtual child task",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            parent_task_id = await store.add_task(
+                "parent active task",
+                goal="should stay in parent only",
+                status="in_progress",
+                current_step="parent-step",
+                next_step="parent-next",
+                result_json={"summary": "parent-summary"},
+            )
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            judgment = _FakeJudgment()
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="隔离子灵 active task", max_ticks=2, allowed_tools=["probe.capture_active_task"]),
+                parent_ctx,
+                cast(Any, judgment),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert len(judgment._seen_tasks) == 2
+            first_task = judgment._seen_tasks[0]
+            second_task = judgment._seen_tasks[1]
+            assert first_task is not None
+            assert first_task.id < 0
+            assert first_task.id != parent_task_id
+            assert first_task.title.startswith("子灵任务: ")
+            assert first_task.goal == "隔离子灵 active task"
+            assert first_task.current_step == ""
+            assert first_task.next_step == ""
+            assert first_task.result_json == {}
+            assert second_task is not None
+            assert second_task.id == first_task.id
+            assert second_task.result_json["last_run_status"] == "succeeded"
+            assert second_task.result_json["probe_marker"] == "child-local"
+
+            tool_task = observed["tool_task"]
+            assert tool_task is not None
+            assert tool_task.id == first_task.id
+            assert tool_task.title == first_task.title
+            assert result.last_summary == f"active-task={first_task.id}:{first_task.title}"
+
+            parent_active = await store.get_active()
+            assert parent_active is not None
+            assert parent_active.id == parent_task_id
+            assert parent_active.title == "parent active task"
+            assert parent_active.result_json["summary"] == "parent-summary"
+        finally:
+            await store.close()
+
+
+def test_subagent_task_list_does_not_expose_parent_tasks():
+    asyncio.run(_subagent_task_list_does_not_expose_parent_tasks())
+
+
+async def _subagent_task_list_does_not_expose_parent_tasks():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolRegistry
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="task.list",
+                    params={"limit": 5},
+                    rationale="probe task list isolation",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            await store.add_task(
+                "parent active task",
+                goal="should not show in child task.list",
+                status="in_progress",
+                current_step="parent-step",
+            )
+            await store.add_task(
+                "parent pending task",
+                goal="should also stay hidden",
+                status="pending",
+            )
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="列出子灵可见任务", max_ticks=2, allowed_tools=["task.list"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment()),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert "子灵任务: 列出子灵可见任务" in result.last_summary
+            assert "parent active task" not in result.last_summary
+            assert "parent pending task" not in result.last_summary
+        finally:
+            await store.close()
+
+
+def test_subagent_explicit_task_id_does_not_expose_parent_task():
+    asyncio.run(_subagent_explicit_task_id_does_not_expose_parent_task())
+
+
+async def _subagent_explicit_task_id_does_not_expose_parent_task():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+
+    @tool(ToolManifest(
+        name="probe.read_task_by_id",
+        description="测试子灵不能通过显式 task_id 读取父灵任务",
+        progress_category="info",
+    ))
+    async def _probe_read_task_by_id(params: dict[str, Any], ctx: Any) -> Any:
+        task = await ctx.task_store.get_task_by_id(int(params.get("task_id") or 0))
+        if task is None:
+            return ToolResult(summary="task-by-id=not-found", kind="execute_result", priority=0.5)
+        return ToolResult(summary=f"task-by-id={task.id}:{task.title}", kind="execute_result", priority=0.5)
+
+    class _FakeJudgment:
+        def __init__(self, parent_task_id: int) -> None:
+            self._calls = 0
+            self._parent_task_id = parent_task_id
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.read_task_by_id",
+                    params={"task_id": self._parent_task_id},
+                    rationale="probe explicit task id isolation",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            parent_task_id = await store.add_task(
+                "parent secret task",
+                goal="should not be readable by child via explicit task_id",
+                status="in_progress",
+            )
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="阻断显式 task_id 泄漏", max_ticks=2, allowed_tools=["probe.read_task_by_id"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment(parent_task_id)),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert result.last_summary == "task-by-id=not-found"
+        finally:
+            await store.close()
+
+
+def test_subagent_run_history_does_not_expose_parent_runs():
+    asyncio.run(_subagent_run_history_does_not_expose_parent_runs())
+
+
+async def _subagent_run_history_does_not_expose_parent_runs():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+
+    @tool(ToolManifest(
+        name="probe.read_runs",
+        description="测试子灵不能读取父灵 runs 历史",
+        progress_category="info",
+    ))
+    async def _probe_read_runs(params: dict[str, Any], ctx: Any) -> Any:
+        runs = await ctx.task_store.list_runs(limit=5)
+        parent_run = await ctx.task_store.get_run_by_id(int(params.get("run_id") or 0))
+        first_tool = runs[0].tool_name if runs else "-"
+        parent_state = "hit" if parent_run is not None else "miss"
+        return ToolResult(
+            summary=f"runs={len(runs)} first={first_tool} parent-run={parent_state}",
+            kind="execute_result",
+            priority=0.5,
+        )
+
+    class _FakeJudgment:
+        def __init__(self, parent_run_id: int) -> None:
+            self._calls = 0
+            self._parent_run_id = parent_run_id
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.read_runs",
+                    params={"run_id": self._parent_run_id},
+                    rationale="probe run history isolation",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            parent_task_id = await store.add_task(
+                "parent task with run",
+                goal="should not leak runs into child",
+                status="in_progress",
+            )
+            parent_run_id = await store.add_run(
+                task_id=parent_task_id,
+                tool_name="probe.parent",
+                status="succeeded",
+                output_json={"summary": "parent run"},
+            )
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="阻断 parent run 泄漏", max_ticks=2, allowed_tools=["probe.read_runs"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment(parent_run_id)),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert result.last_summary == "runs=1 first=probe.read_runs parent-run=miss"
+        finally:
+            await store.close()
+
+
+def test_subagent_failure_and_reflection_history_do_not_expose_parent_state():
+    asyncio.run(_subagent_failure_and_reflection_history_do_not_expose_parent_state())
+
+
+async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+
+    @tool(ToolManifest(
+        name="probe.read_failure_state",
+        description="测试子灵不能读取父灵 failures/meta reflections",
+        progress_category="info",
+    ))
+    async def _probe_read_failure_state(params: dict[str, Any], ctx: Any) -> Any:
+        failures = await ctx.task_store.list_failures(limit=5)
+        task_failures = await ctx.task_store.list_failures_for_task(str(params.get("task_id") or ""), limit=5)
+        reflections = await ctx.task_store.list_meta_reflections(limit=5)
+        return ToolResult(
+            summary=(
+                f"failures={len(failures)} "
+                f"task-failures={len(task_failures)} "
+                f"reflections={len(reflections)}"
+            ),
+            kind="execute_result",
+            priority=0.5,
+        )
+
+    class _FakeJudgment:
+        def __init__(self, parent_task_id: int) -> None:
+            self._calls = 0
+            self._parent_task_id = parent_task_id
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.read_failure_state",
+                    params={"task_id": self._parent_task_id},
+                    rationale="probe failure/reflection isolation",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            parent_task_id = await store.add_task(
+                "parent task with failures",
+                goal="should not leak failure state into child",
+                status="in_progress",
+            )
+            await store.record_failure(
+                kind="probe.parent_failure",
+                summary="parent failure",
+                context="parent failure context",
+                task_id=str(parent_task_id),
+            )
+            await store.add_meta_reflection(
+                reflection_id="parent-r1",
+                target_kind="tool",
+                trigger="failure_pattern",
+                loop_level="single",
+                diagnosis="parent diagnosis",
+                proposal="parent proposal",
+                verification_plan="parent rerun",
+                decision="apply",
+                task_id=parent_task_id,
+                run_id=1,
+                tool_name="probe.parent_failure",
+            )
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="阻断 parent failure 泄漏", max_ticks=2, allowed_tools=["probe.read_failure_state"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment(parent_task_id)),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert result.last_summary == "failures=0 task-failures=0 reflections=0"
+        finally:
+            await store.close()
+
+
+def test_subagent_runner_does_not_pollute_parent_store():
+    asyncio.run(_subagent_runner_does_not_pollute_parent_store())
+
+
+async def _subagent_runner_does_not_pollute_parent_store():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.perception import EmotionState
+    from core.perception.ethos import EthosState
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolRegistry
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+            self._last_emotion: EmotionState | None = None
+            self._last_ethos: EthosState | None = None
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            self._last_emotion = cast(EmotionState, args[5])
+            self._last_ethos = cast(EthosState | None, kwargs.get("ethos_state"))
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="task.ask",
+                    params={"question": "请确认只读子灵是否生效？"},
+                    rationale="ask once",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.23, baseline_arousal=0.34),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            execution = ExecutionLayer(registry, cfg)
+            judgment = _FakeJudgment()
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            runner = make_subagent_runner(
+                SubagentConfig(goal="只读检查", max_ticks=2),
+                parent_ctx,
+                cast(Any, judgment),
+                execution,
+                registry,
+            )
+
+            result = await runner.run()
+
+            assert result.completed is True
+            assert "已登记用户澄清请求" in result.last_summary
+            assert await store.list_runs(limit=10) == []
+            assert await store.list_failures(limit=10) == []
+            assert await store.list_facts(prefix="durable_failure:", limit=10) == []
+            assert await store.list_meta_reflections(limit=10) == []
+            assert judgment._last_emotion is not None
+            assert judgment._last_emotion.valence == pytest.approx(0.23)
+            assert judgment._last_emotion.arousal == pytest.approx(0.34)
+            assert judgment._last_ethos is not None
+            assert judgment._last_ethos.values.truth == pytest.approx(0.91)
+            assert judgment._last_ethos.values.caution == pytest.approx(0.81)
+        finally:
+            await store.close()
+
+
+def test_subagent_runner_shared_memory_does_not_write_parent_episodic():
+    asyncio.run(_subagent_runner_shared_memory_does_not_write_parent_episodic())
+
+
+async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+
+    @tool(ToolManifest(
+        name="probe.ep_write",
+        description="测试子灵 shared-memory 是否会污染父灵 episodic",
+        progress_category="info",
+    ))
+    async def _probe_ep_write(params: dict[str, Any], ctx: Any) -> Any:
+        ctx.episodic.record(role="reflection", content="shared-memory-write")
+        return ToolResult(summary="wrote episodic", kind="execute_result", priority=0.5)
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.ep_write",
+                    params={},
+                    rationale="probe episodic write",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            episodic = EpisodicMemory(root / "episodic")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=episodic,
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            runner = make_subagent_runner(
+                SubagentConfig(goal="检查 shared memory episodic 只读", max_ticks=2, allowed_tools=["probe.ep_write"]),
+                parent_ctx,
+                cast(Any, _FakeJudgment()),
+                execution,
+                registry,
+            )
+
+            result = await runner.run()
+
+            assert result.completed is True
+            assert result.last_summary == "wrote episodic"
+            assert episodic.load_for_context(None, max_chars=4000) == ""
+            assert episodic.get_recent_turns(task_id=None, limit=5) == []
+        finally:
+            await store.close()
+
+
+def test_subagent_absorb_persists_parent_semantic_node_with_provenance():
+    asyncio.run(_subagent_absorb_persists_parent_semantic_node_with_provenance())
+
+
+async def _subagent_absorb_persists_parent_semantic_node_with_provenance():
+    from memory.semantic import SemanticMemory
+    from tools.subagent_ops import subagent_absorb
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        semantic = SemanticMemory(root / "semantic")
+        ctx = _tool_ctx(semantic=semantic)
+
+        res = await subagent_absorb(
+            {
+                "subagent_id": "sub-a1",
+                "memories_json": json.dumps([
+                    {
+                        "id": "note-1",
+                        "kind": "learned_insight",
+                        "title": "定位异常根因",
+                        "body": "execution 与 semantic 接口未对齐。",
+                        "activation": 0.76,
+                        "valence": 0.61,
+                        "importance": 0.88,
+                        "tags": ["reflection", "execution"],
+                        "created_at": "2026-05-22T10:00:00+00:00",
+                    }
+                ], ensure_ascii=False),
+            },
+            ctx,
+        )
+
+        assert res.error is None
+        assert res.metadata["absorbed"] == 1
+        assert res.metadata["requested_total"] == 1
+        node = semantic.get("absorbed-sub-a1-note-1")
+        assert node is not None
+        assert node.title == "定位异常根因"
+        assert node.body == "execution 与 semantic 接口未对齐。"
+        assert node.importance == pytest.approx(0.88)
+        assert node.source == "subagent:sub-a1"
+        assert "reflection" in node.tags
+        assert "subagent:sub-a1" in node.tags
+
+
+def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
+    asyncio.run(_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution())
+
+
+async def _subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from memory.semantic import MemoryNode, SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
+    from tools.subagent_ops import subagent_run
+
+    @tool(ToolManifest(
+        name="probe.semantic_note",
+        description="测试 isolated-memory 子灵写入独立 semantic",
+        progress_category="info",
+    ))
+    async def _probe_semantic_note(params: dict[str, Any], ctx: Any) -> Any:
+        ctx.semantic.upsert(MemoryNode(
+            id="sub-note-1",
+            kind="learned_insight",
+            title="隔离语义吸收测试",
+            body="isolated-memory 子灵应返回 absorbable memories 且不污染父灵。",
+            activation=0.73,
+            valence=0.58,
+            importance=0.81,
+            tags=["subagent", "isolated"],
+            source="child-runtime",
+        ))
+        return ToolResult(summary="wrote isolated semantic", kind="execute_result", priority=0.5)
+
+    class _FakeJudgment:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            self._calls += 1
+            if self._calls == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="probe.semantic_note",
+                    params={},
+                    rationale="probe isolated semantic write",
+                )
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12, max_events=20),
+                memory_dir=root / "memory",
+                emotion=SimpleNamespace(baseline_valence=0.4, baseline_arousal=0.3),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_semantic = SemanticMemory(root / "semantic")
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=cast(Any, SimpleNamespace(record=lambda *args, **kwargs: None, record_event=lambda *args, **kwargs: None)),
+                semantic=parent_semantic,
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=cast(Any, _FakeJudgment()),
+                execution=execution,
+                registry=registry,
+            )
+
+            res = await subagent_run(
+                {
+                    "goal": "隔离语义吸收",
+                    "max_ticks": 2,
+                    "allowed_tools": "probe.semantic_note",
+                    "isolated_memory": True,
+                },
+                parent_ctx,
+            )
+
+            assert res.error is None
+            assert res.metadata["absorbed_memories_count"] == 1
+            assert res.metadata["memory_dir"]
+            assert parent_semantic.get("sub-note-1") is None
+            absorbed = res.metadata["absorbed_memories"]
+            assert len(absorbed) == 1
+            assert absorbed[0]["title"] == "隔离语义吸收测试"
+            assert absorbed[0]["body"] == "isolated-memory 子灵应返回 absorbable memories 且不污染父灵。"
+            assert absorbed[0]["source"] == "child-runtime"
+            assert absorbed[0]["importance"] == pytest.approx(0.81)
+        finally:
+            await store.close()
+
+
+def test_subagent_absorb_surfaces_truncation_and_invalid_nodes():
+    asyncio.run(_subagent_absorb_surfaces_truncation_and_invalid_nodes())
+
+
+async def _subagent_absorb_surfaces_truncation_and_invalid_nodes():
+    from memory.semantic import SemanticMemory
+    from tools.subagent_ops import subagent_absorb
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        semantic = SemanticMemory(root / "semantic")
+        ctx = _tool_ctx(semantic=semantic)
+
+        nodes = [
+            {"id": "good-1", "title": "A", "body": "alpha"},
+            {"id": "good-2", "title": "B", "body": "beta"},
+            {"id": "bad-3", "title": "", "body": "missing title"},
+            {"id": "good-4", "title": "D", "body": "delta"},
+            {"id": "good-5", "title": "E", "body": "epsilon"},
+            {"id": "good-6", "title": "F", "body": "zeta"},
+        ]
+
+        res = await subagent_absorb(
+            {
+                "subagent_id": "sub-b2",
+                "memories_json": json.dumps(nodes, ensure_ascii=False),
+                "max_absorb": 5,
+            },
+            ctx,
+        )
+
+        assert res.error is None
+        assert res.metadata["requested_total"] == 6
+        assert res.metadata["selected_total"] == 5
+        assert res.metadata["truncated"] == 1
+        assert res.metadata["invalid"] == 1
+        assert "另有 1 条因 max_absorb 未吸收" in res.summary
+        assert "1 条缺少标题或正文已跳过" in res.summary
+        assert semantic.get("absorbed-sub-b2-good-6") is None
 
 
 def test_browser_navigate_failure_uses_stdout_when_stderr_empty(monkeypatch):
@@ -329,6 +1446,49 @@ async def _browser_navigate_blank_page_classified(monkeypatch):
 
     assert res.error == "NavigateBlankPage"
     assert "页面空白" in res.summary
+
+
+def test_web_fetch_recreates_closed_shared_client(monkeypatch):
+    asyncio.run(_web_fetch_recreates_closed_shared_client(monkeypatch))
+
+
+async def _web_fetch_recreates_closed_shared_client(monkeypatch):
+    import tools.web as web_mod
+
+    class _ClosedClient:
+        is_closed = True
+
+    class _FakeResponse:
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.text = "<html><body>hello web</body></html>"
+            self.headers = {"content-type": "text/html; charset=utf-8"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FreshClient:
+        is_closed = False
+
+        async def get(self, url: str):
+            assert url == "https://example.com"
+            return _FakeResponse()
+
+    created: dict[str, Any] = {}
+
+    def _factory(**kwargs: Any):
+        created["kwargs"] = kwargs
+        return _FreshClient()
+
+    monkeypatch.setattr(web_mod.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(web_mod, "_http_client", _ClosedClient())
+
+    res = await web_mod.web_fetch({"url": "https://example.com"}, _tool_ctx())
+
+    assert created["kwargs"]["follow_redirects"] is True
+    assert res.error is None
+    assert res.skipped is False
+    assert "获取成功" in res.summary
 
 
 def test_exec_empty_command():

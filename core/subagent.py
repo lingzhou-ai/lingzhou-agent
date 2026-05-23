@@ -18,10 +18,10 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 _log = logging.getLogger("lingzhou.subagent")
 
@@ -61,6 +61,11 @@ _READONLY_ALLOWED_TASK_TOOLS: frozenset[str] = frozenset({
     "task.list",
 })
 
+_READONLY_ALLOWED_LOCAL_MEMORY_TOOLS: frozenset[str] = frozenset({
+    "memory.add_wm",
+    "memory.drop_wm",
+})
+
 _LOCAL_FACT_PREFIXES: tuple[str, ...] = (
     "durable_failure:",
 )
@@ -69,9 +74,36 @@ _LOCAL_FACT_KEYS: frozenset[str] = frozenset({
     "control:durable_failure_policy",
 })
 
+_NON_ABSORBABLE_MEMORY_KINDS: frozenset[str] = frozenset({
+    "run_result",
+    "meta_reflection",
+    "rule_revision",
+})
+
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _build_subagent_active_task(sub_id: str, goal: str) -> Any:
+    from memory.task_store import Task
+
+    title = (goal or "").strip()[:60]
+    if title:
+        title = f"子灵任务: {title}"
+    else:
+        title = f"子灵任务: {sub_id}"
+    return Task(
+        id=-1,
+        title=title,
+        status="in_progress",
+        priority="normal",
+        created_at=_utc_now_iso(),
+        goal=goal,
+        source="subagent",
+        chain_id=f"subagent:{sub_id}",
+        extras={"subagent_id": sub_id, "virtual": True},
+    )
 
 
 def _is_locally_absorbable_fact(key: str, scope: str) -> bool:
@@ -85,6 +117,8 @@ def _is_locally_absorbable_fact(key: str, scope: str) -> bool:
 def _is_readonly_blocked_tool(name: str, manifest: Any | None) -> bool:
     if not name:
         return True
+    if name in _READONLY_ALLOWED_LOCAL_MEMORY_TOOLS:
+        return False
     if name in _READONLY_BLOCKED_TOOL_NAMES:
         return True
     if name.startswith("task.") and name not in _READONLY_ALLOWED_TASK_TOOLS:
@@ -101,61 +135,172 @@ class _SubagentReadonlyViolation(RuntimeError):
 class _SubagentTaskStoreView:
     """父灵 TaskStore 的子灵隔离视图：读透传，运行期 bookkeeping 本地吸收。"""
 
-    def __init__(self, parent: Any) -> None:
+    def __init__(self, parent: Any, active_task: Any | None = None) -> None:
         self._parent = parent
+        self._active_task = active_task
         self._local_facts: dict[str, tuple[str, str]] = {}
         self._local_failures: list[Any] = []
-        self._local_runs: dict[int, dict[str, Any]] = {}
+        self._local_task_results: dict[int, dict[str, Any]] = {}
+        self._local_runs: dict[int, Any] = {}
         self._local_meta_reflections: list[Any] = []
         self._next_run_id = -1
 
     def _reject(self, action: str) -> _SubagentReadonlyViolation:
         return _SubagentReadonlyViolation(f"子灵只读模式禁止修改父灵状态: {action}")
 
+    def _overlay_task(self, task: Any | None) -> Any | None:
+        if task is None:
+            return None
+        task_id = int(getattr(task, "id", 0) or 0)
+        local_result = self._local_task_results.get(task_id)
+        if not local_result:
+            return task
+        merged_result = dict(getattr(task, "result_json", {}) or {})
+        merged_result.update(local_result)
+        return replace(task, result_json=merged_result)
+
+    def _task_matches_status(self, task: Any, status: Any | None) -> bool:
+        if status is None:
+            return True
+        return str(getattr(task, "status", "") or "") == str(status)
+
     async def get_active(self) -> Any:
-        return await self._parent.get_active()
+        if self._active_task is not None:
+            return self._overlay_task(self._active_task)
+        return self._overlay_task(await self._parent.get_active())
 
     async def get_task_by_id(self, task_id: int) -> Any:
-        return await self._parent.get_task_by_id(task_id)
+        if self._active_task is not None:
+            active_id = int(getattr(self._active_task, "id", 0) or 0)
+            if active_id == int(task_id):
+                return self._overlay_task(self._active_task)
+            return None
+        return self._overlay_task(await self._parent.get_task_by_id(task_id))
 
     async def list_tasks(self, *args: Any, **kwargs: Any) -> list[Any]:
-        return await self._parent.list_tasks(*args, **kwargs)
+        status = kwargs.get("status")
+        if status is None and args:
+            status = args[0]
+        limit = kwargs.get("limit")
+        if limit is None and len(args) > 1:
+            limit = args[1]
+        limit = int(limit or 50)
+        if self._active_task is not None:
+            if str(status or "") == "waiting":
+                return []
+            if self._task_matches_status(self._active_task, status) and limit > 0:
+                return [self._overlay_task(self._active_task)]
+            return []
+        if str(status or "") == "waiting":
+            return []
+        merged: list[Any] = []
+        if self._active_task is not None and self._task_matches_status(self._active_task, status):
+            merged.append(self._overlay_task(self._active_task))
+        seen = {
+            int(getattr(task, "id", 0) or 0)
+            for task in merged
+        }
+        for task in await self._parent.list_tasks(*args, **kwargs):
+            task_id = int(getattr(task, "id", 0) or 0)
+            if task_id in seen:
+                continue
+            merged.append(self._overlay_task(task))
+            if len(merged) >= limit:
+                break
+        return merged[:limit]
 
-    async def list_runs(self, *args: Any, **kwargs: Any) -> list[Any]:
-        return await self._parent.list_runs(*args, **kwargs)
+    async def list_runs(
+        self,
+        task_id: int | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Any]:
+        if self._active_task is not None:
+            active_id = int(getattr(self._active_task, "id", 0) or 0)
+            if task_id is not None and int(task_id) != active_id:
+                return []
+            return [
+                run
+                for run in sorted(self._local_runs.values(), key=lambda item: getattr(item, "id", 0), reverse=True)
+                if (task_id is None or int(getattr(run, "task_id", 0) or 0) == int(task_id))
+                and (not status or str(getattr(run, "status", "") or "") == status)
+            ][:limit]
+        local = [
+            run
+            for run in sorted(self._local_runs.values(), key=lambda item: getattr(item, "id", 0), reverse=True)
+            if (task_id is None or int(getattr(run, "task_id", 0) or 0) == int(task_id))
+            and (not status or str(getattr(run, "status", "") or "") == status)
+        ][:limit]
+        parent = await self._parent.list_runs(task_id=task_id, status=status, limit=limit)
+        merged = list(local)
+        seen = {getattr(run, "id", None) for run in merged}
+        for item in parent:
+            if getattr(item, "id", None) in seen:
+                continue
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged
 
     async def add_run(self, **kwargs: Any) -> int:
+        from memory.task_store import Run
+
+        now = _utc_now_iso()
         run_id = self._next_run_id
         self._next_run_id -= 1
-        self._local_runs[run_id] = {
-            "id": run_id,
-            "task_id": kwargs.get("task_id", 0),
-            "run_type": kwargs.get("run_type", "tool_chain"),
-            "worker_type": kwargs.get("worker_type", "tool-chain-worker"),
-            "status": kwargs.get("status", "running"),
-            "input_json": dict(kwargs.get("input_json") or {}),
-            "tool_name": kwargs.get("tool_name", ""),
-            "model_tier": kwargs.get("model_tier", ""),
-            "created_at": _utc_now_iso(),
-            "started_at": _utc_now_iso(),
-            "completed_at": "",
-            "output_json": {},
-            "error_text": "",
-            "log_text": "",
-            "session_id": "",
-            "progress": "",
-            "extras": {},
-        }
+        self._local_runs[run_id] = Run(
+            id=run_id,
+            task_id=int(kwargs.get("task_id", 0) or 0),
+            run_type=str(kwargs.get("run_type", "tool_chain") or "tool_chain"),
+            worker_type=str(kwargs.get("worker_type", "tool-chain-worker") or "tool-chain-worker"),
+            status=str(kwargs.get("status", "running") or "running"),
+            created_at=now,
+            started_at=now,
+            completed_at="",
+            input_json=dict(kwargs.get("input_json") or {}),
+            output_json=dict(kwargs.get("output_json") or {}),
+            log_text=str(kwargs.get("log_text") or ""),
+            error_text=str(kwargs.get("error_text") or ""),
+            tool_name=str(kwargs.get("tool_name") or ""),
+            session_id=str(kwargs.get("session_id") or ""),
+            model_tier=str(kwargs.get("model_tier") or ""),
+            progress=str(kwargs.get("progress") or ""),
+            extras=dict(kwargs.get("extras") or {}),
+        )
         return run_id
+
+    async def get_run_by_id(self, run_id: int) -> Any | None:
+        local = self._local_runs.get(run_id)
+        if local is not None:
+            return local
+        if self._active_task is not None:
+            return None
+        return await self._parent.get_run_by_id(run_id)
 
     async def update_run(self, run_id: int, **kwargs: Any) -> None:
         run = self._local_runs.get(run_id)
         if run is None:
             return
-        run.update({k: v for k, v in kwargs.items() if v is not None})
-        status = str(kwargs.get("status") or run.get("status") or "")
+        if "status" in kwargs and kwargs["status"] is not None:
+            run.status = str(kwargs["status"])
+        if "output_json" in kwargs and kwargs["output_json"] is not None:
+            run.output_json = dict(kwargs["output_json"] or {})
+        if "log_text" in kwargs and kwargs["log_text"] is not None:
+            run.log_text = str(kwargs["log_text"] or "")
+        if "error_text" in kwargs and kwargs["error_text"] is not None:
+            run.error_text = str(kwargs["error_text"] or "")
+        if "session_id" in kwargs and kwargs["session_id"] is not None:
+            run.session_id = str(kwargs["session_id"] or "")
+        if "model_tier" in kwargs and kwargs["model_tier"] is not None:
+            run.model_tier = str(kwargs["model_tier"] or "")
+        if "progress" in kwargs and kwargs["progress"] is not None:
+            run.progress = str(kwargs["progress"] or "")
+        extras = kwargs.get("extras")
+        if isinstance(extras, dict) and extras:
+            run.extras.update(extras)
+        status = str(kwargs.get("status") or getattr(run, "status", "") or "")
         if status in {"succeeded", "failed", "cancelled"}:
-            run["completed_at"] = _utc_now_iso()
+            run.completed_at = _utc_now_iso()
 
     async def record_failure(
         self,
@@ -177,11 +322,18 @@ class _SubagentTaskStoreView:
         ))
 
     async def list_failures(self, limit: int = 20) -> list[Any]:
+        if self._active_task is not None:
+            return list(self._local_failures[-limit:])
         local = list(self._local_failures[-limit:])
         parent = await self._parent.list_failures(limit=limit)
         return local + list(parent[: max(0, limit - len(local))])
 
     async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list[Any]:
+        if self._active_task is not None:
+            active_id = str(getattr(self._active_task, "id", 0) or 0)
+            if str(task_id) != active_id:
+                return []
+            return [item for item in self._local_failures if str(getattr(item, "task_id", "")) == active_id][-limit:]
         local = [item for item in self._local_failures if str(getattr(item, "task_id", "")) == str(task_id)][-limit:]
         parent = await self._parent.list_failures_for_task(task_id, limit=limit)
         return local + list(parent[: max(0, limit - len(local))])
@@ -215,13 +367,51 @@ class _SubagentTaskStoreView:
         return merged
 
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
-        return None
+        existing = dict(self._local_task_results.get(task_id) or {})
+        existing.update(dict(result_json or {}))
+        self._local_task_results[task_id] = existing
 
     async def add_meta_reflection(self, **kwargs: Any) -> None:
-        self._local_meta_reflections.append(dict(kwargs))
+        from memory.task_store import MetaReflection
+
+        self._local_meta_reflections.append(MetaReflection(
+            id=str(kwargs.get("reflection_id") or ""),
+            target_kind=str(kwargs.get("target_kind") or ""),
+            trigger=str(kwargs.get("trigger") or ""),
+            loop_level=str(kwargs.get("loop_level") or ""),
+            diagnosis=str(kwargs.get("diagnosis") or ""),
+            proposal=str(kwargs.get("proposal") or ""),
+            verification_plan=str(kwargs.get("verification_plan") or ""),
+            decision=str(kwargs.get("decision") or "defer"),
+            created_at=_utc_now_iso(),
+            task_id=int(kwargs.get("task_id") or 0),
+            run_id=int(kwargs.get("run_id") or 0),
+            tool_name=str(kwargs.get("tool_name") or ""),
+            extras=dict(kwargs.get("extras") or {}),
+        ))
 
     async def list_meta_reflections(self, limit: int = 20, loop_level: str | None = None) -> list[Any]:
-        return await self._parent.list_meta_reflections(limit=limit, loop_level=loop_level)
+        if self._active_task is not None:
+            return [
+                item
+                for item in self._local_meta_reflections
+                if loop_level is None or str(getattr(item, "loop_level", "") or "") == loop_level
+            ][-limit:]
+        local = [
+            item
+            for item in self._local_meta_reflections
+            if loop_level is None or str(getattr(item, "loop_level", "") or "") == loop_level
+        ][-limit:]
+        parent = await self._parent.list_meta_reflections(limit=limit, loop_level=loop_level)
+        merged = list(local)
+        seen = {getattr(item, "id", None) for item in merged}
+        for item in parent:
+            if getattr(item, "id", None) in seen:
+                continue
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged
 
     async def due_signals(self) -> list[dict[str, Any]]:
         return await self._parent.due_signals()
@@ -259,6 +449,9 @@ class _SubagentEpisodicView:
 
     def __init__(self, parent: Any) -> None:
         self._parent = parent
+
+    def record(self, *args: Any, **kwargs: Any) -> None:
+        return None
 
     def record_event(self, *args: Any, **kwargs: Any) -> None:
         return None
@@ -377,7 +570,7 @@ class _FilteredRegistry:
 # ── 辅助：读取父灵 Ethos 基线 ────────────────────────────────────────────────────
 
 async def _load_parent_ethos(task_store: "TaskStore") -> dict[str, float]:
-    """从父灵 TaskStore 读取 soul:ethos_baseline，解析失败返回空 dict。"""
+    """从父灵 TaskStore 读取 soul:ethos_baseline，解析失败返回空 dict，由调用方决定 fallback。"""
     try:
         ethos_json, found = await task_store.get_fact("soul:ethos_baseline")
         if not found or not ethos_json:
@@ -450,25 +643,31 @@ class SubagentRunner:
             sub_episodic = _SubagentEpisodicView(self._parent_ctx.episodic)
             sub_semantic = _SubagentSemanticView(self._parent_ctx.semantic)
 
-        sub_task_store = _SubagentTaskStoreView(self._parent_ctx.task_store)
+        sub_task_store = _SubagentTaskStoreView(
+            self._parent_ctx.task_store,
+            active_task=_build_subagent_active_task(sub_id, cfg.goal),
+        )
 
         # ── Tier-2: Ethos 继承 ─────────────────────────────────────────────────
         inherited_ethos_state = None
         if cfg.inherit_ethos:
             baseline_dict = await _load_parent_ethos(self._parent_ctx.task_store)
+            # 用与父灵相同的 derive_ethos_state 逻辑，优先读取 DB，缺失时回退到 config soul baseline。
+            inherited_ethos_state = derive_ethos_state(
+                failure_count=0,
+                high_error_streak=0,
+                has_active_task=True,
+                has_next_step=True,
+                perception_trend="neutral",
+                emotion_down_regulate_streak=0,
+                baseline=baseline_dict or None,
+                seed_values=parent_cfg.soul.ethos_baseline,
+            )
             if baseline_dict:
-                # 用与父灵相同的 derive_ethos_state 逻辑，传入父灵基线
-                inherited_ethos_state = derive_ethos_state(
-                    failure_count=0,
-                    high_error_streak=0,
-                    has_active_task=True,
-                    has_next_step=True,
-                    perception_trend="neutral",
-                    emotion_down_regulate_streak=0,
-                    baseline=baseline_dict,
-                )
                 _log.debug("[subagent][%s] 已继承父灵 Ethos 基线 keys=%s",
                            sub_id, list(baseline_dict.keys()))
+            else:
+                _log.debug("[subagent][%s] 父灵 Ethos 基线缺失，回退 cfg.soul.ethos_baseline", sub_id)
 
         # ── 独立 WM（不影响父灵）──────────────────────────────────────────────
         sub_wm = WorkingMemory(
@@ -482,9 +681,12 @@ class SubagentRunner:
             blocked.update(cfg.blocked_tools)
         allowed: set[str] | None = set(cfg.allowed_tools) if cfg.allowed_tools else None
         filtered_reg = _FilteredRegistry(self._registry, allowed, blocked)
+        task_store_view = cast(Any, sub_task_store)
+        episodic_view = cast(Any, sub_episodic)
+        semantic_view = cast(Any, sub_semantic)
 
-        # 中性情绪（子灵不运行 OCC 情绪模型）
-        neutral_emotion = EmotionState()
+        # 中性情绪仍应尊重全局 emotion baseline，避免子灵隐式回退到 Python 默认值。
+        neutral_emotion = EmotionState.from_config(parent_cfg)
 
         observations: list[str] = []
         last_summary = ""
@@ -502,9 +704,9 @@ class SubagentRunner:
                 output = await self._judgment.decide(
                     percept,
                     sub_wm,
-                    sub_task_store,
-                    sub_episodic,
-                    sub_semantic,
+                    task_store_view,
+                    episodic_view,
+                    semantic_view,
                     neutral_emotion,
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos
@@ -529,9 +731,9 @@ class SubagentRunner:
             sub_ctx = ToolContext(
                 config=parent_cfg,
                 wm=sub_wm,
-                task_store=sub_task_store,
-                episodic=sub_episodic,
-                semantic=sub_semantic,
+                task_store=task_store_view,
+                episodic=episodic_view,
+                semantic=semantic_view,
                 emotion=neutral_emotion,
                 judgment=self._judgment,
                 execution=self._execution,
@@ -563,8 +765,15 @@ class SubagentRunner:
         if cfg.isolated_memory:
             try:
                 # 检索子灵语义记忆中评分最高的节点（最多 10 条）
-                nodes = sub_semantic.search(cfg.goal, top_k=10)
-                absorbed_memories = [n.to_dict() if hasattr(n, "to_dict") else vars(n) for n in nodes]
+                nodes = semantic_view.retrieve(cfg.goal, top_k=10)
+                absorbed_memories = [
+                    dict(item)
+                    for item in nodes
+                    if isinstance(item, dict)
+                    and str(item.get("kind") or "") not in _NON_ABSORBABLE_MEMORY_KINDS
+                    and str(item.get("title") or "").strip()
+                    and str(item.get("body") or "").strip()
+                ]
             except Exception:
                 pass  # 内存检索失败不影响结果
 

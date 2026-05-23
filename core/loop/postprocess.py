@@ -7,11 +7,21 @@ import logging
 
 from core.judgment import JudgmentOutput
 from memory.task_store import Task, TaskStore
-from tools.registry import ToolResult
+from tools.registry import ToolResult, tool_has_capability
 
 _log = logging.getLogger("lingzhou.loop")
 
 _SUCCESS_STALL_TRACK_TOOLS = frozenset(("file.read", "file.list", "memory.search", "shell.run", "file.edit", "file.write"))
+_SUCCESS_STALL_TRACK_CAPABILITIES = (
+    "completion_info_only",
+    "completion_verify",
+    "completion_mutation",
+)
+
+
+def _should_track_success_stall_tool(tool_name: str, registry: object | None = None) -> bool:
+    return any(tool_has_capability(registry, tool_name, capability) for capability in _SUCCESS_STALL_TRACK_CAPABILITIES) \
+        or tool_name in _SUCCESS_STALL_TRACK_TOOLS
 
 
 async def _write_success_stall_meta_reflection(

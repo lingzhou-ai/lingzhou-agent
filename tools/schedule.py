@@ -70,6 +70,8 @@ def _parse_run_at(run_at_str: str | None) -> str:
         "run_at 支持：ISO8601、+1h、+30m、+1d、+3600 秒偏移。"
         "repeat_secs>0 时为重复信号（如 86400=每天）。"
     ),
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("title", "string", "信号标题，将出现在 WM 提醒中", required=True),
         ToolParam("run_at", "string",

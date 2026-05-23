@@ -282,8 +282,8 @@ def _inject_crash_recovery(loop: Any) -> None:
         task_goal = snap.get("active_task_goal") or ""
         last_action = snap.get("last_action") or "未知"
         emotion = snap.get("emotion") or {}
-        valence = emotion.get("valence", 0)
-        arousal = emotion.get("arousal", 0)
+        valence = emotion.get("valence", getattr(loop._emotion, "valence", 0))
+        arousal = emotion.get("arousal", getattr(loop._emotion, "arousal", 0))
 
         content = (
             f"[崩溃恢复] 上次运行在 tick={tick}（{ts}）异常终止（非干净退出）。\n"

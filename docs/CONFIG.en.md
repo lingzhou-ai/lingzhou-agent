@@ -19,14 +19,14 @@ The default runtime directory layout is under `~/.lingzhou/`: `db_path`, `memory
 }
 ```
 
-Providers are defined in the `providers` section. API keys should come from environment variables or auth profiles, not from committed config files.
+Providers are defined in the `providers` section. Environment variables or auth profiles remain the recommended source of API keys; the setup flow may also store a key directly in a local machine config, but that file should never be committed.
 
 ## Loop Parameters
 
 | Key | Meaning |
 |-----|---------|
 | `loop.max_concurrent_ticks` | upper bound for ticks that may run at the same time; `1` keeps the runtime fully serial |
-| `loop.max_tick_queue` | bounded dispatcher queue size for pending ticks; chat waits for a slot instead of returning busy |
+| `loop.max_tick_queue` | bounded dispatcher queue size for pending ticks; when full, chat requests are released back to pending and retried in a later cycle |
 | `loop.max_idle_gap` | default idle wait ceiling in milliseconds when there is no active work |
 | `loop.active_idle_gap` | default wait interval in milliseconds while a task is active |
 | `loop.min_act_gap` | minimum interval in milliseconds between two `act` decisions |
@@ -69,6 +69,8 @@ Providers are defined in the `providers` section. API keys should come from envi
 | `gateway.default_channel` | default ingress channel such as `local` or `wechat` |
 
 ## Environment Variables
+
+Environment variables are still the preferred production path.
 
 Typical `.env` entries:
 

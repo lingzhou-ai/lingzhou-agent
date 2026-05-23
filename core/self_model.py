@@ -15,16 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core.config import Config
 
-# 模型定价（USD / 1M tokens）—— 按量模型的成本参考
-_MODEL_PRICES: dict[str, dict[str, float]] = {
-    "deepseek-v4-flash":  {"input": 0.28, "output": 1.10},
-    "deepseek-v4-pro":    {"input": 0.55, "output": 2.19},
-    "deepseek-chat":      {"input": 0.27, "output": 1.10},
-    "deepseek-reasoner":  {"input": 0.55, "output": 2.19},
-    "qwen3.6-plus":       {"input": 0.50, "output": 2.00},
-    "qwen3.5-plus":       {"input": 0.35, "output": 1.40},
 
-}
 
 
 @dataclass
@@ -90,11 +81,11 @@ class SelfModel:
         self._update_cost(prompt, completion)
 
     def _update_cost(self, prompt: int, completion: int) -> None:
-        """按模型定价估算成本（USD）。"""
-        prices = _MODEL_PRICES.get(self.primary_model.split("/", 1)[-1], {})
-        input_price = prices.get("input", 0.0)
-        output_price = prices.get("output", 0.0)
-        self.estimated_cost_usd += (prompt / 1_000_000) * input_price + (completion / 1_000_000) * output_price
+        """按 lingzhou.json model_prices 估算成本（USD）。未配置或订阅制时保持为 0。"""
+        input_price = getattr(self, "_price_input", 0.0)
+        output_price = getattr(self, "_price_output", 0.0)
+        if input_price or output_price:
+            self.estimated_cost_usd += (prompt / 1_000_000) * input_price + (completion / 1_000_000) * output_price
 
     @property
     def uptime_seconds(self) -> float:
@@ -116,9 +107,14 @@ class SelfModel:
         routing = getattr(cfg, "routing", {}) or {}
         self.reader_model = routing.get("reader", cfg.model)
         self.reasoner_model = routing.get("reasoner", cfg.model)
-        # 推断计费模式：copilot 走订阅，deepseek/bailian 走按量
+        # 推断计费模式：copilot 走订阅，其余走按量（需在 lingzhou.json model_prices 中配置价格）
         provider = cfg.model.split("/")[0] if "/" in cfg.model else ""
         self.billing_mode = "subscription" if provider == "copilot" else "token"
+        # 从 lingzhou.json model_prices 读取实际价格（USD / 1M tokens）
+        model_key = cfg.model.split("/", 1)[-1]
+        prices = (getattr(cfg, "model_prices", {}) or {}).get(model_key, {})
+        self._price_input: float = float(prices.get("input", 0.0))
+        self._price_output: float = float(prices.get("output", 0.0))
 
     # ── 持久化 ────────────────────────────────────────────────────────
 
@@ -161,7 +157,7 @@ def fmt_self_model(sm: SelfModel) -> str:
         f"已运行: {sm.uptime_display}  (tick #{sm.tick_count})",
         f"API 调用: {sm.api_call_count}  工具调用: {sm.tool_call_count}",
         f"Token 消耗: {sm.total_tokens:,}  (输入 {sm.total_prompt_tokens:,} + 输出 {sm.total_completion_tokens:,})",
-        f"计费模式: {'按量' if sm.billing_mode == 'token' else '按次/订阅'}  |  估算成本: ${sm.estimated_cost_usd:.4f}",
+        f"计费模式: {'订阅制（token 不计费）' if sm.billing_mode == 'subscription' else ('按量 $' + f'{sm.estimated_cost_usd:.4f}' if sm.estimated_cost_usd > 0 else '按量（未配置 model_prices）')}",
         f"上下文预算: {sm.context_budget or '未设置'}  |  压力: {sm.context_pressure:.0%}",
         f"主模型: {sm.primary_model}",
         f"操作层: {sm.reader_model}",
@@ -173,4 +169,6 @@ def fmt_self_model(sm: SelfModel) -> str:
         lines.append("健康状态: 正常")
     if sm.billing_mode == "token" and sm.estimated_cost_usd > 0.01:
         lines.append(f"⚠️ 本会话已消耗 ${sm.estimated_cost_usd:.4f}（按量计费，请关注空转）")
+    elif sm.billing_mode == "token" and getattr(sm, "_price_input", 0.0) == 0:
+        lines.append("ℹ️ 按量模型未配置 model_prices，成本追踪不可用")
     return "\n".join(lines)

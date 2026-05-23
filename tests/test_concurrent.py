@@ -41,7 +41,7 @@ def test_compact_tool_history_keeps_same_list_reference():
     ]
     original_id = id(history)
 
-    compacted = _compact_tool_history(history)
+    compacted = _compact_tool_history(history, keep_last=3)
 
     assert compacted is history
     assert id(history) == original_id
@@ -152,7 +152,7 @@ async def _scoped_task_store_get_active_returns_pinned():
         async def get_active(self):
             return task_a  # inner 返回 A
 
-    scoped = _ScopedTaskStore(_InnerStore(), task_b)  # pin 为 B
+    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, task_b))  # pin 为 B
 
     result = await scoped.get_active()
     assert result is task_b, "scoped store 应返回 pinned task_b，而非 inner 的 task_a"
@@ -184,7 +184,7 @@ async def _scoped_task_store_delegates_other_methods():
             return None
 
     task_pin = SimpleNamespace(id=99, goal="pin")
-    scoped = _ScopedTaskStore(_InnerStore(), task_pin)
+    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, task_pin))
 
     await scoped.update_status(7, "done")
     await scoped.update_task_result(7, {"k": "v"})
@@ -220,6 +220,7 @@ async def _run_one_task_dispatch_ctx_pins_own_task():
 
         async def update_task_result(self, *a, **kw): pass
         async def update_status(self, *a, **kw): pass
+        async def mark_waiting(self, *a, **kw): pass
 
     seen_active_ids: list[int] = []
 
@@ -248,12 +249,131 @@ async def _run_one_task_dispatch_ctx_pins_own_task():
     ctx = _tool_ctx(task_store=store)
     spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
 
-    await _run_one_task(target_task, spec, ctx, loop)
+    await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
 
     assert seen_active_ids, "dispatch 应被调用至少一次"
     assert all(aid == 42 for aid in seen_active_ids), (
         f"dispatch 看到了错误的 active_task id: {seen_active_ids}（期望全为 42）"
     )
+
+
+def test_run_one_task_does_not_inject_task_id_into_task_tool_params():
+    """_run_one_task 不应在 dispatch 前偷偷给 task.* 参数补 task_id。"""
+    asyncio.run(_run_one_task_does_not_inject_task_id_into_task_tool_params())
+
+
+async def _run_one_task_does_not_inject_task_id_into_task_tool_params():
+    from core.loop.task_parallel import _run_one_task
+    from core.judgment import JudgmentOutput
+    from tools.registry import ToolResult
+
+    class _FakeStore:
+        async def update_task_result(self, *a, **kw):
+            return None
+
+        async def update_status(self, *a, **kw):
+            return None
+
+        async def mark_waiting(self, *a, **kw):
+            return None
+
+    seen_params: list[dict[str, Any]] = []
+
+    class _MockJudgment:
+        async def decide_continue(self, *, tool_history, user_message="",
+                                  active_task=None, prefer_tier=None):
+            await asyncio.sleep(0)
+            if len(tool_history) == 1:
+                return JudgmentOutput(
+                    decision="act",
+                    chosen_action_id="task.complete",
+                    params={},
+                )
+            return JudgmentOutput(decision="wait", rationale="done")
+
+    class _MockExecution:
+        async def dispatch(self, output, ctx):
+            seen_params.append(dict(output.params or {}))
+            return ToolResult(summary="ok")
+
+    target_task = SimpleNamespace(id=42, goal="target-goal")
+    store = _FakeStore()
+    loop = SimpleNamespace(
+        _judgment=_MockJudgment(),
+        _execution=_MockExecution(),
+        _task_store=store,
+    )
+    ctx = _tool_ctx(task_store=store)
+    spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
+
+    await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
+
+    assert seen_params == [{}]
+
+
+def test_run_one_task_surfaces_terminal_wait_decision_to_parent_history():
+    """_run_one_task 应把子任务终止决策显式暴露给父 tick，而不是统一压成 ok。"""
+    asyncio.run(_run_one_task_surfaces_terminal_wait_decision_to_parent_history())
+
+
+async def _run_one_task_surfaces_terminal_wait_decision_to_parent_history():
+    from core.loop.task_parallel import _run_one_task
+    from core.judgment import JudgmentOutput
+
+    captured_result_json: dict[str, Any] = {}
+    status_calls: list[tuple[int, str]] = []
+    waiting_calls: list[dict[str, Any]] = []
+
+    class _FakeStore:
+        async def update_task_result(self, task_id, result_json):
+            captured_result_json.update(dict(result_json))
+
+        async def update_status(self, task_id, status, next_step=None):
+            status_calls.append((int(task_id), str(status)))
+
+        async def mark_waiting(self, task_id, *, wait_kind, wait_key="", wait_json=None, current_step=None, next_step=None):
+            waiting_calls.append({
+                "task_id": int(task_id),
+                "wait_kind": str(wait_kind),
+                "wait_key": str(wait_key),
+                "wait_json": dict(wait_json or {}),
+                "next_step": next_step,
+            })
+
+    class _MockJudgment:
+        async def decide_continue(self, *, tool_history, user_message="",
+                                  active_task=None, prefer_tier=None):
+            await asyncio.sleep(0)
+            return JudgmentOutput(decision="wait", rationale="还缺一个外部输入")
+
+    class _MockExecution:
+        async def dispatch(self, output, ctx):
+            raise AssertionError("wait 决策不应进入 dispatch")
+
+    target_task = SimpleNamespace(id=42, goal="target-goal", parent_task_id="7", next_step="等待父任务审查")
+    store = _FakeStore()
+    loop = SimpleNamespace(
+        _judgment=_MockJudgment(),
+        _execution=_MockExecution(),
+        _task_store=store,
+    )
+    ctx = _tool_ctx(task_store=store)
+    spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
+
+    entry = await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
+
+    assert captured_result_json["terminal_decision"] == "wait"
+    assert entry["status"] == "wait"
+    assert "最终决策: wait" in entry["result"]
+    assert entry["summary"].startswith("[T/task:42] wait:")
+    assert status_calls == []
+    assert waiting_calls == [{
+        "task_id": 42,
+        "wait_kind": "task",
+        "wait_key": "7",
+        "wait_json": {"wait_kind": "task", "wait_key": "7", "terminal_decision": "wait"},
+        "next_step": "等待父任务审查",
+    }]
 
 
 # ── 3. run_tasks_parallel 并发不污染测试 ──────────────────────────────────────
@@ -274,7 +394,7 @@ async def _run_tasks_parallel_each_task_sees_own_active():
         await store.open()
 
         # dispatch 记录：{ task_id_pinned: [seen_active_id, ...] }
-        dispatch_log: list[tuple[int, int]] = []  # (spec_task_id, seen_active_id)
+        dispatch_log: list[int] = []
 
         class _MockJudgment:
             async def decide_continue(self, *, tool_history, user_message="",
@@ -303,7 +423,7 @@ async def _run_tasks_parallel_each_task_sees_own_active():
             {"id": "beta",  "goal": "do beta",  "tools": [], "max_rounds": 3},
         ]
 
-        entries = await run_tasks_parallel(specs, ctx, loop)
+        entries = await run_tasks_parallel(specs, ctx, cast(Any, loop))
 
         # 应创建 2 个子任务并各有 1 次 dispatch
         assert len(entries) == 2
@@ -314,11 +434,11 @@ async def _run_tasks_parallel_each_task_sees_own_active():
             f"两个子任务 dispatch 看到了相同的 active_task id={dispatch_log[0]}，未隔离"
         )
 
-        # 每个 task 的状态应写为 done
+        # 每个 task 的状态应反映 terminal wait，而不是被压平为 done
         tasks = await store.list_tasks(limit=10)
         subtasks = [t for t in tasks if t.source == "internal"]
         statuses = {t.id: t.status for t in subtasks}
-        assert all(s == "done" for s in statuses.values()), f"部分子任务未完成: {statuses}"
+        assert all(s == "waiting" for s in statuses.values()), f"部分子任务状态异常: {statuses}"
 
         await store.close()
 
@@ -352,6 +472,8 @@ async def _aiosqlite_concurrent_writes():
 
         row_a = await store.get_task_by_id(id_a)
         row_b = await store.get_task_by_id(id_b)
+        assert row_a is not None
+        assert row_b is not None
 
         # 各行的最终写入 seq 为 N-1（最后一次写）
         assert row_a.result_json.get("seq") == N - 1, f"row_a seq={row_a.result_json}"
@@ -384,7 +506,7 @@ async def _dispatch_parallel_merges_results():
         class loop:
             debug = False
 
-    layer = ExecutionLayer(registry, _FakeCfg())
+    layer = ExecutionLayer(registry, cast(Any, _FakeCfg()))
 
     # 记录每次 _dispatch_act 收到的 action_id 和调用顺序
     call_log: list[str] = []

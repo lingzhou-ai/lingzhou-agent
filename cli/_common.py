@@ -28,7 +28,7 @@ _CONFIG_SEARCH_PATHS: list[Path] = [
 
 def find_config(hint: Path) -> Path:
     """返回可用的配置文件路径；若 hint 存在则直接使用，否则按预设顺序搜索。
-    若均不存在，自动启动 setup 向导，向导完成后返回生成的路径。
+    若均不存在，提示用户先运行 onboard。
     默认配置归属为 ~/.lingzhou/lingzhou.json，而不是仓库根目录。
     """
     if hint.exists():
@@ -36,17 +36,7 @@ def find_config(hint: Path) -> Path:
     for candidate in _CONFIG_SEARCH_PATHS:
         if candidate.exists():
             return candidate
-    # 未找到配置 — 自动引导 setup
-    console.print("[yellow]未找到 lingzhou.json，自动启动初始化向导…[/yellow]\n")
-    from cli.bootstrap import setup as _setup
-    default_out = DEFAULT_CONFIG_PATH
-    _setup(output=default_out)
-    if default_out.exists():
-        return default_out
-    # 兜底：再搜一遍
-    for candidate in _CONFIG_SEARCH_PATHS:
-        if candidate.exists():
-            return candidate
+    console.print("[yellow]未找到 lingzhou.json。请先运行 [bold]lingzhou onboard[/bold]。[/yellow]")
     raise typer.Exit(1)
 
 

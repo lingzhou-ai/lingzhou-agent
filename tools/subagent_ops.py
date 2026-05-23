@@ -14,13 +14,33 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 
 _log = logging.getLogger("lingzhou.subagent_ops")
 
+
+def _normalized_subagent_tags(raw_tags: Any, sub_id: str) -> list[str]:
+    tags: list[str] = []
+    if isinstance(raw_tags, list):
+        for item in raw_tags:
+            text = str(item or "").strip()
+            if text and text not in tags:
+                tags.append(text)
+    elif isinstance(raw_tags, str):
+        text = raw_tags.strip()
+        if text:
+            tags.append(text)
+
+    for item in ["subagent", f"subagent:{sub_id}"]:
+        if item not in tags:
+            tags.append(item)
+    return tags
+
 # ── subagent.run ────────────────────────────────────────────────────────────────
 
 _MANIFEST_RUN = ToolManifest(
     name="subagent.run",
     description=(
         "派生一个子灵执行专项子任务。子灵继承父灵的记忆与配置，"
-        "拥有独立工作记忆，工具访问受限（不可修改灵魂/进化/伦理）。"
+        "拥有独立工作记忆。默认只开放读型/信息型工具，"
+        "不会把 run、failure、fact、task/schedule 变更回写到父灵状态；"
+        "高权限与变更类工具默认受限。"
         "isolated_memory=true 时使用独立存储命名空间（Tier-1）；"
         "inherit_ethos=true 时继承父灵价值观基线（Tier-2）。"
         "子灵执行完毕后，关键观察注入父灵工作记忆。"
@@ -158,6 +178,8 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
     if not sub_id or not memories_raw:
         return ToolResult(summary="缺少 subagent_id 或 memories_json", skipped=True)
+    if ctx.semantic is None:
+        return ToolResult(summary="父灵语义记忆未注入，无法吸收子灵结果", error="missing_semantic")
 
     try:
         nodes: list[dict] = json.loads(memories_raw)
@@ -167,34 +189,57 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     if not isinstance(nodes, list):
         return ToolResult(summary="memories_json 格式错误：应为列表", error="bad_format")
 
+    requested_total = len(nodes)
     max_absorb = int(params.get("max_absorb") or 5)
+    max_absorb = max(0, max_absorb)
     nodes = nodes[:max_absorb]
+    truncated = max(0, requested_total - len(nodes))
 
     absorbed = 0
+    invalid = 0
     errors: list[str] = []
 
-    for node_dict in nodes:
+    for idx, node_dict in enumerate(nodes, start=1):
         try:
             from memory.semantic import MemoryNode
-            # 构造 MemoryNode（跳过缺失必须字段的节点）
-            node = MemoryNode(
-                id=f"absorbed-{sub_id}-{node_dict.get('id', '')}",
-                kind=node_dict.get("kind", "subagent_learn"),
-                title=f"[子灵{sub_id}] {node_dict.get('title', '')}",
-                body=node_dict.get("body", ""),
-                activation=float(node_dict.get("activation", 0.4)),
-                valence=float(node_dict.get("valence", 0.5)),
-                tags=node_dict.get("tags", []),
-                source=f"subagent:{sub_id}",
-            )
-            if not node.title or not node.body:
+            if not isinstance(node_dict, dict):
+                invalid += 1
                 continue
-            await ctx.semantic.upsert(node)
+
+            raw_id = str(node_dict.get("id") or "").strip() or f"node-{idx}"
+            title = str(node_dict.get("title") or "").strip()
+            body = str(node_dict.get("body") or "")
+            if not title or not body.strip():
+                invalid += 1
+                continue
+
+            node_kwargs: dict[str, Any] = {
+                "id": f"absorbed-{sub_id}-{raw_id}",
+                "kind": str(node_dict.get("kind") or "subagent_learn"),
+                "title": title,
+                "body": body,
+                "activation": float(node_dict.get("activation", 0.4) or 0.4),
+                "valence": float(node_dict.get("valence", 0.5) or 0.5),
+                "importance": float(node_dict.get("importance", 0.0) or 0.0),
+                "tags": _normalized_subagent_tags(node_dict.get("tags"), sub_id),
+                "source": f"subagent:{sub_id}",
+            }
+            created_at = str(node_dict.get("created_at") or "").strip()
+            if created_at:
+                node_kwargs["created_at"] = created_at
+
+            # 构造 MemoryNode（跳过缺失必须字段的节点）
+            node = MemoryNode(**node_kwargs)
+            ctx.semantic.upsert(node)
             absorbed += 1
         except Exception as exc:
             errors.append(str(exc)[:80])
 
     summary = f"子灵[{sub_id}] 已吸收 {absorbed}/{len(nodes)} 条语义记忆"
+    if truncated:
+        summary += f"（另有 {truncated} 条因 max_absorb 未吸收）"
+    if invalid:
+        summary += f"（{invalid} 条缺少标题或正文已跳过）"
     if errors:
         summary += f"（{len(errors)} 条失败）"
 
@@ -203,7 +248,10 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         metadata={
             "subagent_id": sub_id,
             "absorbed": absorbed,
-            "total": len(nodes),
+            "selected_total": len(nodes),
+            "requested_total": requested_total,
+            "truncated": truncated,
+            "invalid": invalid,
             "errors": errors,
         },
         state_delta={"absorbed_memories": absorbed},

@@ -96,6 +96,7 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ToolParam("title", "string", "任务标题（简洁）", required=True),
         ToolParam("goal", "string", "任务目标（详细）", required=False),
         ToolParam("priority", "string", "优先级: low/normal/high/critical", required=False),
+        ToolParam("source", "string", "可选：任务来源；默认 external，可显式设为 self_drive/curiosity/bootstrap 等", required=False),
         ToolParam("model_tier", "string", "可选：任务默认模型层级 reader/reasoner/repair", required=False),
         ToolParam("chain_id", "string", "可选：任务链 id；不传则自动继承或创建", required=False),
         ToolParam("parent_task_id", "number", "可选：父任务 id，用于形成任务链", required=False),
@@ -109,6 +110,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="任务标题不能为空", skipped=True)
     goal = params.get("goal") or ""
     priority = params.get("priority") or "normal"
+    source = (params.get("source") or "external").strip() or "external"
     parent_task_id = params.get("parent_task_id")
     parent = await _resolve_task(parent_task_id, ctx) if parent_task_id is not None else await ctx.task_store.get_active()
     chain_id = (params.get("chain_id") or (parent.chain_id if parent and parent.chain_id else f"chain-{uuid.uuid4().hex[:8]}"))
@@ -119,7 +121,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         title,
         goal,
         priority,
-        source="external",
+        source=source,
         chain_id=chain_id,
         parent_task_id=str(parent.id) if parent else (str(parent_task_id or "") if parent_task_id else ""),
         current_step=current_step,
@@ -130,8 +132,8 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         summary=f"任务已创建: [{task_id}] {title}",
         evidence=f"task_id={task_id}",
         resource_key=str(task_id),
-        state_delta={"task_status": "pending", "chain_id": chain_id},
-        metadata={"task_id": task_id, "chain_id": chain_id, "parent_task_id": str(parent.id) if parent else ""},
+        state_delta={"task_status": "pending", "chain_id": chain_id, "source": source},
+        metadata={"task_id": task_id, "chain_id": chain_id, "parent_task_id": str(parent.id) if parent else "", "source": source},
     )
 
 
@@ -348,6 +350,8 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.wait",
     description="把任务切到 waiting，并记录等待条件（外部结果 / 定时器 / 子任务等）",
+    progress_category="mutation",
+    capabilities=("completion_mutation", "plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("task_id", "number", "可选：显式指定任务 id；不传则使用当前 active task", required=False),
         ToolParam("wait_kind", "string", "等待类型，如 process/task/signal/time/external", required=True),
@@ -388,6 +392,8 @@ async def task_wait(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.resume",
     description="把 waiting/blocked 的任务恢复到 resumed/ready，并附带恢复结果",
+    progress_category="mutation",
+    capabilities=("completion_mutation", "plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("task_id", "number", "要恢复的任务 id", required=True),
         ToolParam("status", "string", "恢复后的状态，默认 resumed，也可设为 ready/in_progress", required=False),

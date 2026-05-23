@@ -347,7 +347,7 @@ async def _task_steer_inbox_is_consumed_once():
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "steer.db")
         await store.open()
-        task_id = await store.add_task("转向任务", goal="验证 steering inbox 只消费一次")
+        task_id = await store.add_task("用户消息 inbox 任务", goal="验证用户消息 inbox 只消费一次")
 
         ctx = _tool_ctx(task_store=store)
         steer_res = await task_steer(

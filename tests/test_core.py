@@ -16,6 +16,7 @@ from typing import Any, cast
 
 import aiosqlite
 import pytest
+from typer.testing import CliRunner
 
 from conftest import (
     _proj_root,
@@ -62,6 +63,241 @@ def test_emotion_state_ema():
     assert e.dominant is not None or e.dominant is None  # 有无 dominant 均可
 
 
+def test_emotion_state_uses_configured_feeling_and_regulation_thresholds():
+    from core.perception import EmotionState
+
+    default_guard = EmotionState(valence=0.6, arousal=0.5)
+    tuned = EmotionState(valence=0.6, arousal=0.5)
+
+    default_guard.derive_from_signals(
+        failure_count=0,
+        prediction_error=0.1,
+        wm_pressure=0.2,
+        workspace_dirty=False,
+        alpha=0.0,
+        high_error_streak=3,
+        replay_trend="stable",
+    )
+    tuned.derive_from_signals(
+        failure_count=0,
+        prediction_error=0.1,
+        wm_pressure=0.2,
+        workspace_dirty=False,
+        alpha=0.0,
+        emotion_cfg=SimpleNamespace(
+            feeling_min_intensity=0.30,
+            regulation_high_error_streak_guard=4,
+            regulation_down_regulate_arousal_high=0.90,
+            regulation_down_regulate_valence_low=0.10,
+            regulation_down_regulate_worsening_valence=0.20,
+            regulation_up_regulate_recovering_valence=0.10,
+            regulation_up_regulate_signal_valence=0.10,
+        ),
+        high_error_streak=3,
+        replay_trend="stable",
+    )
+
+    assert default_guard.regulation.strategy == "down-regulate"
+    assert tuned.regulation.strategy == "maintain"
+    assert len(default_guard.feelings) > len(tuned.feelings)
+
+
+def test_build_perception_replay_uses_configured_trend_delta():
+    from core.perception import build_perception_replay
+
+    events = [
+        {"prediction_error": 0.10},
+        {"prediction_error": 0.22},
+    ]
+
+    stable = build_perception_replay(
+        events,
+        high_error_threshold=0.7,
+        trend_delta=0.15,
+        high_error_hint_streak=3,
+    )
+    worsening = build_perception_replay(
+        events,
+        high_error_threshold=0.7,
+        trend_delta=0.10,
+        high_error_hint_streak=3,
+    )
+
+    assert stable.trend == "stable"
+    assert worsening.trend == "worsening"
+
+
+def test_build_emotion_replay_uses_configured_trend_delta():
+    from core.perception import build_emotion_replay
+
+    events = [
+        {"valence": 0.50, "regulation_strategy": "maintain"},
+        {"valence": 0.58, "regulation_strategy": "down-regulate"},
+    ]
+
+    stable = build_emotion_replay(events, trend_delta=0.10)
+    recovering = build_emotion_replay(events, trend_delta=0.05)
+
+    assert stable.trend == "stable"
+    assert recovering.trend == "recovering"
+    assert recovering.down_regulate_streak == 1
+
+
+def test_reference_resolver_extract_signals_preserves_temporal_language_for_llm_reasoning():
+    from core.reference import ReferenceResolver
+
+    resolver = ReferenceResolver()
+    sigs = resolver.extract_signals("我名字是阿舟，昨天你说过的方案今天还想继续。")
+
+    assert not hasattr(sigs, "self_name")
+    assert not hasattr(sigs, "time_anchors")
+    assert sigs.topic_anchors == ["我名字是阿舟 昨天你说过的方案今天还想继续"]
+    assert "昨天" in sigs.topic_anchors[0]
+    assert "今天" in sigs.topic_anchors[0]
+    assert not hasattr(sigs, "has_relation_hint")
+
+
+def test_reference_resolver_extract_signals_keeps_vague_history_in_topic_anchor():
+    from core.reference import ReferenceResolver
+
+    resolver = ReferenceResolver()
+    sigs = resolver.extract_signals("继续之前那个话题")
+
+    assert not hasattr(sigs, "time_anchors")
+    assert not hasattr(sigs, "self_name")
+    assert not hasattr(sigs, "has_relation_hint")
+    assert sigs.topic_anchors == ["继续之前那个话题"]
+
+
+def test_reference_resolver_retrieve_candidates_uses_recent_pool_without_time_parsing():
+    from core.reference import ReferenceResolver
+
+    retrieve_calls: list[tuple[str, int, str | None]] = []
+
+    class SemanticStub:
+        def retrieve_multi_anchor(self, anchors, top_k, source=None):
+            return []
+
+        def retrieve(self, query, top_k, source=None):
+            retrieve_calls.append((query, top_k, source))
+            return [{
+                "id": "node-1",
+                "kind": "plan",
+                "title": "方案A",
+                "body": "继续方案A",
+                "created_at": "2026-05-22T08:00:00+00:00",
+            }]
+
+    class EpisodicStub:
+        def __init__(self):
+            self.calls: list[int] = []
+
+        def list_recent_narrative(self, limit=10):
+            self.calls.append(limit)
+            return [{"content": "昨天你说过的方案A", "ts": "2026-05-22 08:00:00 UTC"}]
+
+    resolver = ReferenceResolver(recent_narrative_limit=4, recent_semantic_top_k=6)
+    sigs = resolver.extract_signals("昨天你说过的方案今天继续")
+    episodic = EpisodicStub()
+
+    candidates = resolver._retrieve_candidates(
+        "昨天你说过的方案今天继续",
+        sigs,
+        cast(Any, SemanticStub()),
+        cast(Any, episodic),
+    )
+
+    assert episodic.calls == [4]
+    assert retrieve_calls == [("昨天你说过的方案A", 6, None)]
+    assert candidates["node-1"]["_sig"] == ["recent"]
+
+
+@pytest.mark.asyncio
+async def test_reference_resolver_llm_reason_exposes_candidate_created_at():
+    from core.reference import ReferenceResolver
+
+    captured: list[str] = []
+
+    class ProviderStub:
+        async def chat(self, messages, temperature=None):
+            captured.append(messages[1].content)
+            return "[]"
+
+    resolver = ReferenceResolver(provider=cast(Any, ProviderStub()))
+    await resolver._llm_reason(
+        "昨天那个方案",
+        {
+            "node-1": {
+                "id": "node-1",
+                "kind": "plan",
+                "title": "方案A",
+                "body": "继续方案A",
+                "created_at": "2026-05-22T08:00:00+00:00",
+            }
+        },
+    )
+
+    assert captured
+    assert '"created_at":"2026-05-22T08:00:00+00:00"' in captured[0]
+
+
+def test_compute_judgment_signals_uses_configured_thresholds():
+    from core.perception.signals import compute_judgment_signals
+
+    thresholds = SimpleNamespace(
+        judgment_error_streak_guard=4,
+        judgment_require_more_evidence_worsening_failure_count=2,
+        judgment_prefer_narrow_failure_count=3,
+        judgment_posture_narrow_failure_count=5,
+        judgment_posture_narrow_down_regulate_failure_count=2,
+        judgment_posture_pause_worsening_failure_count=3,
+    )
+    steady = cast(Any, SimpleNamespace(regulation=SimpleNamespace(strategy="steady")))
+    down = cast(Any, SimpleNamespace(regulation=SimpleNamespace(strategy="down-regulate")))
+
+    no_guard_hit = compute_judgment_signals(
+        failure_count=2,
+        high_error_streak=3,
+        perception_trend="stable",
+        emotion_state=steady,
+        thresholds=thresholds,
+    )
+    assert no_guard_hit.require_more_evidence is False
+    assert no_guard_hit.prefer_narrow_scope is False
+    assert no_guard_hit.posture == "act"
+
+    worsening = compute_judgment_signals(
+        failure_count=2,
+        high_error_streak=0,
+        perception_trend="worsening",
+        emotion_state=steady,
+        thresholds=thresholds,
+    )
+    assert worsening.require_more_evidence is True
+    assert worsening.prefer_narrow_scope is False
+    assert worsening.posture == "act"
+
+    down_regulated = compute_judgment_signals(
+        failure_count=2,
+        high_error_streak=0,
+        perception_trend="stable",
+        emotion_state=down,
+        thresholds=thresholds,
+    )
+    assert down_regulated.posture == "narrow"
+
+    error_streak_hit = compute_judgment_signals(
+        failure_count=0,
+        high_error_streak=4,
+        perception_trend="stable",
+        emotion_state=steady,
+        thresholds=thresholds,
+    )
+    assert error_streak_hit.require_more_evidence is True
+    assert error_streak_hit.prefer_narrow_scope is True
+    assert error_streak_hit.posture == "pause"
+
+
 def test_judgment_output_parse():
     from core.judgment import JudgmentOutput
     raw = '```json\n{"decision":"act","chosen_action_id":"shell.run","params":{"command":"echo hi"},"rationale":"test","reflection":"洞察","next_step":"done","model_strategy":{"next_phase_tier":"reader","reason":"先低成本扩图"}}\n```'
@@ -88,6 +324,16 @@ def test_judgment_output_parse_null_text_fields_as_empty():
     assert out.reflection == ""
     assert out.reply_to_user == ""
     assert out.next_step == ""
+
+
+def test_judgment_prompt_includes_runtime_hint_rules():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+
+    assert "runtime hint 响应规则（高优先级）" in prompt
+    assert "task_replan" in prompt
+    assert "routing_guard" in prompt
+    assert "control:meta_reflection_hint:*" in prompt
+    assert "不要因为 WM 中出现建议就假设 durable failure policy 已经改变" in prompt
 
 
 def test_chat_read_line_prefers_text_input(monkeypatch):
@@ -193,6 +439,98 @@ def test_loop_logging_reply_not_truncated():
     text = "x" * 600
 
     assert _clip_reply_for_log(text) == text
+
+
+def test_cli_help_includes_onboard_command():
+    from cli.main import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "onboard" in result.stdout
+
+
+def test_onboard_runs_setup_then_init_for_fresh_install(monkeypatch, tmp_path):
+    from cli import bootstrap as bootstrap_mod
+
+    config_path = tmp_path / "lingzhou.json"
+    calls: list[str] = []
+
+    monkeypatch.setattr(bootstrap_mod.console, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bootstrap_mod, "onboarding_status", lambda config: (False, "missing"))
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_run_setup",
+        lambda **kwargs: calls.append("setup") or config_path,
+    )
+    monkeypatch.setattr(
+        bootstrap_mod,
+        "_run_init",
+        lambda **kwargs: calls.append("init") or True,
+    )
+
+    bootstrap_mod.onboard(config=config_path, start=False)
+
+    assert calls == ["setup", "init"]
+
+
+def test_find_config_missing_instructs_onboard(monkeypatch, tmp_path):
+    from cli import _common as common
+    from click.exceptions import Exit
+
+    printed: list[str] = []
+
+    monkeypatch.setattr(common.console, "print", lambda *args, **kwargs: printed.append(" ".join(str(a) for a in args)))
+    monkeypatch.setattr(common, "_CONFIG_SEARCH_PATHS", [tmp_path / "missing.json"])
+
+    with pytest.raises(Exit):
+        common.find_config(tmp_path / "absent.json")
+
+    assert any("lingzhou onboard" in line for line in printed)
+
+
+def test_app_callback_routes_to_onboard_when_not_ready(monkeypatch):
+    from cli import main as lingzhou_mod
+
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(lingzhou_mod, "is_onboarded", lambda config: False)
+    monkeypatch.setattr(
+        lingzhou_mod,
+        "onboard",
+        lambda **kwargs: calls.append({"kind": "onboard", **kwargs}),
+    )
+    monkeypatch.setattr(
+        lingzhou_mod,
+        "gateway_start",
+        lambda **kwargs: calls.append({"kind": "gateway", **kwargs}),
+    )
+
+    lingzhou_mod.app_callback(cast(Any, SimpleNamespace(invoked_subcommand=None)))
+
+    assert calls == [{
+        "kind": "onboard",
+        "config": lingzhou_mod.DEFAULT_CONFIG_PATH,
+        "start": True,
+    }]
+
+
+def test_app_callback_starts_gateway_when_ready(monkeypatch):
+    from cli import main as lingzhou_mod
+
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(lingzhou_mod, "is_onboarded", lambda config: True)
+    monkeypatch.setattr(
+        lingzhou_mod,
+        "gateway_start",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    lingzhou_mod.app_callback(cast(Any, SimpleNamespace(invoked_subcommand=None)))
+
+    assert calls == [{"channel": "local", "daemon": False}]
 
 
 @pytest.mark.asyncio
@@ -1907,8 +2245,9 @@ async def _ingest_actionable_meta_reflections_dedupes():
 
         top = wm.get_top()
         assert len([item for item in top if item["kind"] == "meta_reflection"]) == 2
-        assert any("set routing guard" in item["content"] for item in top)
-        assert any("reset durable failure policy" in item["content"] for item in top)
+        assert any("queued task routing guard" in item["content"] for item in top)
+        assert any("control:durable_failure_policy" in item["content"] for item in top)
+        assert any("memory.set_fact" in item["content"] for item in top)
 
         task_fact, found = await store.get_fact("task:7:meta_reflection")
         assert found
@@ -1919,20 +2258,23 @@ async def _ingest_actionable_meta_reflections_dedupes():
         assert json.loads(routing_guard)["tool_name"] == "file.read"
 
         policy_raw, found = await store.get_fact("control:durable_failure_policy")
+        assert not found
+        assert policy_raw == ""
+
+        threshold_hint_raw, found = await store.get_fact("control:meta_reflection_hint:threshold")
         assert found
-        assert json.loads(policy_raw) == {"threshold": 3, "ttl_sec": 7200}
+        assert json.loads(threshold_hint_raw)["suggested_policy"] == {"threshold": 3, "ttl_sec": 7200}
 
         again = await _ingest_actionable_meta_reflections(store, wm)
         assert again == []
         await store.close()
 
 
-def test_meta_reflection_threshold_apply_changes_runtime_policy():
-    asyncio.run(_meta_reflection_threshold_apply_changes_runtime_policy())
+def test_meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
+    asyncio.run(_meta_reflection_threshold_apply_surfaces_runtime_policy_hint())
 
 
-async def _meta_reflection_threshold_apply_changes_runtime_policy():
-    from core.judgment import JudgmentOutput
+async def _meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
@@ -1956,6 +2298,18 @@ async def _meta_reflection_threshold_apply_changes_runtime_policy():
         injected = await _ingest_actionable_meta_reflections(store, wm)
         assert injected == ["mr-threshold-apply"]
 
+        top = wm.get_top()
+        assert any(
+            item["kind"] == "meta_reflection"
+            and "control:durable_failure_policy" in item["content"]
+            and "memory.set_fact" in item["content"]
+            for item in top
+        )
+
+        hint_raw, found = await store.get_fact("control:meta_reflection_hint:threshold")
+        assert found
+        assert json.loads(hint_raw)["suggested_policy"] == {"threshold": 4, "ttl_sec": 3600}
+
         reg = ToolRegistry()
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
@@ -1976,20 +2330,20 @@ async def _meta_reflection_threshold_apply_changes_runtime_policy():
         assert first.error == "EmptyPath"
         assert second.error == "EmptyPath"
         assert third.error == "EmptyPath"
-        assert fourth.error == "EmptyPath"
+        assert fourth.error == "KnownStableFailure"
         assert fifth.error == "KnownStableFailure"
 
         policy_raw, found = await store.get_fact("control:durable_failure_policy")
-        assert found
-        assert json.loads(policy_raw) == {"threshold": 4, "ttl_sec": 3600}
+        assert not found
+        assert policy_raw == ""
         await store.close()
 
 
-def test_consume_task_runtime_hints_updates_task_state_once():
-    asyncio.run(_consume_task_runtime_hints_updates_task_state_once())
+def test_consume_task_runtime_hints_surfaces_replan_and_routing_once():
+    asyncio.run(_consume_task_runtime_hints_surfaces_replan_and_routing_once())
 
 
-async def _consume_task_runtime_hints_updates_task_state_once():
+async def _consume_task_runtime_hints_surfaces_replan_and_routing_once():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
@@ -2034,27 +2388,29 @@ async def _consume_task_runtime_hints_updates_task_state_once():
         task = await store.get_task_by_id(task_id)
         task = await _consume_task_runtime_hints(store, task, wm)
         assert task is not None
-        assert task.next_step == "先定位资源，再读取文件"
-        assert task.model_tier == "repair"
+        assert task.next_step == "旧步骤"
+        assert task.model_tier == ""
         assert task.extras["last_replan_reflection_id"] == "mr-routing-tasksplit"
         assert task.extras["last_routing_reflection_id"] == "mr-routing-guard"
 
         top = wm.get_top()
         assert any(item["kind"] == "task_replan" for item in top)
         assert any(item["kind"] == "routing_guard" for item in top)
+        assert any(item["kind"] == "task_replan" and "task.update" in item["content"] for item in top)
+        assert any(item["kind"] == "routing_guard" and "model_tier" in item["content"] for item in top)
 
         again = await _consume_task_runtime_hints(store, task, wm)
         assert again is not None
-        assert again.next_step == "先定位资源，再读取文件"
-        assert again.model_tier == "repair"
+        assert again.next_step == "旧步骤"
+        assert again.model_tier == ""
         await store.close()
 
 
-def test_meta_reflection_threshold_apply_uses_explicit_policy_hint():
-    asyncio.run(_meta_reflection_threshold_apply_uses_explicit_policy_hint())
+def test_meta_reflection_threshold_apply_queues_explicit_policy_hint():
+    asyncio.run(_meta_reflection_threshold_apply_queues_explicit_policy_hint())
 
 
-async def _meta_reflection_threshold_apply_uses_explicit_policy_hint():
+async def _meta_reflection_threshold_apply_queues_explicit_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
@@ -2068,26 +2424,41 @@ async def _meta_reflection_threshold_apply_uses_explicit_policy_hint():
             trigger="failure_pattern",
             loop_level="double",
             diagnosis="静默窗口过早触发",
-            proposal="threshold=6 ttl=1800",
-            verification_plan="连续 5 次失败前不应静默",
+            proposal="确认外部状态是否恢复；若频繁误杀，则调整 durable failure 阈值或静默策略。",
+            verification_plan="等待静默窗口结束后重跟，并比较是否仍被直接跳过。",
             decision="apply",
             tool_name="file.read",
         )
 
-        injected = await _ingest_actionable_meta_reflections(store, WorkingMemory(capacity=10))
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
         assert injected == ["mr-threshold-explicit"]
 
-        raw, found = await store.get_fact("control:durable_failure_policy")
+        top = wm.get_top()
+        # 阈值策略采用增量方式：默认 threshold=3 一次尝试后变为 4
+        assert any(
+            item["kind"] == "meta_reflection"
+            and "threshold=4" in item["content"]
+            and "memory.set_fact" in item["content"]
+            for item in top
+        )
+
+        raw, found = await store.get_fact("control:meta_reflection_hint:threshold")
         assert found
-        assert json.loads(raw) == {"threshold": 6, "ttl_sec": 1800}
+        # 增量输出： threshold=3+1=4, ttl_sec=7200//2=3600
+        assert json.loads(raw)["suggested_policy"] == {"threshold": 4, "ttl_sec": 3600}
+
+        policy_raw, found = await store.get_fact("control:durable_failure_policy")
+        assert not found
+        assert policy_raw == ""
         await store.close()
 
 
-def test_consume_task_runtime_hints_uses_preferred_tier_hint():
-    asyncio.run(_consume_task_runtime_hints_uses_preferred_tier_hint())
+def test_consume_task_runtime_hints_surfaces_preferred_tier_hint():
+    asyncio.run(_consume_task_runtime_hints_surfaces_preferred_tier_hint())
 
 
-async def _consume_task_runtime_hints_uses_preferred_tier_hint():
+async def _consume_task_runtime_hints_surfaces_preferred_tier_hint():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
     from memory.task_store import TaskStore
     from memory.working import WorkingMemory
@@ -2117,7 +2488,10 @@ async def _consume_task_runtime_hints_uses_preferred_tier_hint():
         task = await store.get_task_by_id(task_id)
         task = await _consume_task_runtime_hints(store, task, wm)
         assert task is not None
-        assert task.model_tier == "reasoner"
+        assert task.model_tier == ""
+        top = wm.get_top()
+        assert any(item["kind"] == "routing_guard" and "reasoner" in item["content"] for item in top)
+        assert any(item["kind"] == "routing_guard" and "task.update" in item["content"] for item in top)
         await store.close()
 
 

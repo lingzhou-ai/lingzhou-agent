@@ -38,7 +38,7 @@ def _explicit_valence_hint(text: str) -> float | None:
     return None
 
 
-def _infer_valence_from_text(text: str, current: float) -> float:
+def _infer_valence_from_text(text: str, current: float, emotion_cfg: Any) -> float:
     """从 reflection 文本里的显式 valence hint 推断效价。
 
     不再依赖 Python 侧正负关键词词表，避免用硬编码词义去塑形情绪轨迹。
@@ -47,7 +47,12 @@ def _infer_valence_from_text(text: str, current: float) -> float:
     hinted = _explicit_valence_hint(text)
     if hinted is None:
         return current
-    return current * 0.8 + hinted * 0.2
+    history_weight = max(0.0, float(getattr(emotion_cfg, "reflection_valence_history_weight", 0.0)))
+    hint_weight = max(0.0, float(getattr(emotion_cfg, "reflection_valence_hint_weight", 0.0)))
+    total_weight = history_weight + hint_weight
+    if total_weight <= 0:
+        return current
+    return current * (history_weight / total_weight) + hinted * (hint_weight / total_weight)
 
 
 def _next_thinking_override(model_strategy: dict[str, Any] | None) -> str | None:
@@ -111,9 +116,6 @@ def _preferred_continue_tier(
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
     if next_tier in VALID_MODEL_TIERS:
         return next_tier
-    # 只要刚执行的工具属于读取类，续判就保持 reader tier（无论是否有 user_message）
-    if tool_tier(action.chosen_action_id or "", registry) == "reader":
-        return "reader"
     return None
 
 

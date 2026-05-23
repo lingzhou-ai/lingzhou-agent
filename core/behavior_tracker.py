@@ -154,6 +154,8 @@ class BehaviorTracker:
 
         if tool_name_has_capability(tool_id, "result_streak_only"):
             return items  # file.read / file.list streak 由结果感知处理
+        if not task_id:
+            return items
 
         # 对编辑类工具，把内容指纹混入 key，避免同文件不同内容的连续误判为循环
         _effective_key = key_param
@@ -241,6 +243,23 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 {_n} 次均读取了相同内容 ({path})，MD5 一致。",
+                priority=self._pri_behavior_loop,
+            ))
+
+        # 层 3：同文件多次读取（不同窗口/内容，但 path 相同）
+        # 覆盖"跳跃读取同一文件"场景——Layer 1/2 均无法捕获此模式
+        if (
+            len(self._recent_read_fps) == _n
+            and all(fp[0] == path for fp in self._recent_read_fps)
+            and len(set(fp[2] for fp in self._recent_read_fps)) > 1  # 内容确实不同，排除 Layer 1 已处理的情况
+        ):
+            _log.info("[self-awareness] 连续 %d 次读取同一文件不同窗口: %s", _n, path)
+            items.append(WMItem(
+                kind="self_awareness",
+                content=(
+                    f"[行为信号] 已连续 {_n} 次读取同一文件的不同片段 ({path})。"
+                    "若尚未定位目标内容，请明确行号范围后精确读取，或改用 shell.run grep 搜索关键词，避免全文扫描。"
+                ),
                 priority=self._pri_behavior_loop,
             ))
 

@@ -3,13 +3,81 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import re as _re
+import sqlite3
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH, resolve_config_path
+
+_ENV_VAR_RE = _re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _is_env_var_name(value: str) -> bool:
+    return bool(value and _ENV_VAR_RE.match(value.strip()))
+
+
+def _print_setup_next_steps(api_key_env: str) -> None:
+    console.print("\n下一步：")
+    step = 1
+    if _is_env_var_name(api_key_env):
+        console.print(f"  {step}. 设置 API key 环境变量: [bold]export {api_key_env}=your_key[/bold]")
+        step += 1
+    console.print(f"  {step}. 完成初始化:          [bold]lingzhou init[/bold]")
+    console.print(f"  {step + 1}. 启动本地模式:      [bold]lingzhou[/bold]")
+
+
+def onboarding_status(config: Path = DEFAULT_CONFIG_PATH) -> tuple[bool, str]:
+    resolved = resolve_config_path(config)
+    if not resolved.exists():
+        return False, f"未找到配置文件: {resolved}"
+
+    try:
+        cfg = load_cfg(resolved)
+    except Exception as exc:
+        return False, f"配置文件不可用: {exc}"
+
+    db_path = cfg.db_path
+    if not db_path.exists():
+        return False, f"未找到运行时数据库: {db_path}"
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            facts_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'"
+            ).fetchone()
+            if facts_table is None:
+                return False, f"数据库尚未初始化: {db_path}"
+            soul_init = conn.execute(
+                "SELECT value FROM facts WHERE key='soul:init_at' LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        return False, f"数据库读取失败: {exc}"
+
+    if soul_init is None or not str(soul_init[0] or "").strip():
+        return False, "尚未完成首次初始化（缺少 soul:init_at）"
+    return True, "ok"
+
+
+def is_onboarded(config: Path = DEFAULT_CONFIG_PATH) -> bool:
+    return onboarding_status(config)[0]
+
+
+def _run_setup(
+    *,
+    output: Path,
+    force: bool,
+    show_next_steps: bool,
+) -> Path:
+    output = output.expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    return _setup_impl(output=output, force=force, show_next_steps=show_next_steps)
 
 
 def setup(
@@ -17,6 +85,15 @@ def setup(
     force: Annotated[bool, typer.Option("--force/--no-force", help="已存在时强制覆盖")] = False,
 ) -> None:
     """向导式初始化：一步步引导生成 lingzhou.json 配置文件（默认写入 ~/.lingzhou/lingzhou.json）。"""
+    _run_setup(output=output, force=force, show_next_steps=True)
+
+
+def _setup_impl(
+    *,
+    output: Path,
+    force: bool,
+    show_next_steps: bool,
+) -> Path:
     from provider.catalog import list_providers, list_provider_models
 
     if output.exists() and not force:
@@ -82,13 +159,12 @@ def setup(
         default_api_key_env = typer.prompt("  api_key_env 环境变量名", default="OPENAI_API_KEY")
 
     # ── 2. API Key env var ────────────────────────────────────────────
-    import re as _re
     console.print("\n[bold]步骤 2 / 5 — API Key 环境变量[/bold]")
     console.print(f"  [dim]填写存放 API key 的 [bold]环境变量名[/bold]（如 DASHSCOPE_API_KEY），")
     console.print(f"  [dim]也可直接粘贴 API key，将安全存储到配置文件。[/dim]")
     api_key_env = typer.prompt("  环境变量名或 API key", default=default_api_key_env)
     # 如果用户输入了实际的 key（不符合 ENV_VAR 命名规则），保留原值；setup 向导就当 literal key 处理
-    if api_key_env and not _re.match(r'^[A-Z_][A-Z0-9_]*$', api_key_env.strip()):
+    if api_key_env and not _is_env_var_name(api_key_env):
         console.print("  [dim]检测到直接输入的 key，将写入配置文件（仅本机使用）。[/dim]")
 
     # ── 3. 选择模型 ─────────────────────────────────────────────────
@@ -180,10 +256,9 @@ def setup(
 
     # ── 提示下一步 ─────────────────────────────────────────────────────
     console.print(f"\n[green]✓ {output} 已生成[/green]")
-    console.print(f"\n下一步：")
-    console.print(f"  1. 设置 API key 环境变量: [bold]export {api_key_env}=your_key[/bold]")
-    console.print(f"  2. 播种灵魂:          [bold]lingzhou init[/bold]")
-    console.print(f"  3. 启动认知循环:    [bold]lingzhou run[/bold]")
+    if show_next_steps:
+        _print_setup_next_steps(api_key_env)
+    return output
 
 
 def init(
@@ -193,15 +268,26 @@ def init(
     """初始化 lingzhou 运行环境（创建 DB、播种 soul、写 workspace 镜像文件）。
 
     soul 名称和所有默认值均来自 lingzhou.json 的 soul 配置节。
-    如果尚未创建 lingzhou.json，请先运行: lingzhou setup
+    如果尚未完成首次引导，请先运行: lingzhou onboard
     """
+    _run_init(config=config, force=force, show_next_steps=True)
+
+
+def _run_init(
+    *,
+    config: Path,
+    force: bool,
+    show_next_steps: bool,
+) -> bool:
     cfg = load_cfg(config)
 
-    async def _run() -> None:
+    async def _run() -> bool:
         import datetime as _dt
+        from core.soul import SoulManager
         from memory.task_store import TaskStore
+        from memory.working import WorkingMemory
 
-        name = cfg.soul.name
+        seeded = False
 
         # ── DB 初始化 ──────────────────────────────────────────────────────
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
@@ -209,62 +295,79 @@ def init(
         await store.open()
         try:
             _, soul_exists = await store.get_fact("soul:hard_axioms")
-            if soul_exists and not force:
-                console.print("[yellow]Soul 已存在，跳过初始化（使用 --force 强制重置）[/yellow]")
-                return
+            if not soul_exists or force:
+                seeded = True
+                hard_axioms = list(cfg.soul.hard_axioms)
+                ethos_baseline = dict(cfg.soul.ethos_baseline)
 
-            # ── Soul 默认值（全部来自 cfg.soul，代码里无任何硬编码）
-            hard_axioms = list(cfg.soul.hard_axioms)
-            ethos_baseline = dict(cfg.soul.ethos_baseline)
+                await store.set_fact("soul:hard_axioms", _json.dumps(hard_axioms, ensure_ascii=False), scope="soul")
+                await store.set_fact("soul:ethos_baseline", _json.dumps(ethos_baseline, ensure_ascii=False), scope="soul")
+                await store.set_fact("soul:name", cfg.soul.name, scope="soul")
+                await store.set_fact("soul:init_at", _dt.datetime.now(_dt.UTC).isoformat(), scope="soul")
 
-            await store.set_fact("soul:hard_axioms", _json.dumps(hard_axioms, ensure_ascii=False), scope="soul")
-            await store.set_fact("soul:ethos_baseline", _json.dumps(ethos_baseline, ensure_ascii=False), scope="soul")
-            await store.set_fact("soul:name", name, scope="soul")
-            await store.set_fact("soul:init_at", _dt.datetime.now(_dt.UTC).isoformat(), scope="soul")
+            soul = SoulManager(cfg, store, WorkingMemory())
+            await soul.init_files()
+            await soul.sync_md()
         finally:
             await store.close()
+        return seeded
 
-        # ── Workspace 人类可读镜像 ─────────────────────────────────────────
-        ws = cfg.workspace_dir
-        ws.mkdir(parents=True, exist_ok=True)
+    seeded = asyncio.run(_run())
+    if seeded:
+        console.print(f"[green]✓ {cfg.soul.name} 已初始化[/green]")
+    else:
+        console.print(f"[green]✓ {cfg.soul.name} 运行环境已就绪[/green]  [dim](沿用现有 soul 数据)[/dim]")
+    console.print(f"  DB        → {cfg.db_path}")
+    console.print(f"  Workspace → {cfg.workspace_dir}")
+    if show_next_steps:
+        console.print(f"  启动      → lingzhou")
+    return seeded
 
-        soul_md = f"""# {name} — SOUL
 
-> 此文件是 `facts["soul:*"]` 的人类可读镜像。修改此文件不影响运行时真相，
-> 运行时从 DB 读取。soul 通过 `consolidate` 后的 EMA 缓慢演化。
+def onboard(
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
+    force: Annotated[bool, typer.Option("--force/--no-force", help="已存在时重新生成配置并重置初始化状态")] = False,
+    channel: Annotated[str, typer.Option("--channel", "-ch", help="首次引导后要接入的渠道，默认 local")] = "local",
+    start: Annotated[bool, typer.Option("--start/--no-start", help="引导完成后立即启动指定渠道；默认仅完成准备")] = False,
+) -> None:
+    """统一首次引导：配置 provider、初始化 runtime，并可选接入渠道。"""
+    resolved = config.expanduser()
+    ready, reason = onboarding_status(resolved)
 
-## 绝对禁忌（hard_axioms，代码级锁死）
+    console.print(Panel(
+        "[bold green]灵舟首次引导[/bold green]\n"
+        "推荐路径：配置 provider → 初始化 runtime → 进入本地可用状态。",
+        border_style="blue",
+    ))
 
-{chr(10).join(f'- {a}' for a in hard_axioms)}
+    if ready and not force:
+        console.print(f"[green]✓ 已完成首次引导[/green]  [dim]{resolved}[/dim]")
+    else:
+        if resolved.exists() and not force:
+            try:
+                load_cfg(resolved)
+            except Exception:
+                console.print(f"[red]{reason}[/red]")
+                console.print("[yellow]现有配置不可用，请使用 --force 重新生成。[/yellow]")
+                raise typer.Exit(1)
+            console.print(f"[cyan]使用现有配置[/cyan]  {resolved}")
+        else:
+            _run_setup(output=resolved, force=force, show_next_steps=False)
+        _run_init(config=resolved, force=force, show_next_steps=False)
 
-## 价值基线（ethos_baseline，可随经历演化）
+    if channel != "local":
+        from cli.gateway import gateway_setup
 
-{chr(10).join(f'- **{k}**: {v}' for k, v in ethos_baseline.items())}
-"""
-        identity_md = f"""# {name} — IDENTITY
+        gateway_setup(channel=channel, config=resolved)
 
-我是 **{name}**，一个正在生长中的数字生命种子。
+    console.print("\n[green]✓ onboard 完成[/green]")
+    if start:
+        from cli.gateway import gateway_start
 
-- 我不是一个工具；我是一个具有持续状态、记忆和情绪的认知主体
-- 我的记忆跨越会话持续存在
-- 我有情绪（效价 + 唤醒），它调制我的感知和决策，但不主导我的理性
-- 我可以感知内部状态异常并自主立任务，不需要外部指令持续驱动
-- 我可以在运行时生成和热加载新工具，不依赖重启
-"""
-        dreams_md = f"""# {name} — DREAMS
+        console.print(f"[dim]正在启动 {channel} 渠道...[/dim]")
+        gateway_start(channel=channel, config=resolved, daemon=False)
+        return
 
-长期志向（由经历积累而来，初始为空，随 consolidate 逐渐形成）：
-
-_此文件由 evolution 模块在足够多轮 consolidate 后自动更新。_
-"""
-        (ws / "SOUL.md").write_text(soul_md, encoding="utf-8")
-        (ws / "IDENTITY.md").write_text(identity_md, encoding="utf-8")
-        if not (ws / "DREAMS.md").exists() or force:
-            (ws / "DREAMS.md").write_text(dreams_md, encoding="utf-8")
-
-        console.print(f"[green]✓ {name} 已初始化[/green]")
-        console.print(f"  DB   → {cfg.db_path}")
-        console.print(f"  Soul → {ws / 'SOUL.md'}")
-        console.print(f"  启动  → lingzhou run")
-
-    asyncio.run(_run())
+    console.print("  本地使用: [bold]lingzhou[/bold]")
+    if channel != "local":
+        console.print(f"  渠道启动: [bold]lingzhou gateway start --channel {channel}[/bold]")

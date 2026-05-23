@@ -39,7 +39,7 @@ class ToolManifest:
     description: str
     params: list[ToolParam] = field(default_factory=list[ToolParam])
     prefer_tier: str = ""       # 推荐 tier: "reader" | "reasoner" | ""=自动推断
-    progress_category: str = "" # 进展类别: "mutation" | "info" | ""=自动推断
+    progress_category: str = "" # 进展类别: "mutation" | "info" | "io" | ""=自动推断
     capabilities: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:

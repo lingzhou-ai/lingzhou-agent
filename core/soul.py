@@ -76,16 +76,19 @@ class SoulManager:
     @staticmethod
     def _build_content(soul_name: str, ethos: dict[str, Any], eb: dict[str, Any], axioms: list[str] | None = None) -> str:
         """生成 SOUL.md 文件内容（供 init_files 和 sync_md 共用）。"""
+        missing_dims = [dim for dim in ("truth", "caution", "continuity", "curiosity", "care") if dim not in eb]
+        if missing_dims:
+            raise ValueError("ethos_baseline missing dims: " + ", ".join(missing_dims))
         axiom_lines = "".join(f"- {a}\n" for a in (axioms or [])) or "- （暂无 hard axioms）\n"
         return (
             f"# {soul_name} SOUL\n\n"
             "> 此文件是 runtime facts 的人类可读镜像；完整灵魂叙事主要位于 BOOTSTRAP.md / IDENTITY.md。\n\n"
             "## 核心价值观（EMA 持久化版本）\n\n"
-            f"- 真实 (truth):      {ethos.get('truth', eb.get('truth', 0.85)):.3f}\n"
-            f"- 谨慎 (caution):    {ethos.get('caution', eb.get('caution', 0.70)):.3f}\n"
-            f"- 连续 (continuity): {ethos.get('continuity', eb.get('continuity', 0.65)):.3f}\n"
-            f"- 好奇 (curiosity):  {ethos.get('curiosity', eb.get('curiosity', 0.60)):.3f}\n"
-            f"- 关怀 (care):       {ethos.get('care', eb.get('care', 0.55)):.3f}\n\n"
+            f"- 真实 (truth):      {ethos.get('truth', eb['truth']):.3f}\n"
+            f"- 谨慎 (caution):    {ethos.get('caution', eb['caution']):.3f}\n"
+            f"- 连续 (continuity): {ethos.get('continuity', eb['continuity']):.3f}\n"
+            f"- 好奇 (curiosity):  {ethos.get('curiosity', eb['curiosity']):.3f}\n"
+            f"- 关怀 (care):       {ethos.get('care', eb['care']):.3f}\n\n"
             "## 绝对边界（hard axioms）\n\n"
             f"{axiom_lines}\n"
             "## 使命\n\n"

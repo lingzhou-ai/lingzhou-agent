@@ -6,7 +6,7 @@ CognitiveSignals：完整认知状态报告，注入 LLM 判断上下文。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.perception.emotion import EmotionState
@@ -27,18 +27,45 @@ def compute_judgment_signals(
     high_error_streak: int,
     perception_trend: str,
     emotion_state: "EmotionState",
+    thresholds: Any,
 ) -> JudgmentSignals:
     """LLM 前的确定性预判：减少"冷启动"时 LLM 从零估算的不确定性。"""
+    error_streak_guard = max(1, int(thresholds.judgment_error_streak_guard))
+    worsening_evidence_failure_count = max(
+        1,
+        int(thresholds.judgment_require_more_evidence_worsening_failure_count),
+    )
+    prefer_narrow_failure_count = max(
+        1,
+        int(thresholds.judgment_prefer_narrow_failure_count),
+    )
+    posture_narrow_failure_count = max(
+        1,
+        int(thresholds.judgment_posture_narrow_failure_count),
+    )
+    posture_narrow_down_regulate_failure_count = max(
+        1,
+        int(thresholds.judgment_posture_narrow_down_regulate_failure_count),
+    )
+    posture_pause_worsening_failure_count = max(
+        1,
+        int(thresholds.judgment_posture_pause_worsening_failure_count),
+    )
     sig = JudgmentSignals()
-    if high_error_streak >= 2 or (perception_trend == "worsening" and failure_count > 0):
+    if high_error_streak >= error_streak_guard or (
+        perception_trend == "worsening" and failure_count >= worsening_evidence_failure_count
+    ):
         sig.require_more_evidence = True
-    if failure_count >= 2 or high_error_streak >= 2:
+    if failure_count >= prefer_narrow_failure_count or high_error_streak >= error_streak_guard:
         sig.prefer_narrow_scope = True
-    if failure_count >= 3 or (
-        failure_count >= 1 and emotion_state.regulation.strategy == "down-regulate"
+    if failure_count >= posture_narrow_failure_count or (
+        failure_count >= posture_narrow_down_regulate_failure_count
+        and emotion_state.regulation.strategy == "down-regulate"
     ):
         sig.posture = "narrow"
-    elif high_error_streak >= 2 or (perception_trend == "worsening" and failure_count >= 2):
+    elif high_error_streak >= error_streak_guard or (
+        perception_trend == "worsening" and failure_count >= posture_pause_worsening_failure_count
+    ):
         sig.posture = "pause"
     return sig
 

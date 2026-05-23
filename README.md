@@ -19,18 +19,36 @@
 
 ## 快速开始
 
+推荐安装路径（一条命令）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suuugeee/lingzhou-agent/main/scripts/install.sh | bash
+lingzhou
+```
+
+如果你已经 clone 了源码：
+
 ```bash
 git clone https://github.com/suuugeee/lingzhou-agent.git
 cd lingzhou-agent
-pip install -e .
+./setup-lingzhou.sh
+lingzhou
+```
 
-mkdir -p ~/.lingzhou
-cp lingzhou.json.example ~/.lingzhou/lingzhou.json
-# 编辑 ~/.lingzhou/lingzhou.json
-# 创建 ~/.lingzhou/.env，写入 provider 所需密钥
+如果你偏好 `pipx`：
 
-lingzhou gateway start -d
-lingzhou gateway start --channel local
+```bash
+pipx install --python python3.12 git+https://github.com/suuugeee/lingzhou-agent.git
+lingzhou
+```
+
+首次运行 `lingzhou` 会自动进入 `onboard`，完成 provider 配置、初始化数据库与 workspace，并把运行时目录自动准备到 `~/.lingzhou/`。
+
+如果要接入微信等外部渠道：
+
+```bash
+lingzhou gateway setup --channel wechat
+lingzhou gateway start --channel wechat -d
 ```
 
 运行时数据默认写入 `~/.lingzhou/`，包括 `state/`、`memory/`、`workspace/`、日志与临时产物。生产环境建议保持这一布局；源码仓默认只承载代码、样例配置和文档，不承载 runtime data。

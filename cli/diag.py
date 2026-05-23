@@ -70,7 +70,7 @@ def doctor(
             console.print(f"  {fail_mark} 配置文件解析失败: {e}")
             issues.append(f"配置文件无效: {e}")
     else:
-        console.print(f"  {warn_mark} 配置文件不存在: {resolved_config}  [dim]运行 lingzhou setup 生成[/dim]")
+        console.print(f"  {warn_mark} 配置文件不存在: {resolved_config}  [dim]运行 lingzhou onboard[/dim]")
         issues.append(f"配置文件缺失: {resolved_config}")
 
     # ── 4. API Key ──────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ def doctor(
                 console.print(f"  {fail_mark} 数据库异常: {e}")
                 issues.append(f"DB 异常: {e}")
         else:
-            console.print(f"  {warn_mark} 数据库未初始化: {db_path}  [dim]运行 lingzhou init[/dim]")
+            console.print(f"  {warn_mark} 数据库未初始化: {db_path}  [dim]运行 lingzhou onboard[/dim]")
     else:
         console.print(f"  {warn_mark} 数据库: 跳过（配置文件不可用）")
 

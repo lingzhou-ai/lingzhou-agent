@@ -53,6 +53,8 @@ def _parse_float(val: Any, default: float) -> float:
 @tool(ToolManifest(
     name="memory.add_wm",
     description="向工作记忆添加一条观察或结论",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("content", "string", "要记录的内容", required=True),
         ToolParam("kind", "string", "类型标签，如 observation/conclusion/caution", required=False),
@@ -72,6 +74,8 @@ async def memory_add_wm(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="memory.drop_wm",
     description="从工作记忆移除指定类型的全部条目（当某种感知已过期或已处理时，主动清理注意力焦点）",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("kind", "string", "要移除的条目类型标签，如 observation/caution/scheduler/bootstrap 等", required=True),
     ],
@@ -91,6 +95,8 @@ async def memory_drop_wm(params: dict[str, Any], ctx: ToolContext) -> ToolResult
 @tool(ToolManifest(
     name="memory.add_semantic",
     description="将知识或技能固化到语义（长期）记忆",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("title", "string", "节点标题", required=True),
         ToolParam("body", "string", "节点内容", required=True),
@@ -120,6 +126,8 @@ async def memory_add_semantic(params: dict[str, Any], ctx: ToolContext) -> ToolR
 @tool(ToolManifest(
     name="memory.set_fact",
     description="设置一个持久化 key-value 事实",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("key", "string", "事实 key", required=True),
         ToolParam("value", "string", "事实 value", required=True),
@@ -230,6 +238,9 @@ async def failure_dismiss(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 @tool(ToolManifest(
     name="reflect.structural",
     description="将当前工作记忆的高优先级内容合成为一条结构性洞察，写入语义记忆",
+    prefer_tier="reasoner",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[
         ToolParam("insight", "string", "洞察摘要（1-3句）", required=True),
         ToolParam("title", "string", "洞察标题（简短）", required=False),
@@ -273,6 +284,9 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
 @tool(ToolManifest(
     name="memory.snapshot",
     description="【由 runtime 自动调用，禁止手动调用】快照当前工作记忆与运行时状态摘要，写入情节记忆供复盘，然后清空工作记忆（释放 WM 压力）",
+    prefer_tier="reasoner",
+    progress_category="mutation",
+    capabilities=("completion_mutation",),
     params=[],
 ))
 async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResult:

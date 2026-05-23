@@ -37,12 +37,13 @@ test = [
 ]
 
 [project.urls]
-Homepage    = "https://github.com/your-org/lingzhou"
-Issues      = "https://github.com/your-org/lingzhou/issues"
-Changelog   = "https://github.com/your-org/lingzhou/blob/main/CHANGELOG.md"
+Homepage    = "https://github.com/suuugeee/lingzhou-agent"
+Repository  = "https://github.com/suuugeee/lingzhou-agent"
+Issues      = "https://github.com/suuugeee/lingzhou-agent/issues"
+Changelog   = "https://github.com/suuugeee/lingzhou-agent/blob/main/CHANGELOG.md"
 
 [project.scripts]
-lingzhou = "lingzhou:main"
+lingzhou = "cli.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["channels", "cli", "core", "memory", "provider", "store", "tools"]

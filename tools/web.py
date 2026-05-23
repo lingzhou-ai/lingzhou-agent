@@ -31,7 +31,7 @@ _http_client: httpx.AsyncClient | None = None
 
 async def _get_client() -> httpx.AsyncClient:
     global _http_client
-    if _http_client is None:
+    if _http_client is None or getattr(_http_client, "is_closed", False):
         import os
         limits = httpx.Limits(max_connections=5, max_keepalive_connections=2)
         proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
@@ -132,7 +132,9 @@ async def web_fetch(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     except httpx.TimeoutException:
         return ToolResult(summary=f"请求超时: {url}", error="Timeout")
     except Exception as e:
-        return ToolResult(summary=f"获取失败: {type(e).__name__}", error="FetchError")
+        detail = str(e).strip()
+        suffix = f": {detail}" if detail else ""
+        return ToolResult(summary=f"获取失败: {type(e).__name__}{suffix}", error="FetchError")
 
 
 # ── web.search ───────────────────────────────────────────────────────────────
@@ -202,4 +204,6 @@ async def web_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             state_delta={"searched": query, "results": len(results)},
         )
     except Exception as e:
-        return ToolResult(summary=f"搜索失败: {type(e).__name__}", error="SearchError")
+        detail = str(e).strip()
+        suffix = f": {detail}" if detail else ""
+        return ToolResult(summary=f"搜索失败: {type(e).__name__}{suffix}", error="SearchError")

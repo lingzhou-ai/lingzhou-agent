@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, UTC
 from typing import Any
 
@@ -23,15 +22,12 @@ def _suggest_tier_from_text(text: str) -> str | None:
     return None
 
 
-def _extract_reflection_policy(text: str) -> dict[str, int]:
-    policy: dict[str, int] = {}
-    threshold_match = re.search(r"(?:threshold|阈值)\s*[:=：]?\s*(\d+)", text, re.IGNORECASE)
-    ttl_match = re.search(r"(?:ttl(?:_sec)?|静默(?:窗口|时长)?)\s*[:=：]?\s*(\d+)", text, re.IGNORECASE)
-    if threshold_match:
-        policy["threshold"] = int(threshold_match.group(1))
-    if ttl_match:
-        policy["ttl_sec"] = int(ttl_match.group(1))
-    return policy
+def _meta_reflection_set_fact_instruction(key: str, value: Any, *, scope: str = "system") -> str:
+    serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return (
+        "该建议尚未自动生效。若认可，请调用 memory.set_fact，"
+        f"key={key}，scope={scope}，value={serialized}。"
+    )
 
 
 async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: WorkingMemory) -> list[str]:
@@ -44,6 +40,7 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
         if found:
             continue
         applied_change = "recorded"
+        followup = ""
         if reflection.target_kind == "threshold":
             raw_policy, policy_found = await task_store.get_fact("control:durable_failure_policy")
             policy = {"threshold": 3, "ttl_sec": 7200}
@@ -55,17 +52,34 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                         policy["ttl_sec"] = int(loaded.get("ttl_sec") or policy["ttl_sec"])
                 except Exception:
                     pass
-            suggested = _extract_reflection_policy(
-                "\n".join([reflection.diagnosis, reflection.proposal, reflection.verification_plan])
-            )
             if reflection.decision == "rollback":
                 policy = {"threshold": 3, "ttl_sec": 7200}
-                applied_change = "reset durable failure policy"
+                applied_change = "queued durable failure policy rollback hint"
             else:
-                policy["threshold"] = max(1, int(suggested.get("threshold") or (policy["threshold"] + 1)))
-                policy["ttl_sec"] = max(900, int(suggested.get("ttl_sec") or (policy["ttl_sec"] // 2)))
-                applied_change = f"set durable failure threshold={policy['threshold']} ttl={policy['ttl_sec']}"
-            await task_store.set_fact("control:durable_failure_policy", json.dumps(policy, ensure_ascii=False), scope="system")
+                policy["threshold"] = max(1, policy["threshold"] + 1)
+                policy["ttl_sec"] = max(900, policy["ttl_sec"] // 2)
+                applied_change = (
+                    f"queued durable failure policy hint threshold={policy['threshold']} ttl={policy['ttl_sec']}"
+                )
+            await task_store.set_fact(
+                "control:meta_reflection_hint:threshold",
+                json.dumps(
+                    {
+                        "reflection_id": reflection.id,
+                        "decision": reflection.decision,
+                        "proposal": reflection.proposal,
+                        "verification_plan": reflection.verification_plan,
+                        "suggested_policy": policy,
+                    },
+                    ensure_ascii=False,
+                ),
+                scope="system",
+            )
+            followup = _meta_reflection_set_fact_instruction(
+                "control:durable_failure_policy",
+                policy,
+                scope="system",
+            )
         elif reflection.target_kind == "task_split" and reflection.task_id:
             await task_store.set_fact(
                 f"task:{reflection.task_id}:needs_replan",
@@ -81,7 +95,9 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 scope="task",
             )
             applied_change = "set task replan hint"
+            followup = "该建议尚未自动写回任务。若认可，请调用 task.update 修改 next_step。"
         elif reflection.target_kind == "routing":
+            preferred_tier = _suggest_tier_from_text(reflection.proposal)
             if reflection.task_id:
                 await task_store.set_fact(
                     f"task:{reflection.task_id}:routing_guard",
@@ -91,17 +107,37 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                             "decision": reflection.decision,
                             "tool_name": reflection.tool_name,
                             "proposal": reflection.proposal,
-                            "preferred_tier": _suggest_tier_from_text(reflection.proposal),
+                            "preferred_tier": preferred_tier,
                         },
                         ensure_ascii=False,
                     ),
                     scope="task",
                 )
-            if reflection.decision == "rollback":
-                await task_store.set_fact("pref:routing_overrides", "", scope="system")
-                applied_change = "cleared routing overrides"
+            await task_store.set_fact(
+                "control:meta_reflection_hint:routing",
+                json.dumps(
+                    {
+                        "reflection_id": reflection.id,
+                        "decision": reflection.decision,
+                        "tool_name": reflection.tool_name,
+                        "proposal": reflection.proposal,
+                        "verification_plan": reflection.verification_plan,
+                        "preferred_tier": preferred_tier,
+                        "task_id": reflection.task_id,
+                    },
+                    ensure_ascii=False,
+                ),
+                scope="system",
+            )
+            if reflection.task_id:
+                applied_change = "queued task routing guard"
+                followup = "该建议尚未自动改写 task.model_tier。若认可，请调用 task.update 修改 model_tier。"
+            elif reflection.decision == "rollback":
+                applied_change = "queued routing rollback hint"
+                followup = _meta_reflection_set_fact_instruction("pref:routing_overrides", "", scope="system")
             else:
-                applied_change = "set routing guard"
+                applied_change = "queued routing control hint"
+                followup = "该建议尚未自动改写全局路由。若认可，请调用 memory.set_fact 更新 pref:routing_overrides。"
         else:
             await task_store.set_fact(
                 f"control:meta_reflection_hint:{reflection.target_kind}",
@@ -117,14 +153,16 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 scope="system",
             )
             applied_change = f"queued {reflection.target_kind} control hint"
+            followup = "该建议尚未自动生效。若认可，请调用 memory.set_fact 写入相应 control/pref 事实。"
         wm.add(WMItem(
             kind="meta_reflection",
             content=(
                 f"[双环反思 {reflection.decision}] target={reflection.target_kind} tool={reflection.tool_name or 'unknown'}\n"
-                f"执行：{applied_change}\n"
+                f"已处理：{applied_change}\n"
                 f"诊断：{reflection.diagnosis}\n"
                 f"建议：{reflection.proposal}\n"
                 f"验证：{reflection.verification_plan}"
+                + (f"\n处理建议：{followup}" if followup else "")
             )[:1200],
             priority=0.76 if reflection.decision == "rollback" else 0.72,
         ))
@@ -144,7 +182,7 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 scope="task",
             )
         await task_store.set_fact(fact_key, datetime.now(UTC).isoformat(), scope="system")
-        _log.info("[meta-reflection] applied reflection=%s target=%s change=%s", reflection.id, reflection.target_kind, applied_change)
+        _log.info("[meta-reflection] surfaced reflection=%s target=%s change=%s", reflection.id, reflection.target_kind, applied_change)
         injected.append(reflection.id)
     return injected
 
@@ -157,7 +195,6 @@ async def _consume_task_runtime_hints(
     if task is None:
         return None
 
-    updated = False
     last_replan_id = str(task.extras.get("last_replan_reflection_id") or "")
     raw_replan, replan_found = await task_store.get_fact(f"task:{task.id}:needs_replan")
     if replan_found and raw_replan.strip():
@@ -170,18 +207,19 @@ async def _consume_task_runtime_hints(
             proposal = str(replan.get("proposal") or "").strip()
             verification = str(replan.get("verification_plan") or "").strip()
             replan_step = proposal or verification or "先重拆任务，再继续执行。"
-            if task.next_step != replan_step:
-                await task_store.update_status(task.id, task.status, next_step=replan_step)
-                task.next_step = replan_step
-                updated = True
-                _log.info("[runtime-hint] task=%s apply replan next_step=%s", task.id, replan_step)
             await task_store.update_task_data(task.id, {"last_replan_reflection_id": reflection_id})
             task.extras["last_replan_reflection_id"] = reflection_id
             wm.add(WMItem(
                 kind="task_replan",
-                content=f"[任务重规划] task#{task.id} {replan_step[:240]}",
+                content=(
+                    f"[任务重规划建议] task#{task.id}\n"
+                    f"建议 next_step: {replan_step[:240]}\n"
+                    f"验证: {verification[:180] or '（无）'}\n"
+                    "该建议尚未自动写回任务。若认可，请调用 task.update 修改 next_step。"
+                ),
                 priority=0.84,
             ))
+            _log.info("[runtime-hint] task=%s surfaced replan hint=%s", task.id, replan_step)
 
     last_meta_id = str(task.extras.get("last_task_meta_reflection_id") or "")
     raw_meta, meta_found = await task_store.get_fact(f"task:{task.id}:meta_reflection")
@@ -222,22 +260,20 @@ async def _consume_task_runtime_hints(
             proposal = str(guard.get("proposal") or "").strip()
             preferred_tier = str(guard.get("preferred_tier") or "").strip()
             tier = preferred_tier if preferred_tier in VALID_MODEL_TIERS else "repair"
-            if task.model_tier != tier:
-                await task_store.update_task_data(task.id, {"model_tier": tier})
-                task.model_tier = tier
-                updated = True
-                _log.info("[runtime-hint] task=%s apply routing guard via %s tier for tool=%s", task.id, tier, tool_name)
             await task_store.update_task_data(task.id, {"last_routing_reflection_id": reflection_id})
             task.extras["last_routing_reflection_id"] = reflection_id
             wm.add(WMItem(
                 kind="routing_guard",
-                content=f"[路由护栏] task#{task.id} tool={tool_name} {proposal[:220] or f'切换到 {tier} tier 复核动作选择。'}",
+                content=(
+                    f"[路由护栏建议] task#{task.id} tool={tool_name}\n"
+                    f"建议 tier: {tier}\n"
+                    f"理由: {proposal[:220] or f'切换到 {tier} tier 复核动作选择。'}\n"
+                    "该建议尚未自动应用。若认可，请调用 task.update 设置 model_tier。"
+                ),
                 priority=0.82,
             ))
+            _log.info("[runtime-hint] task=%s surfaced routing guard tier=%s tool=%s", task.id, tier, tool_name)
 
-    if updated:
-        refreshed = await task_store.get_task_by_id(task.id)
-        return refreshed or task
     return task
 
 

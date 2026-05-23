@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 # ── 工具分层常量 ─────────────────────────────────────────────────────────────
 
-# 低成本读取/枚举类工具 → reader tier（兼容 fallback；运行时优先读 manifest）
+# 低成本读取/枚举类工具 → reader tier（仅保留 no-registry / legacy fallback）
 _READER_TOOLS = frozenset({
     "file.list", "file.read",
     "memory.get_fact", "memory.search",
@@ -30,21 +30,9 @@ _READER_TOOLS = frozenset({
 })
 READER_TOOLS = _READER_TOOLS  # 公开别名，供外部模块引用
 
-# 写入/推理/高风险工具 → reasoner tier
-_REASONER_TOOLS = frozenset({
-    "shell.run",
-    "file.write",
-    "task.add", "task.update", "task.advance", "task.complete", "task.fail",
-    "memory.add_wm", "memory.add_semantic", "memory.set_fact", "memory.snapshot",
-    "reflect.structural",
-    "schedule.add",
-    # 探针：安装/拆除/执行/启停均有副作用
-    "probe.install", "probe.remove", "probe.run", "probe.enable", "probe.disable",
-})
-
 _TOOL_TIER_MAPPING = {
     "reader": sorted(_READER_TOOLS),
-    "reasoner": sorted(_REASONER_TOOLS),
+    "reasoner": [],
     "repair": [],
 }
 
@@ -61,18 +49,22 @@ def is_reader_tool(tool_id: str, registry: "ToolRegistry | None" = None) -> bool
     if manifest is not None:
         if manifest.prefer_tier == "reader":
             return True
-        if manifest.prefer_tier == "reasoner":
+        if manifest.prefer_tier in {"reasoner", "repair"}:
             return False
         caps = set(manifest.capabilities or ())
+        if "completion_mutation" in caps or "completion_verify" in caps or "multimodal" in caps:
+            return False
         if "completion_info_only" in caps and "completion_mutation" not in caps:
             return True
+        if manifest.progress_category == "info":
+            return True
+        if manifest.progress_category in {"mutation", "io"}:
+            return False
     return tool_id in _READER_TOOLS
 
 
 def is_plan_alignment_exempt(tool_id: str, registry: "ToolRegistry | None" = None) -> bool:
-    if tool_has_capability(registry, tool_id, "plan_alignment_exempt"):
-        return True
-    return tool_id in {"task.plan", "task.ask"}
+    return tool_has_capability(registry, tool_id, "plan_alignment_exempt")
 
 
 def tool_tier_mapping(registry: "ToolRegistry | None" = None) -> dict[str, list[str]]:
@@ -85,9 +77,7 @@ def tool_tier_mapping(registry: "ToolRegistry | None" = None) -> dict[str, list[
         mapping[tier] = sorted(dict.fromkeys(mapping[tier]))
     return mapping
 
-# ── 续判前置改写：证据预算门 ────────────────────────────────────────────────────
-
-_ASK_EVIDENCE_BUDGET = 2  # task.ask 前须有至少 2 次有效证据工具调用
+# ── 兼容 helper：保留接口，但不再替 LLM 改写输出 ────────────────────────────────
 
 
 def _rewrite_task_ask_to_evidence(
@@ -96,32 +86,13 @@ def _rewrite_task_ask_to_evidence(
     user_message: str = "",
     tool_history: "list[dict[str, Any]] | None" = None,
     registry: "Any | None" = None,
+    evidence_budget: int = 2,
 ) -> "JudgmentOutput":
-    """若 task.ask 前证据不足，改写为先调用 task.list 收集证据。"""
-    hits = 0
-    for item in tool_history or []:
-        tool_id = str(item.get("tool") or "")
-        result = str(item.get("result") or "").strip()
-        if not result or result.startswith("ERROR["):
-            continue
-        if registry is not None and tool_has_capability(registry, tool_id, "ask_evidence"):
-            hits += 1
-    if hits >= _ASK_EVIDENCE_BUDGET:
-        return action
-    return JudgmentOutput(
-        decision="act",
-        chosen_action_id="task.list",
-        params={"status": "all", "limit": 10},
-        rationale=f"证据预算 {hits}/{_ASK_EVIDENCE_BUDGET}，先收集任务列表作为佐证再提问。",
-        reflection=action.reflection,
-        reply_to_user="",
-        next_step=action.next_step,
-        model_strategy={"next_phase_tier": "reasoner"},
-        applied_skills=list(action.applied_skills or []),
-    )
+    """兼容入口：ask_evidence_budget 已显式暴露给 LLM，自身不再重写 task.ask。"""
+    return action
 
 
-# ── 续判前置改写：复杂 mutation → task.plan ─────────────────────────────────────
+# ── 兼容 helper：保留接口，但不再替 LLM 改写复杂 act ───────────────────────────
 
 def _rewrite_complex_act_to_task_plan(
     action: "JudgmentOutput",
@@ -130,50 +101,8 @@ def _rewrite_complex_act_to_task_plan(
     active_task: "Any | None" = None,
     registry: "Any | None" = None,
 ) -> "JudgmentOutput":
-    """若 LLM 对复杂请求直接输出 mutation 且有 next_step，先拆为 task.plan。
-
-    只对非读取类工具生效；file.read / memory.search 等读取工具直接透传。
-    任务管理类工具（task.complete/advance/update/fail/add）是状态转换动作，不改写。
-    """
-    tool_id = action.chosen_action_id or ""
-    if is_reader_tool(tool_id, registry):
-        return action
-    if is_plan_alignment_exempt(tool_id, registry):
-        return action
-    if active_task is None:
-        return action
-    next_step = (action.next_step or "").strip()
-    if not next_step:
-        return action
-    # 豁免：任务已有 plan 且存在 in_progress 步骤 → LLM 正在执行计划中的步骤，无需再次 plan
-    existing_plan = (getattr(active_task, "extras", None) or {}).get("plan") or []
-    if isinstance(existing_plan, list) and any(
-        isinstance(s, dict) and s.get("status") == "in_progress"
-        for s in existing_plan
-    ):
-        return action
-    step1_desc = f"执行 {tool_id}"
-    params = action.params or {}
-    for key in ("command", "path", "title", "query"):
-        if key in params:
-            snippet = str(params[key])[:40]
-            step1_desc = f"执行 {tool_id}（{snippet}）"
-            break
-    plan = [
-        {"step": step1_desc, "status": "in_progress"},
-        {"step": next_step, "status": "pending"},
-    ]
-    return JudgmentOutput(
-        decision="act",
-        chosen_action_id="task.plan",
-        params={"task_id": active_task.id, "plan": plan},
-        rationale=action.rationale,
-        reflection=action.reflection,
-        reply_to_user="",
-        next_step="",
-        model_strategy=dict(action.model_strategy or {}),
-        applied_skills=list(action.applied_skills or []),
-    )
+    """兼容入口：task.plan policy 已显式暴露给 LLM，自身不再改写复杂 act。"""
+    return action
 
 
 def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple[str, str]:
@@ -260,10 +189,18 @@ def tool_tier(tool_id: str, registry: "ToolRegistry | None" = None) -> str:
     manifest = _tool_manifest(tool_id, registry)
     if manifest is not None and manifest.prefer_tier:
         return manifest.prefer_tier
+    if manifest is not None:
+        caps = set(manifest.capabilities or ())
+        if "completion_mutation" in caps or "completion_verify" in caps or "multimodal" in caps:
+            return "reasoner"
+        if "completion_info_only" in caps and "completion_mutation" not in caps:
+            return "reader"
+        if manifest.progress_category in {"mutation", "io"}:
+            return "reasoner"
+        if manifest.progress_category == "info":
+            return "reader"
     if is_reader_tool(tool_id, registry):
         return "reader"
-    if tool_id in _REASONER_TOOLS:
-        return "reasoner"
     return "reasoner"
 
 
@@ -327,8 +264,6 @@ class JudgmentOutput:
                 text = stripped.strip()
         if not text or ("{" not in text and "decision" not in text):
             return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original[:120]}")
-        _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
-        _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
         if match:
             text = match.group(1).strip()
@@ -340,22 +275,11 @@ class JudgmentOutput:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            fixed = text.replace("'", '"')
+            fixed = text
             fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
             try:
                 data = json.loads(fixed)
             except json.JSONDecodeError:
-                if _is_raw_code:
-                    return cls(
-                        decision="pause",
-                        chosen_action_id="",
-                        params={},
-                        rationale="[auto-wrap] LLM 输出了裸代码，已封装为 reply_to_user",
-                        reflection="格式错误：代码应放入 reply_to_user 或 params 字段，不能直接输出",
-                        reply_to_user=original,
-                        next_step="",
-                        model_strategy={},
-                    )
                 return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
 
         return cls(

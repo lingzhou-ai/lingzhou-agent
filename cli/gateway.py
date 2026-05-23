@@ -17,6 +17,7 @@ from typing import Annotated, Any, Optional
 
 import typer
 
+from cli.bootstrap import onboarding_status
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
 from cli.plugin import plugin_app
@@ -227,7 +228,7 @@ def gateway_setup(
         raise typer.Exit(1)
 
     if channel == "local":
-        console.print("[green]local 渠道无需配置，直接运行: lingzhou gateway start[/green]")
+        console.print("[green]local 渠道无需配置，直接运行: lingzhou[/green]")
         return
 
     if channel not in _GATEWAY_READY:
@@ -431,6 +432,12 @@ def gateway_start(
             channel = _raw.get("gateway", {}).get("default_channel", "local")
         except Exception:
             channel = "local"
+
+    ready, reason = onboarding_status(config)
+    if not ready:
+        console.print(f"[yellow]{reason}[/yellow]")
+        console.print("[dim]先运行: lingzhou onboard[/dim]")
+        raise typer.Exit(1)
 
     if channel not in _GATEWAY_CHANNELS:
         console.print(f"[yellow]{channel} 渠道尚在开发中。当前可用: {', '.join(_GATEWAY_READY)}[/yellow]")

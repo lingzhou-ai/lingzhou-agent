@@ -454,10 +454,9 @@ class CognitionLoop:
         active_task: Task | None,
         cycle: int,
         user_message: str,
-        cognitive_signals: Any,
-        reply: str,
         chat_id: str | None = None,
         perception_replay: Any = None,
+        ethos_state: Any = None,
     ) -> str:
         return await _tick_finalize_impl(
             self,
@@ -466,10 +465,9 @@ class CognitionLoop:
             active_task,
             cycle,
             user_message,
-            cognitive_signals,
-            reply,
             chat_id,
             perception_replay,
+            ethos_state,
         )
 
     async def _maybe_record_success_stall_reflection(
@@ -499,12 +497,15 @@ class CognitionLoop:
             _log.debug("[budget] 今日 token=%.1fM", tokens / 1e6)
 
     async def _maybe_inject_self_drive(self) -> None:
-        """自驱力引擎：空闲或探索卡住时注入自主探索目标到 WM。
+        """自驱力引擎：空闲或探索卡住时注入自主探索信号到 WM。
 
         基于 Active Inference + Intrinsic Motivation:
-        - 好奇心 C(t) > 阈值 → 生成探索目标
+        - 好奇心 C(t) > 阈值 → 生成可感知的探索信号
         - 长时间空闲 → 强制探索
         - 探索卡住（explore-awareness 触发）→ 建议换策略
+
+        注意：这里不直接创建任务。是否将自驱信号落实为任务，交给 LLM
+        在 judgment 阶段根据 WM 自主决定。
         """
         # 检查是否有真的活跃任务（非 waiting 状态）
         has_real_work = (
@@ -553,16 +554,24 @@ class CognitionLoop:
         task_template = self._self_drive.generate_exploration_task(
             signal.suggested_domain or "self_evolution"
         )
-        await self._task_store.add_task(
-            title=task_template["title"],
-            goal=task_template["goal"],
-            next_step=task_template.get("next_step", ""),
-            source="self_drive",
-            priority="low",
-        )
+        self._wm.add(WMItem(
+            kind="self_drive",
+            content=(
+                f"[自驱信号] 空闲 {self._behavior.wait_streak} 轮，"
+                f"自驱力 C={signal.curiosity_score:.2f}。\n"
+                f"触发原因: {signal.rationale}\n"
+                f"建议方向: {signal.suggested_domain or 'self_evolution'}\n"
+                f"候选任务: {task_template['title']}\n"
+                f"目标: {task_template['goal']}\n"
+                f"下一步建议: {task_template.get('next_step', '(未提供)')}\n"
+                "若认可这次自驱触发，可调用 task.add 创建任务；"
+                "建议显式设置 source=self_drive，以便后续去重与追踪。"
+            ),
+            priority=self._cfg.thresholds.wm_pri_signal,
+        ))
 
         _log.info(
-            "[self_drive] 探索触发 C=%.2f domain=%s idle=%d rationale=%s",
+            "[self_drive] 注入 WM 信号 C=%.2f domain=%s idle=%d rationale=%s",
             signal.curiosity_score,
             signal.suggested_domain,
             self._behavior.wait_streak,
