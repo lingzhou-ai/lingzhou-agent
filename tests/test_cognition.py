@@ -552,7 +552,6 @@ async def _self_drive_signal_bypasses_idle_judge_aggregation():
         try:
             action = await _decide_initial_action(
                 loop,
-                cfg,
                 cycle=1,
                 user_message="",
                 active_task=None,
@@ -846,6 +845,158 @@ async def _run_tick_maintenance_uses_configured_low_pressure_skip_threshold():
 
     assert await _run_case(0.90) is False
     assert await _run_case(0.80) is True
+
+
+def test_post_tick_memory_crystallizes_task_summary_title_with_task_id():
+    asyncio.run(_post_tick_memory_crystallizes_task_summary_title_with_task_id())
+
+
+async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
+    from core.loop.tick import _post_tick_memory_impl
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("重复标题任务", goal="crystallize summary", status="in_progress")
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+            await store.update_status(task_id, "done", "finished")
+            semantic = SemanticMemory(root / "semantic")
+            loop = cast(Any, SimpleNamespace(
+                _task_store=store,
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "任务完成叙事"),
+                _semantic=semantic,
+                _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
+                _wm=SimpleNamespace(add=lambda item: None),
+                _cfg=SimpleNamespace(
+                    thresholds=SimpleNamespace(wm_pri_insight=0.8),
+                    memory=SimpleNamespace(chat_crystallize_every=3),
+                    emotion=SimpleNamespace(),
+                ),
+            ))
+            action = cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection="", rationale=""))
+            result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
+
+            await _post_tick_memory_impl(loop, action, result, active_task, cycle=1, user_message="")
+
+            node = semantic.get(f"task_summary_{task_id}")
+            assert node is not None
+            assert node.title == f"[done] task#{task_id} 重复标题任务"
+        finally:
+            await store.close()
+
+
+def test_post_tick_memory_formats_learned_insight_title_with_hash_suffix():
+    asyncio.run(_post_tick_memory_formats_learned_insight_title_with_hash_suffix())
+
+
+async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
+    import hashlib
+
+    from core.loop.tick import _post_tick_memory_impl
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    prefix = "当检测到行为死循环时，仅改变工具调用参数是不够的，必须在 next_step 中注入具体的、可执行的子目标内容，以强制认"
+    reflection_a = prefix + "知路径A"
+    reflection_b = prefix + "知路径B"
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("反思任务", goal="write insight", status="in_progress")
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+            semantic = SemanticMemory(root / "semantic")
+            loop = cast(Any, SimpleNamespace(
+                _task_store=store,
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
+                _semantic=semantic,
+                _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
+                _wm=SimpleNamespace(add=lambda item: None),
+                _cfg=SimpleNamespace(
+                    thresholds=SimpleNamespace(wm_pri_insight=0.8),
+                    memory=SimpleNamespace(chat_crystallize_every=99),
+                    emotion=SimpleNamespace(),
+                ),
+            ))
+            result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
+
+            await _post_tick_memory_impl(
+                loop,
+                cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_a, rationale="")),
+                result,
+                active_task,
+                cycle=1,
+                user_message="",
+            )
+            await _post_tick_memory_impl(
+                loop,
+                cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_b, rationale="")),
+                result,
+                active_task,
+                cycle=2,
+                user_message="",
+            )
+
+            node_a = semantic.get(f"insight_{hashlib.md5(reflection_a.encode()).hexdigest()[:10]}")
+            node_b = semantic.get(f"insight_{hashlib.md5(reflection_b.encode()).hexdigest()[:10]}")
+            assert node_a is not None
+            assert node_b is not None
+            assert node_a.title != node_b.title
+            assert node_a.title.endswith(f" [{hashlib.md5(reflection_a.encode()).hexdigest()[:6]}]")
+            assert node_b.title.endswith(f" [{hashlib.md5(reflection_b.encode()).hexdigest()[:6]}]")
+        finally:
+            await store.close()
+
+
+def test_post_tick_memory_crystallizes_event_title_with_task_id():
+    asyncio.run(_post_tick_memory_crystallizes_event_title_with_task_id())
+
+
+async def _post_tick_memory_crystallizes_event_title_with_task_id():
+    from core.loop.tick import _post_tick_memory_impl
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("事件任务", goal="write event", status="in_progress")
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+            semantic = SemanticMemory(root / "semantic")
+            loop = cast(Any, SimpleNamespace(
+                _task_store=store,
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
+                _semantic=semantic,
+                _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
+                _wm=SimpleNamespace(add=lambda item: None),
+                _cfg=SimpleNamespace(
+                    thresholds=SimpleNamespace(wm_pri_insight=0.8),
+                    memory=SimpleNamespace(chat_crystallize_every=1),
+                    emotion=SimpleNamespace(),
+                ),
+            ))
+            action = cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection="事件反思", rationale=""))
+            result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
+
+            await _post_tick_memory_impl(loop, action, result, active_task, cycle=1, user_message="")
+
+            ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+            node = semantic.get(f"event-task{task_id}-{ts_label}")
+            assert node is not None
+            assert node.title == f"[{ts_label}] task#{task_id} 事件任务"
+        finally:
+            await store.close()
 
 
 def test_dev_model_switch_syncs_routing_entries_following_primary_model():

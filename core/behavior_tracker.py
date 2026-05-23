@@ -15,7 +15,7 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from tools.registry import tool_name_has_capability
+from tools.registry import tool_has_capability
 
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
@@ -44,6 +44,7 @@ class BehaviorTracker:
         wait_streak_notify: list[int] | None = None,
         streak_threshold: int = 3,
         wm_priorities: dict[str, float] | None = None,
+        registry: Any = None,
     ) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
@@ -78,6 +79,11 @@ class BehaviorTracker:
         self._pri_behavior_loop: float = float(_pri.get("behavior_loop", 0.95))
         self._pri_edit_caution: float = float(_pri.get("edit_caution", 0.93))
         self._pri_belief_stale: float = float(_pri.get("belief_stale", 0.96))
+        self._registry = registry
+
+    def _tool_has_capability(self, tool_id: str, capability: str) -> bool:
+        return tool_has_capability(self._registry, tool_id, capability)
+
     @property
     def wait_streak(self) -> int:
         """公开接口：连续 wait/pause 决策次数。"""
@@ -152,14 +158,14 @@ class BehaviorTracker:
 
         items: list[WMItem] = []
 
-        if tool_name_has_capability(tool_id, "result_streak_only"):
+        if self._tool_has_capability(tool_id, "result_streak_only"):
             return items  # file.read / file.list streak 由结果感知处理
         if not task_id:
             return items
 
         # 对编辑类工具，把内容指纹混入 key，避免同文件不同内容的连续误判为循环
         _effective_key = key_param
-        if tool_name_has_capability(tool_id, "completion_mutation") and params:
+        if self._tool_has_capability(tool_id, "completion_mutation") and params:
             _p = params or {}
             _content_sig = str(_p.get("old_text") or _p.get("content") or "")[:80]
             if _content_sig:
@@ -195,7 +201,7 @@ class BehaviorTracker:
 
         未防止属于 file.read / file.list （它们由各自的 on_read / on_list 处理）。
         """
-        if tool_name_has_capability(tool_id, "result_streak_only"):
+        if self._tool_has_capability(tool_id, "result_streak_only"):
             return
         fp = hashlib.md5((result_summary or "").encode("utf-8", errors="replace")).hexdigest()[:12]
         if fp and fp != self._last_act_result_fp:

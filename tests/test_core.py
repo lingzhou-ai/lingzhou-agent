@@ -64,6 +64,7 @@ def test_emotion_state_ema():
 
 
 def test_emotion_state_uses_configured_feeling_and_regulation_thresholds():
+    from core.config import EmotionConfig
     from core.perception import EmotionState
 
     default_guard = EmotionState(valence=0.6, arousal=0.5)
@@ -84,7 +85,7 @@ def test_emotion_state_uses_configured_feeling_and_regulation_thresholds():
         wm_pressure=0.2,
         workspace_dirty=False,
         alpha=0.0,
-        emotion_cfg=SimpleNamespace(
+        emotion_cfg=EmotionConfig(
             feeling_min_intensity=0.30,
             regulation_high_error_streak_guard=4,
             regulation_down_regulate_arousal_high=0.90,
@@ -196,7 +197,9 @@ def test_reference_resolver_retrieve_candidates_uses_recent_pool_without_time_pa
             self.calls.append(limit)
             return [{"content": "昨天你说过的方案A", "ts": "2026-05-22 08:00:00 UTC"}]
 
-    resolver = ReferenceResolver(recent_narrative_limit=4, recent_semantic_top_k=6)
+    from core.config import ThresholdsConfig
+    thresholds = ThresholdsConfig(reference_recent_narrative_limit=4, reference_recent_semantic_top_k=6)
+    resolver = ReferenceResolver(thresholds=thresholds)
     sigs = resolver.extract_signals("昨天你说过的方案今天继续")
     episodic = EpisodicStub()
 
@@ -405,9 +408,16 @@ def test_chat_infer_user_title_from_session_history_does_not_slice_assistant_ope
 def test_chat_parse_user_title_from_llm_output_supports_plain_and_json():
     from cli.chat import _parse_user_title_from_llm_output
 
-    assert _parse_user_title_from_llm_output("爸爸") == "爸爸"
-    assert _parse_user_title_from_llm_output('{"user_title": "老爹"}') == "老爹"
+    assert _parse_user_title_from_llm_output("小懒") == "小懒"
+    assert _parse_user_title_from_llm_output('{"user_title": "阿舟"}') == "阿舟"
     assert _parse_user_title_from_llm_output("NONE") == ""
+
+
+def test_chat_parse_user_title_from_llm_output_rejects_relational_titles():
+    from cli.chat import _parse_user_title_from_llm_output
+
+    assert _parse_user_title_from_llm_output("爸爸") == ""
+    assert _parse_user_title_from_llm_output('{"user_title": "老爹"}') == ""
 
 
 def test_chat_input_prompt_prefers_user_title_then_chat_id():
@@ -416,6 +426,20 @@ def test_chat_input_prompt_prefers_user_title_then_chat_id():
     assert _chat_input_prompt("爸爸", "chat-42") == "爸爸> "
     assert _chat_input_prompt("", "chat-42") == "chat-42> "
     assert _chat_input_prompt("", "") == "chat> "
+
+
+def test_gateway_restart_mode_log_line_records_mode_and_config():
+    from cli.gateway import _restart_mode_log_line
+
+    line = _restart_mode_log_line(
+        Path("/tmp/requested/lingzhou.json"),
+        mode="pid",
+        channel=None,
+    )
+
+    assert "mode=pid" in line
+    assert "channel=(auto)" in line
+    assert f"requested_config={Path('/tmp/requested/lingzhou.json').resolve()}" in line
 
 
 def test_chat_print_input_prompt_when_tty(monkeypatch):
@@ -531,6 +555,221 @@ def test_app_callback_starts_gateway_when_ready(monkeypatch):
     lingzhou_mod.app_callback(cast(Any, SimpleNamespace(invoked_subcommand=None)))
 
     assert calls == [{"channel": "local", "daemon": False}]
+
+
+def test_gateway_startup_config_log_line_includes_requested_and_effective_paths():
+    from cli.gateway import _startup_config_log_line
+
+    cfg = cast(
+        Any,
+        SimpleNamespace(
+            _base_dir=Path("/tmp/runtime-home"),
+            model="copilot/gpt-5.4",
+            routing={
+                "reader": "bailian/qwen3.6-plus",
+                "reasoner": "copilot/gpt-5.4",
+            },
+        ),
+    )
+
+    line = _startup_config_log_line(
+        cfg,
+        Path("/tmp/requested/lingzhou.json"),
+        channel="local",
+        daemon=True,
+    )
+
+    assert "channel=local" in line
+    assert "daemon=True" in line
+    assert f"requested_config={Path('/tmp/requested/lingzhou.json').resolve()}" in line
+    assert f"effective_config={(Path('/tmp/runtime-home') / 'lingzhou.json').resolve()}" in line
+    assert "main_model=copilot/gpt-5.4" in line
+    assert "routing=reader=bailian/qwen3.6-plus, reasoner=copilot/gpt-5.4" in line
+
+
+def test_runtime_config_snapshot_includes_effective_routing_summary():
+    from core.loop.startup import _runtime_config_snapshot
+
+    cfg = cast(
+        Any,
+        SimpleNamespace(
+            _base_dir=Path("/tmp/runtime-home"),
+            model="copilot/gpt-5.4",
+            routing={
+                "reader": "bailian/qwen3.6-plus",
+                "reasoner": "copilot/gpt-5.4",
+            },
+        ),
+    )
+
+    startup_line, routing_summary = _runtime_config_snapshot(
+        cfg,
+        {"reader": object()},
+        stage="run",
+    )
+
+    assert "stage=run" in startup_line
+    assert f"config={(Path('/tmp/runtime-home') / 'lingzhou.json').resolve()}" in startup_line
+    assert "main_model=copilot/gpt-5.4" in startup_line
+    assert "routing=reader=bailian/qwen3.6-plus, reasoner=copilot/gpt-5.4" in startup_line
+    assert "reader: bailian/qwen3.6-plus ✓" in routing_summary
+    assert "reasoner: copilot/gpt-5.4 (= main, no separate provider)" in routing_summary
+
+
+def _config_doc_defaults(path: Path) -> dict[str, str]:
+    rows: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("| `"):
+            continue
+        cols = [col.strip() for col in line.strip("|").split("|")]
+        if len(cols) < 3:
+            continue
+        key = cols[0]
+        if not (key.startswith("`") and key.endswith("`")):
+            continue
+        rows[key[1:-1]] = cols[1]
+    return rows
+
+
+def test_config_reference_doc_defaults_match_code_defaults():
+    from core.config import config_reference_defaults
+
+    doc_defaults = _config_doc_defaults(_proj_root() / "docs" / "CONFIG.md")
+    expected = config_reference_defaults()
+
+    assert {key: doc_defaults.get(key) for key in expected} == expected
+
+
+def test_create_provider_with_model_exposes_public_model_ref():
+    from core.config import Config
+    from provider import create_provider_with_model
+    from provider.base import EmbeddingProvider
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+    })
+
+    provider = create_provider_with_model(cfg, "bailian/qwen-plus")
+    try:
+        assert provider.model_ref == "bailian/qwen-plus"
+        assert isinstance(provider, EmbeddingProvider)
+    finally:
+        asyncio.run(provider.close())
+
+
+def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    import core.loop as loop_mod
+
+    requested_cfg = tmp_path / "lingzhou.json"
+    requested_cfg.write_text('{"gateway": {"default_channel": "wechat"}}', encoding="utf-8")
+
+    chosen_channels: list[str] = []
+    cfg = cast(
+        Any,
+        SimpleNamespace(
+            gateway=SimpleNamespace(default_channel="local"),
+            loop=SimpleNamespace(debug=False, act=True),
+            _base_dir=tmp_path,
+            model="copilot/gpt-5.4",
+            routing={},
+        ),
+    )
+
+    async def _noop_run() -> None:
+        return None
+
+    monkeypatch.setattr(gateway_mod, "onboarding_status", lambda config: (True, "ok"))
+    monkeypatch.setattr(gateway_mod, "load_cfg", lambda config: cfg)
+    monkeypatch.setattr(gateway_mod, "_is_systemd_managed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_kill_existing_loop", lambda quiet=False: None)
+    monkeypatch.setattr(gateway_mod, "_ensure_singleton", lambda: None)
+    monkeypatch.setattr(gateway_mod, "_PID_FILE", tmp_path / "lingzhou.pid")
+    monkeypatch.setattr(gateway_mod.console, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gateway_mod,
+        "_configure_lingzhou_logging",
+        lambda log_dir, log_level, logger_name="lingzhou": (
+            tmp_path / "lingzhou.log",
+            tmp_path / "console.log",
+        ),
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "_startup_config_log_line",
+        lambda cfg, requested_config, *, channel, daemon: chosen_channels.append(channel) or "line",
+    )
+    monkeypatch.setattr(loop_mod, "CognitionLoop", lambda cfg: SimpleNamespace(run=lambda: _noop_run()))
+
+    gateway_mod.gateway_start(channel=None, config=requested_cfg, daemon=False)
+
+    assert chosen_channels == ["local"]
+
+
+def test_enqueue_webhook_task_uses_ingress_store():
+    from channels import webhook as webhook_mod
+
+    calls: list[dict[str, str]] = []
+
+    class _FakeIngress:
+        def add_task(self, title: str, *, goal: str = "", priority: str = "normal", source: str = "external") -> int:
+            calls.append({
+                "title": title,
+                "goal": goal,
+                "priority": priority,
+                "source": source,
+            })
+            return 7
+
+    task_id = webhook_mod._enqueue_webhook_task(cast(Any, _FakeIngress()), "第一行\n第二行", "high")
+
+    assert task_id == 7
+    assert calls == [{
+        "title": "webhook: 第一行 第二行",
+        "goal": "第一行\n第二行",
+        "priority": "high",
+        "source": "gateway:webhook",
+    }]
+
+
+def test_start_external_channel_runtime_delegates_to_channel_registry(monkeypatch):
+    from cli import gateway as gateway_mod
+
+    printed: list[str] = []
+    calls: list[tuple[Any, ...]] = []
+
+    monkeypatch.setattr(gateway_mod.console, "print", lambda message, *args, **kwargs: printed.append(message))
+    monkeypatch.setattr(
+        gateway_mod,
+        "describe_channel_runtime",
+        lambda channel, gw_conf: calls.append(("describe", channel, dict(gw_conf))) or "runtime-line",
+    )
+    monkeypatch.setattr(
+        gateway_mod,
+        "start_channel_runtime",
+        lambda channel, gw_conf, db_path: calls.append(("start", channel, dict(gw_conf), str(db_path))) or "runtime",
+    )
+
+    runtime = gateway_mod._start_external_channel_runtime(
+        "wechat",
+        {"token": "abc"},
+        db_path="/tmp/lingzhou.db",
+    )
+
+    assert runtime == "runtime"
+    assert printed == ["[dim]runtime-line[/dim]"]
+    assert calls == [
+        ("describe", "wechat", {"token": "abc"}),
+        ("start", "wechat", {"token": "abc"}, "/tmp/lingzhou.db"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -649,6 +888,8 @@ def test_judgment_error_classification_and_cooldown():
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
+        model_ref = "dummy/provider"
+
         async def chat(self, messages, *, temperature=None, thinking_override=None):
             return '{"decision":"wait"}'
 
@@ -866,6 +1107,41 @@ async def _worker_layer_keeps_pools_independent():
     assert llm_result.metadata["run_monitor"]["key"] == "run:demo"
 
 
+def test_infer_run_profile_uses_explicit_registry_capabilities():
+    from core.execution import _infer_run_profile
+    from tools.registry import ToolEntry, ToolManifest, ToolResult
+
+    async def _noop_handler(params, ctx):
+        return ToolResult(summary="noop")
+
+    class _Registry:
+        def get(self, name: str):
+            if name == "demo.exec":
+                return ToolEntry(
+                    manifest=ToolManifest(
+                        name="demo.exec",
+                        description="demo",
+                        capabilities=("run_spawn",),
+                    ),
+                    handler=_noop_handler,
+                )
+            if name == "demo.vision":
+                return ToolEntry(
+                    manifest=ToolManifest(
+                        name="demo.vision",
+                        description="demo",
+                        capabilities=("multimodal",),
+                    ),
+                    handler=_noop_handler,
+                )
+            return None
+
+    assert _infer_run_profile("demo.exec") == ("tool_chain", "tool-chain-worker")
+    assert _infer_run_profile("demo.exec", registry=cast(Any, _Registry())) == ("exec", "exec-worker")
+    assert _infer_run_profile("demo.vision", registry=cast(Any, _Registry())) == ("multimodal", "multimodal-worker")
+    assert _infer_run_profile("demo.exec", {"monitor_fact_key": "run:1"}, registry=cast(Any, _Registry())) == ("llm", "llm-worker")
+
+
 def test_judgment_output_action_label_summarizes_parallel_and_delegate():
     from core.judgment import JudgmentOutput
 
@@ -975,6 +1251,8 @@ async def _evolution_pending_verification_becomes_verified():
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
+        model_ref = "dummy/provider"
+
         async def chat(self, messages, *, temperature=None, thinking_override=None):
             return ""
 
@@ -1041,6 +1319,8 @@ async def _evolution_regression_triggers_rollback():
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
+        model_ref = "dummy/provider"
+
         async def chat(self, messages, *, temperature=None, thinking_override=None):
             return ""
 
@@ -1100,6 +1380,47 @@ async def _evolution_regression_triggers_rollback():
         await store.close()
 
 
+def test_smoke_test_module_persists_failure_artifacts(tmp_path):
+    from core.evolution import EvolutionEngine
+
+    module_path = tmp_path / "demo_tool.py"
+    err = EvolutionEngine._smoke_test_module(
+        "raise RuntimeError('boom import')\n",
+        module_path,
+        tmp_path,
+    )
+
+    assert err is not None
+    source_artifact = tmp_path / ".demo_tool.smoke-failed.py"
+    log_artifact = tmp_path / ".demo_tool.smoke-failed.log"
+    assert source_artifact.exists()
+    assert log_artifact.exists()
+    assert "boom import" in source_artifact.read_text(encoding="utf-8")
+    log_text = log_artifact.read_text(encoding="utf-8")
+    assert "RuntimeError: boom import" in log_text
+    assert str(source_artifact) in err
+    assert str(log_artifact) in err
+
+
+def test_smoke_test_module_current_image_generate_passes():
+    from core.evolution import EvolutionEngine
+
+    module_path = _proj_root() / "tools" / "image_gen.py"
+    src = module_path.read_text(encoding="utf-8")
+    err = EvolutionEngine._smoke_test_module(src, module_path, _proj_root())
+    assert err is None
+
+
+def test_smoke_failure_summary_uses_single_header_line():
+    from core.evolution import _smoke_failure_summary
+
+    text = (
+        "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log | preview=RuntimeError boom\n\n"
+        "returncode=1\n\n[stderr]\nTraceback..."
+    )
+    assert _smoke_failure_summary(text) == "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log | preview=RuntimeError boom"
+
+
 def test_evolution_skill_targets_workspace_skill_file(tmp_path):
     asyncio.run(_evolution_skill_targets_workspace_skill_file(tmp_path))
 
@@ -1114,6 +1435,8 @@ async def _evolution_skill_targets_workspace_skill_file(tmp_path):
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
+        model_ref = "dummy/provider"
+
         async def chat(self, messages, *, temperature=None, thinking_override=None):
             return """---
 name: runtime-bootstrap
@@ -1222,6 +1545,8 @@ async def _competitive_evolve_routes_based_on_config():
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
+        model_ref = "dummy/provider"
+
         async def chat(self, messages, *, temperature=None, thinking_override=None):
             return ""
         async def close(self): pass
@@ -1661,6 +1986,40 @@ def test_bailian_catalog_capabilities_are_curated():
     assert kimi["capabilities"] == ["text_generation", "thinking", "vision"]
 
 
+def test_catalog_explicit_path_isolated_from_global_runtime_path(tmp_path):
+    import json as _json
+    from provider import catalog as catalog_mod
+
+    runtime_a = tmp_path / "workspace-a" / "models.json"
+    runtime_a.parent.mkdir(parents=True, exist_ok=True)
+    runtime_a.write_text(
+        _json.dumps({
+            "demo": {"models": [{"id": "alpha", "context_window": 111}]},
+        }),
+        encoding="utf-8",
+    )
+
+    runtime_b = tmp_path / "workspace-b" / "models.json"
+    runtime_b.parent.mkdir(parents=True, exist_ok=True)
+    runtime_b.write_text(
+        _json.dumps({
+            "demo": {"models": [{"id": "alpha", "context_window": 222}]},
+        }),
+        encoding="utf-8",
+    )
+
+    previous_runtime = catalog_mod._runtime_path
+    try:
+        catalog_mod.set_runtime_path(runtime_a)
+        assert catalog_mod.resolve_context_window("alpha", None) == 111
+        assert catalog_mod.resolve_context_window("alpha", None, catalog_path=runtime_b) == 222
+        explicit = catalog_mod.lookup_model("alpha", catalog_path=runtime_b)
+        assert explicit is not None
+        assert explicit["context_window"] == 222
+    finally:
+        catalog_mod.set_runtime_path(previous_runtime)
+
+
 def test_catalog_budget_auto_lookup():
     """Config 不填 context_window_tokens 时，目录自动推断预算。"""
     from core.config import Config
@@ -1819,6 +2178,80 @@ async def _file_list_and_memory_search():
 
         excluded = await memory_search({'query': 'legacy runtime', 'task_id': '34'}, ctx)
         assert excluded.skipped is True
+
+
+def test_memory_add_semantic_disambiguates_duplicate_titles():
+    asyncio.run(_memory_add_semantic_disambiguates_duplicate_titles())
+
+
+async def _memory_add_semantic_disambiguates_duplicate_titles():
+    from tools.memory_ops import memory_add_semantic
+    from memory.semantic import SemanticMemory
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        semantic = SemanticMemory(root)
+        ctx = _tool_ctx(workspace_dir=str(root), semantic=semantic)
+
+        first = await memory_add_semantic(
+            {'title': '最小合法JSON输出约束', 'body': 'rule body', 'kind': 'rule'},
+            ctx,
+        )
+        second = await memory_add_semantic(
+            {'title': '最小合法JSON输出约束', 'body': 'constraint body', 'kind': 'constraint'},
+            ctx,
+        )
+
+        first_id = first.evidence.split('node_id=', 1)[1]
+        second_id = second.evidence.split('node_id=', 1)[1]
+        first_node = semantic.get(first_id)
+        second_node = semantic.get(second_id)
+
+        assert first_node is not None
+        assert second_node is not None
+        assert first_node.title == '最小合法JSON输出约束'
+        assert second_node.title.startswith('最小合法JSON输出约束 [constraint:')
+        assert first_node.title != second_node.title
+
+
+def test_reflect_structural_disambiguates_duplicate_titles():
+    asyncio.run(_reflect_structural_disambiguates_duplicate_titles())
+
+
+async def _reflect_structural_disambiguates_duplicate_titles():
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory, WMItem
+    from tools.memory_ops import reflect_structural
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / 'runtime.db')
+        await store.open()
+        try:
+            await store.add_task('结构反思任务', goal='reflect')
+            semantic = SemanticMemory(root / 'semantic')
+            episodic = EpisodicMemory(root / 'episodic')
+            wm = WorkingMemory(capacity=8)
+            wm.add(WMItem(kind='observation', content='重复结构洞察来源', priority=0.8))
+            ctx = _tool_ctx(task_store=store, episodic=episodic, semantic=semantic, wm=wm)
+
+            first = await reflect_structural({'title': 'memory检索质量基线', 'insight': '洞察A'}, ctx)
+            second = await reflect_structural({'title': 'memory检索质量基线', 'insight': '洞察B'}, ctx)
+
+            first_id = first.evidence.split('node_id=', 1)[1]
+            second_id = second.evidence.split('node_id=', 1)[1]
+            first_node = semantic.get(first_id)
+            second_node = semantic.get(second_id)
+
+            assert first_node is not None
+            assert second_node is not None
+            assert first_node.title == 'memory检索质量基线'
+            assert second_node.title.startswith('memory检索质量基线 [structural:')
+        finally:
+            await store.close()
 
 
 def test_exec_process_write_pipe_roundtrip():
@@ -2367,6 +2800,7 @@ async def _execution_failure_creates_meta_reflection():
         rule_node = semantic.get(f"rule-revision-{reflections[0].id}")
         assert rule_node is not None
         assert rule_node.kind == "rule_revision"
+        assert rule_node.title == f"[apply] task_split via file.read run#{runs[0].id}"
 
         await store.close()
 

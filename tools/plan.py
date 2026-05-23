@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext, CAPS_EXEMPT
 
 
 @tool(ToolManifest(
@@ -21,7 +21,7 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
     ),
     prefer_tier="reasoner",
     progress_category="info",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
     params=[
         ToolParam("plan", "object", "步骤列表: [{\"step\":\"...\", \"status\":\"pending|in_progress|completed\"}]", required=True),
         ToolParam("task_id", "number", "任务 ID（可选，默认当前活跃任务）", required=False),

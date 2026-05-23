@@ -85,6 +85,17 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _default_ethos_cfg(soul: Any = None) -> Any:
+    """返回 EthosConfig 默认实例，可选传入 soul 对象以读取 ethos_baseline 字段。"""
+    from core.config import EthosConfig
+    ec = EthosConfig()
+    if soul is not None:
+        extra_baseline = getattr(soul, "ethos_baseline", None)
+        if isinstance(extra_baseline, dict) and extra_baseline:
+            ec = EthosConfig(baseline=extra_baseline)
+    return ec
+
+
 def _build_subagent_active_task(sub_id: str, goal: str) -> Any:
     from memory.task_store import Task
 
@@ -208,6 +219,16 @@ class _SubagentTaskStoreView:
             if len(merged) >= limit:
                 break
         return merged[:limit]
+
+    async def list_runnable_tasks(self, limit: int = 20) -> list[Any]:
+        runnable_statuses = {"pending", "ready", "in_progress", "resumed"}
+        if self._active_task is not None:
+            status = str(getattr(self._active_task, "status", "") or "")
+            if status not in runnable_statuses or limit <= 0:
+                return []
+            return [self._overlay_task(self._active_task)]
+        rows = await self._parent.list_runnable_tasks(limit=limit)
+        return [self._overlay_task(task) for task in rows[:limit]]
 
     async def list_runs(
         self,
@@ -338,6 +359,27 @@ class _SubagentTaskStoreView:
         parent = await self._parent.list_failures_for_task(task_id, limit=limit)
         return local + list(parent[: max(0, limit - len(local))])
 
+    async def count_failures_by_kind(self, kind: str) -> int:
+        if self._active_task is not None:
+            return sum(
+                1
+                for item in self._local_failures
+                if str(getattr(item, "kind", "") or "") == kind and not bool(getattr(item, "dismissed", False))
+            )
+        local = sum(
+            1
+            for item in self._local_failures
+            if str(getattr(item, "kind", "") or "") == kind and not bool(getattr(item, "dismissed", False))
+        )
+        return local + await self._parent.count_failures_by_kind(kind)
+
+    async def dismiss_failure(self, failure_id: int) -> None:
+        for item in self._local_failures:
+            if int(getattr(item, "id", 0) or 0) == int(failure_id):
+                item.dismissed = True
+                return
+        raise self._reject("dismiss_failure")
+
     async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
         if not _is_locally_absorbable_fact(key, scope):
             raise self._reject(f"set_fact:{key}")
@@ -366,10 +408,28 @@ class _SubagentTaskStoreView:
                 break
         return merged
 
+    async def delete_fact(self, key: str) -> None:
+        if key in self._local_facts:
+            self._local_facts.pop(key, None)
+            return
+        raise self._reject(f"delete_fact:{key}")
+
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
         existing = dict(self._local_task_results.get(task_id) or {})
         existing.update(dict(result_json or {}))
         self._local_task_results[task_id] = existing
+
+    async def pop_task_inbox(self, task_id: int) -> list[str]:
+        return []
+
+    async def sync_task_progress(
+        self,
+        task_id: int,
+        *,
+        current_step: str | None = None,
+        next_step: str | None = None,
+    ) -> None:
+        raise self._reject("sync_task_progress")
 
     async def add_meta_reflection(self, **kwargs: Any) -> None:
         from memory.task_store import MetaReflection
@@ -422,6 +482,50 @@ class _SubagentTaskStoreView:
     async def get_signal(self, signal_id: int) -> dict[str, Any] | None:
         return await self._parent.get_signal(signal_id)
 
+    async def enqueue_if_absent(
+        self,
+        title: str,
+        goal: str = "",
+        priority: str = "normal",
+        source: str = "internal",
+    ) -> bool:
+        raise self._reject("enqueue_if_absent")
+
+    async def add_chat_message(self, role: str, content: str, chat_id: str = "") -> int:
+        raise self._reject("add_chat_message")
+
+    async def has_pending_chat_message(self) -> bool:
+        return False
+
+    async def pop_pending_chat_message(self) -> dict[str, Any] | None:
+        return None
+
+    async def drain_pending_for_chat(self, chat_id: str, after_id: int) -> list[dict[str, Any]]:
+        return []
+
+    async def mark_chat_messages_processed(self, message_ids: list[int] | tuple[int, ...]) -> None:
+        return None
+
+    async def release_chat_messages(self, message_ids: list[int] | tuple[int, ...]) -> None:
+        return None
+
+    async def get_chat_messages_since(
+        self,
+        since_id: int = 0,
+        chat_id: str = "",
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def get_recent_chat_messages(
+        self,
+        limit: int = 6,
+        chat_id: str = "",
+    ) -> list[dict[str, Any]]:
+        return []
+
+    async def reset_in_progress_tasks(self) -> int:
+        raise self._reject("reset_in_progress_tasks")
+
     async def add_task(self, *args: Any, **kwargs: Any) -> Any:
         raise self._reject("add_task")
 
@@ -440,9 +544,6 @@ class _SubagentTaskStoreView:
     async def cancel_signal(self, *args: Any, **kwargs: Any) -> Any:
         raise self._reject("cancel_signal")
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._parent, name)
-
 
 class _SubagentEpisodicView:
     """父灵情节记忆的只读视图，子灵运行日志不回写父灵。"""
@@ -456,8 +557,11 @@ class _SubagentEpisodicView:
     def record_event(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._parent, name)
+    def load_for_context(self, task_id: str | None, *, max_chars: int = 4000) -> str:
+        return self._parent.load_for_context(task_id, max_chars=max_chars)
+
+    def list_recent_narrative(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self._parent.list_recent_narrative(limit=limit)
 
 
 class _SubagentSemanticView:
@@ -469,8 +573,21 @@ class _SubagentSemanticView:
     def upsert(self, node: Any) -> None:
         return None
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._parent, name)
+    @property
+    def decay_lambda(self) -> float:
+        return float(getattr(self._parent, "decay_lambda", 0.0) or 0.0)
+
+    def retrieve(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._parent.retrieve(query, **kwargs)
+
+    def retrieve_multi_anchor(self, anchors: list[str], **kwargs: Any) -> list[dict[str, Any]]:
+        return self._parent.retrieve_multi_anchor(anchors, **kwargs)
+
+    def stats(self) -> dict[str, Any]:
+        return self._parent.stats()
+
+    def get(self, node_id: str) -> Any:
+        return self._parent.get(node_id)
 
 
 # ── 数据模型 ────────────────────────────────────────────────────────────────────
@@ -532,20 +649,24 @@ class _FilteredRegistry:
         real: "ToolRegistry",
         allowed: set[str] | None,
         blocked: set[str],
+        local_mutation_allow: set[str] | None = None,
     ) -> None:
         self._real = real
         self._allowed = allowed   # None = 不限制 allowed（只走 blocked）
         self._blocked = blocked
+        self._local_mutation_allow = set(local_mutation_allow or ())
 
     def _is_visible(self, name: str) -> bool:
         if name in self._blocked:
             return False
+        if self._allowed is not None and name not in self._allowed:
+            return False
+        if name in self._local_mutation_allow:
+            return True
         entry = self._real.get(name)
         manifest = entry.manifest if entry is not None else None
         if _is_readonly_blocked_tool(name, manifest):
             return False
-        if self._allowed is not None:
-            return name in self._allowed
         return True
 
     def get(self, name: str):
@@ -660,14 +781,14 @@ class SubagentRunner:
                 has_next_step=True,
                 perception_trend="neutral",
                 emotion_down_regulate_streak=0,
+                ethos_cfg=getattr(parent_cfg.soul, "ethos", None) or _default_ethos_cfg(parent_cfg.soul),
                 baseline=baseline_dict or None,
-                seed_values=parent_cfg.soul.ethos_baseline,
             )
             if baseline_dict:
                 _log.debug("[subagent][%s] 已继承父灵 Ethos 基线 keys=%s",
                            sub_id, list(baseline_dict.keys()))
             else:
-                _log.debug("[subagent][%s] 父灵 Ethos 基线缺失，回退 cfg.soul.ethos_baseline", sub_id)
+                _log.debug("[subagent][%s] 父灵 Ethos 基线缺失，回退 cfg.soul.ethos.baseline", sub_id)
 
         # ── 独立 WM（不影响父灵）──────────────────────────────────────────────
         sub_wm = WorkingMemory(
@@ -680,7 +801,13 @@ class SubagentRunner:
         if cfg.blocked_tools:
             blocked.update(cfg.blocked_tools)
         allowed: set[str] | None = set(cfg.allowed_tools) if cfg.allowed_tools else None
-        filtered_reg = _FilteredRegistry(self._registry, allowed, blocked)
+        local_mutation_allow = {"memory.add_semantic"} if cfg.isolated_memory else set()
+        filtered_reg = _FilteredRegistry(
+            self._registry,
+            allowed,
+            blocked,
+            local_mutation_allow=local_mutation_allow,
+        )
         task_store_view = cast(Any, sub_task_store)
         episodic_view = cast(Any, sub_episodic)
         semantic_view = cast(Any, sub_semantic)
@@ -701,13 +828,16 @@ class SubagentRunner:
             percept = Percept(summary=cfg.goal if tick == 0 else "")
 
             try:
+                from core.judgment import CognitionFrame
                 output = await self._judgment.decide(
-                    percept,
-                    sub_wm,
-                    task_store_view,
-                    episodic_view,
-                    semantic_view,
-                    neutral_emotion,
+                    CognitionFrame(
+                        percept=percept,
+                        wm=sub_wm,
+                        task_store=task_store_view,
+                        episodic=episodic_view,
+                        semantic=semantic_view,
+                        emotion=neutral_emotion,
+                    ),
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos
                     registry_override=filtered_reg,

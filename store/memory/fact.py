@@ -5,6 +5,17 @@ from typing import Callable
 import aiosqlite
 
 
+FACT_UPSERT_SQL = (
+    "INSERT INTO facts (key, value, scope, updated_at) VALUES (?,?,?,datetime('now')) "
+    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+    "scope=excluded.scope, updated_at=excluded.updated_at"
+)
+
+
+def build_fact_upsert(key: str, value: str, *, scope: str = "general") -> tuple[str, tuple[str, str, str]]:
+    return FACT_UPSERT_SQL, (str(key), str(value), str(scope or "general"))
+
+
 class FactStore:
     def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
         self._db_getter = db_getter
@@ -14,12 +25,8 @@ class FactStore:
         return self._db_getter()
 
     async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
-        await self._db.execute(
-            "INSERT INTO facts (key, value, scope, updated_at) VALUES (?,?,?,datetime('now')) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-            "scope=excluded.scope, updated_at=excluded.updated_at",
-            (key, value, scope),
-        )
+        sql, params = build_fact_upsert(key, value, scope=scope)
+        await self._db.execute(sql, params)
         await self._db.commit()
 
     async def get_fact(self, key: str) -> tuple[str, bool]:

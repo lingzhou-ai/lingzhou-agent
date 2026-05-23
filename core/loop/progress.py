@@ -3,38 +3,29 @@
 from __future__ import annotations
 
 import hashlib
-from functools import lru_cache
-from pathlib import Path
 
 from core.execution import action_key_param
 from core.judgment import JudgmentOutput
-from tools.registry import ToolRegistry, ToolResult, tool_name_has_capability
+from tools.registry import ToolRegistry, ToolResult, default_tool_registry, tool_has_capability
 
 
-@lru_cache(maxsize=1)
-def _progress_registry() -> ToolRegistry:
-    reg = ToolRegistry()
-    reg.discover(Path(__file__).resolve().parents[2] / "tools")
-    return reg
-
-
-def _tool_progress_category(tool_name: str) -> str:
+def _tool_progress_category(tool_name: str, registry: ToolRegistry | None = None) -> str:
     if not tool_name:
         return ""
-    entry = _progress_registry().get(tool_name)
+    entry = (registry or default_tool_registry()).get(tool_name)
     return str(entry.manifest.progress_category or "") if entry else ""
 
 
-def _counts_as_progress_mutation(tool_name: str) -> bool:
-    if _tool_progress_category(tool_name) == "mutation":
+def _counts_as_progress_mutation(tool_name: str, registry: ToolRegistry | None = None) -> bool:
+    if _tool_progress_category(tool_name, registry) == "mutation":
         return True
-    return tool_name_has_capability(tool_name, "completion_mutation")
+    return tool_has_capability(registry, tool_name, "completion_mutation")
 
 
-def _counts_as_progress_info(tool_name: str) -> bool:
-    if _tool_progress_category(tool_name) == "info":
+def _counts_as_progress_info(tool_name: str, registry: ToolRegistry | None = None) -> bool:
+    if _tool_progress_category(tool_name, registry) == "info":
         return True
-    return tool_name_has_capability(tool_name, "completion_info_only")
+    return tool_has_capability(registry, tool_name, "completion_info_only")
 
 
 def _result_fingerprint(summary: str) -> str:
@@ -104,6 +95,7 @@ def _action_made_progress(
     *,
     prev_sig: str = "",
     prev_fp: str = "",
+    registry: ToolRegistry | None = None,
 ) -> tuple[bool, str]:
     """判断动作是否真实推进了任务。"""
     if action.decision != "act" or result.error or result.skipped:
@@ -113,10 +105,10 @@ def _action_made_progress(
     if tool == "shell.run":
         return _shell_run_made_progress(action, result, prev_sig=prev_sig, prev_fp=prev_fp)
 
-    if _counts_as_progress_mutation(tool):
+    if _counts_as_progress_mutation(tool, registry):
         return True, f"{tool} 是变更类工具,成功执行即视为推进"
 
-    if _counts_as_progress_info(tool):
+    if _counts_as_progress_info(tool, registry):
         fp = _result_fingerprint(result.summary)
         if not fp:
             return False, f"{tool} 返回空结果"

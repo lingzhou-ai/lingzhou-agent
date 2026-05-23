@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from provider.base import Provider
 
 _log = logging.getLogger("lingzhou.reference")
-_REFERENCE_DEFAULTS = ThresholdsConfig()
 
 _TOPIC_PUNCT_PATTERN = re.compile(r"[，。！？；、,.!?]+")
 
@@ -95,71 +94,14 @@ class ReferenceResolver:
         self,
         provider: "Provider | None" = None,
         *,
-        min_confidence: float | None = None,
-        local_signal_base: float | None = None,
-        local_signal_step: float | None = None,
-        local_confidence_cap: float | None = None,
-        max_anchors: int | None = None,
-        topic_top_k: int | None = None,
-        recent_narrative_limit: int | None = None,
-        recent_semantic_top_k: int | None = None,
-        candidate_cap: int | None = None,
-        entity_section_limit: int | None = None,
-        anchor_text_chars: int | None = None,
-        candidate_body_chars: int | None = None,
-        entity_snippet_chars: int | None = None,
+        thresholds: ThresholdsConfig | None = None,
         reason_temperature: float | None = None,
-        topic_anchor_min_chars: int | None = None,
     ) -> None:
         self._provider = provider
         self._last_llm_error: str = ""
         self._last_llm_error_code: str = ""
-        self._min_confidence = float(
-            _REFERENCE_DEFAULTS.reference_min_confidence if min_confidence is None else min_confidence
-        )
-        self._local_signal_base = float(
-            _REFERENCE_DEFAULTS.reference_local_signal_base if local_signal_base is None else local_signal_base
-        )
-        self._local_signal_step = float(
-            _REFERENCE_DEFAULTS.reference_local_signal_step if local_signal_step is None else local_signal_step
-        )
-        self._local_confidence_cap = float(
-            _REFERENCE_DEFAULTS.reference_local_confidence_cap if local_confidence_cap is None else local_confidence_cap
-        )
-        self._max_anchors = int(
-            _REFERENCE_DEFAULTS.reference_max_anchors if max_anchors is None else max_anchors
-        )
-        self._topic_top_k = int(
-            _REFERENCE_DEFAULTS.reference_topic_top_k if topic_top_k is None else topic_top_k
-        )
-        self._recent_narrative_limit = int(
-            _REFERENCE_DEFAULTS.reference_recent_narrative_limit
-            if recent_narrative_limit is None else recent_narrative_limit
-        )
-        self._recent_semantic_top_k = int(
-            _REFERENCE_DEFAULTS.reference_recent_semantic_top_k
-            if recent_semantic_top_k is None else recent_semantic_top_k
-        )
-        self._candidate_cap = int(
-            _REFERENCE_DEFAULTS.reference_candidate_cap if candidate_cap is None else candidate_cap
-        )
-        self._entity_section_limit = int(
-            _REFERENCE_DEFAULTS.reference_entity_section_limit if entity_section_limit is None else entity_section_limit
-        )
-        self._anchor_text_chars = int(
-            _REFERENCE_DEFAULTS.reference_anchor_text_chars if anchor_text_chars is None else anchor_text_chars
-        )
-        self._candidate_body_chars = int(
-            _REFERENCE_DEFAULTS.reference_candidate_body_chars if candidate_body_chars is None else candidate_body_chars
-        )
-        self._entity_snippet_chars = int(
-            _REFERENCE_DEFAULTS.reference_entity_snippet_chars if entity_snippet_chars is None else entity_snippet_chars
-        )
+        self._thresholds = thresholds or ThresholdsConfig()
         self._reason_temperature = reason_temperature
-        self._topic_anchor_min_chars = int(
-            _REFERENCE_DEFAULTS.reference_topic_anchor_min_chars
-            if topic_anchor_min_chars is None else topic_anchor_min_chars
-        )
 
     @property
     def last_llm_error(self) -> str:
@@ -194,8 +136,8 @@ class ReferenceResolver:
         cleaned = re.sub(r"\s+", " ", message).strip()
         cleaned = _TOPIC_PUNCT_PATTERN.sub(" ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        if len(cleaned) >= self._topic_anchor_min_chars:
-            sigs.topic_anchors.append(cleaned[: self._anchor_text_chars])
+        if len(cleaned) >= self._thresholds.reference_topic_anchor_min_chars:
+            sigs.topic_anchors.append(cleaned[: self._thresholds.reference_anchor_text_chars])
         return sigs
 
     # ── 阶段二：本地候选召回（FTS5，O(log n)）────────────────────────────────
@@ -222,21 +164,21 @@ class ReferenceResolver:
 
         # 话题 + 整条消息 → 多锚点召回
         anchors: list[str] = []
-        for anchor in [message[: self._anchor_text_chars], *sigs.topic_anchors]:
+        for anchor in [message[: self._thresholds.reference_anchor_text_chars], *sigs.topic_anchors]:
             if anchor and anchor not in anchors:
                 anchors.append(anchor)
-            if len(anchors) >= self._max_anchors:
+            if len(anchors) >= self._thresholds.reference_max_anchors:
                 break
-        _add(semantic.retrieve_multi_anchor(anchors, top_k=self._topic_top_k, source=source), "topic")
+        _add(semantic.retrieve_multi_anchor(anchors, top_k=self._thresholds.reference_topic_top_k, source=source), "topic")
 
         # 最近叙事预热 → 只提供最近上下文，不替用户解释时间词
-        recent_rows = episodic.list_recent_narrative(limit=self._recent_narrative_limit)
+        recent_rows = episodic.list_recent_narrative(limit=self._thresholds.reference_recent_narrative_limit)
         for row in recent_rows:
-            content = row.get("content", "")[: self._anchor_text_chars]
+            content = row.get("content", "")[: self._thresholds.reference_anchor_text_chars]
             if content:
-                _add(semantic.retrieve(content, top_k=self._recent_semantic_top_k, source=source), "recent")
+                _add(semantic.retrieve(content, top_k=self._thresholds.reference_recent_semantic_top_k, source=source), "recent")
 
-        return dict(list(candidates.items())[: self._candidate_cap])
+        return dict(list(candidates.items())[: self._thresholds.reference_candidate_cap])
 
     # ── 阶段三：LLM 推理（核心思考）────────────────────────────────────────
 
@@ -255,7 +197,7 @@ class ReferenceResolver:
         # 构造候选节点摘要（控制 token 数）
         cand_lines: list[str] = []
         for nid, nd in candidates.items():
-            body_snippet = nd.get("body", "")[: self._candidate_body_chars].replace("\n", " ")
+            body_snippet = nd.get("body", "")[: self._thresholds.reference_candidate_body_chars].replace("\n", " ")
             created_at = str(nd.get("created_at", ""))
             cand_lines.append(
                 f'  {{"id":"{nid}","kind":"{nd.get("kind","")}","title":"{nd.get("title","")}","created_at":"{created_at}","body":"{body_snippet}"}}'
@@ -327,7 +269,7 @@ class ReferenceResolver:
                 if nid not in candidates:
                     continue
                 confidence = float(item.get("confidence", 0.0))
-                if confidence < self._min_confidence:
+                if confidence < self._thresholds.reference_min_confidence:
                     continue
                 nd = candidates[nid]
                 entities.append(ResolvedEntity(
@@ -335,7 +277,7 @@ class ReferenceResolver:
                     title=nd.get("title", nid),
                     kind=nd.get("kind", "unknown"),
                     confidence=round(confidence, 2),
-                    snippet=nd.get("body", "")[: self._entity_snippet_chars],
+                    snippet=nd.get("body", "")[: self._thresholds.reference_entity_snippet_chars],
                     signal_types=nd.get("_sig", []),
                     relationship_note=str(item.get("relationship_note", "")),
                 ))
@@ -343,21 +285,21 @@ class ReferenceResolver:
             # 降级路径：本地评分（简单计数信号数）
             for nid, nd in candidates.items():
                 sigs_hit = nd.get("_sig", [])
-                base = self._local_signal_base + len(set(sigs_hit)) * self._local_signal_step
-                if base < self._min_confidence:
+                base = self._thresholds.reference_local_signal_base + len(set(sigs_hit)) * self._thresholds.reference_local_signal_step
+                if base < self._thresholds.reference_min_confidence:
                     continue
                 entities.append(ResolvedEntity(
                     node_id=nid,
                     title=nd.get("title", nid),
                     kind=nd.get("kind", "unknown"),
-                    confidence=round(min(base, self._local_confidence_cap), 2),
-                    snippet=nd.get("body", "")[: self._entity_snippet_chars],
+                    confidence=round(min(base, self._thresholds.reference_local_confidence_cap), 2),
+                    snippet=nd.get("body", "")[: self._thresholds.reference_entity_snippet_chars],
                     signal_types=sigs_hit,
                     relationship_note="（本地评分，LLM 不可用）",
                 ))
 
         entities.sort(key=lambda e: e.confidence, reverse=True)
-        return entities[: self._entity_section_limit]
+        return entities[: self._thresholds.reference_entity_section_limit]
 
     # ── 格式化注入 entity_section ────────────────────────────────────────────
 

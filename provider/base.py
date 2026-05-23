@@ -21,6 +21,8 @@ class Message:
 
 @runtime_checkable
 class Provider(Protocol):
+    model_ref: str
+
     async def chat(
         self,
         messages: list[Message],
@@ -33,4 +35,11 @@ class Provider(Protocol):
 
     async def close(self) -> None:
         """释放连接资源。"""
+        ...
+
+
+@runtime_checkable
+class EmbeddingProvider(Protocol):
+    def embed(self, text: str) -> list[float]:
+        """返回单条文本的 embedding 向量。"""
         ...

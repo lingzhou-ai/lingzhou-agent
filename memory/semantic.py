@@ -421,6 +421,31 @@ class SemanticMemory:
             return MemoryNode.from_dict(json.loads(path.read_text(encoding="utf-8")))
         return None
 
+    def find_by_title(self, title: str, limit: int = 10) -> list[MemoryNode]:
+        normalized = (title or "").strip()
+        if not normalized:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM nodes WHERE title = ? ORDER BY created_at DESC LIMIT ?",
+                (normalized, limit),
+            ).fetchall()
+            return [self._row_to_node(r) for r in rows]
+        except Exception:
+            pass
+        hits: list[MemoryNode] = []
+        for p in self._dir.glob("*.json"):
+            try:
+                node = MemoryNode.from_dict(json.loads(p.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+            if node.title == normalized:
+                hits.append(node)
+                if len(hits) >= limit:
+                    break
+        hits.sort(key=lambda item: item.created_at, reverse=True)
+        return hits[:limit]
+
     def retrieve(
         self,
         query: str,
@@ -601,7 +626,7 @@ class SemanticMemory:
         self.upsert(MemoryNode(
             id=node_id,
             kind="learned_insight",
-            title=f"[{kind}]",
+            title=f"[{kind}] [{node_id[-6:]}]",
             body=insight.strip(),
             activation=0.8,
             valence=valence,

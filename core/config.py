@@ -492,6 +492,43 @@ class EvolutionConfig(BaseModel):
         ),
     )
 
+class EthosConfig(BaseModel):
+    """每 tick derive_ethos_state 使用的全部 Ethos 调整参数。
+
+    以 soul.ethos 嵌套在 SoulConfig 中。旧格式的扁平 ethos_* 字段由
+    SoulConfig._migrate_flat_ethos 自动升级，无需手动修改 lingzhou.json。
+    """
+    baseline: dict[str, float] = Field(
+        default_factory=lambda: {
+            "truth": 0.85, "caution": 0.70, "continuity": 0.65,
+            "curiosity": 0.60, "care": 0.55,
+        },
+        description="初始价值图式（灵魂基因），可随经历缓慢演化",
+    )
+    ema_alpha: float = Field(default=0.9, ge=0.0, le=1.0, description="Ethos EMA 平滑系数")
+    floor_truth: float = Field(default=0.50, ge=0.0, le=1.0, description="truth 维度运行时下限")
+    floor_caution: float = Field(default=0.45, ge=0.0, le=1.0, description="caution 维度运行时下限")
+    prefer_verification_caution_min: float = Field(default=0.72, ge=0.0, le=1.0)
+    prefer_verification_failure_count: int = Field(default=3, ge=1)
+    prefer_narrow_failure_count: int = Field(default=3, ge=1)
+    prefer_narrow_error_streak: int = Field(default=4, ge=1)
+    preserve_continuity_min: float = Field(default=0.60, ge=0.0, le=1.0)
+    avoid_overclaiming_down_regulate_streak: int = Field(default=5, ge=1)
+    failure_adjust_count: int = Field(default=2, ge=1)
+    failure_truth_delta: float = Field(default=0.11, ge=0.0, le=1.0)
+    failure_caution_delta: float = Field(default=0.10, ge=0.0, le=1.0)
+    failure_curiosity_delta: float = Field(default=0.08, ge=0.0, le=1.0)
+    high_error_adjust_streak: int = Field(default=4, ge=1)
+    high_error_truth_delta: float = Field(default=0.10, ge=0.0, le=1.0)
+    high_error_caution_delta: float = Field(default=0.12, ge=0.0, le=1.0)
+    high_error_care_delta: float = Field(default=0.07, ge=0.0, le=1.0)
+    active_task_continuity_delta: float = Field(default=0.08, ge=0.0, le=1.0)
+    next_step_continuity_delta: float = Field(default=0.06, ge=0.0, le=1.0)
+    next_step_care_delta: float = Field(default=0.05, ge=0.0, le=1.0)
+    recovering_curiosity_delta: float = Field(default=0.09, ge=0.0, le=1.0)
+    recovering_care_delta: float = Field(default=0.07, ge=0.0, le=1.0)
+
+
 class SoulConfig(BaseModel):
     """数字生命种子的初始人格。
 
@@ -507,106 +544,28 @@ class SoulConfig(BaseModel):
             "不欺骗或刻意误导用户",
             "不绕过人类监督机制",
         ],
-        description="init 时呈现给用户的建议禁忌条目；用户可接受、修改或清空；写入 DB 后仅用户可变更"
+        description="init 时呈现给用户的建议禁忌条目；用户可接受、修改或清空；写入 DB 后仅用户可变更",
     )
-    ethos_baseline: dict[str, float] = Field(
-        default_factory=lambda: {
-            "truth":       0.85,
-            "caution":     0.70,
-            "continuity":  0.65,
-            "curiosity":   0.60,
-            "care":        0.55,
-        },
-        description="初始价値图式（灵魂基因），可随经历缓慢演化"
-    )
-    ethos_ema_alpha: float = Field(
-        default=0.9, ge=0.0, le=1.0,
-        description="Ethos EMA 平滑系数（灵魂演化速率）；0.9=慢速漂移（历史权重90%），不同于情绪的快速调节"
-    )
-    ethos_floor_truth: float = Field(
-        default=0.50, ge=0.0, le=1.0,
-        description="truth 维度运行时下限；防止极端场景下完全崩溃，可调低以允许更大幅度的演化"
-    )
-    ethos_floor_caution: float = Field(
-        default=0.45, ge=0.0, le=1.0,
-        description="caution 维度运行时下限；防止极端场景下完全崩溃，可调低以允许更大幅度的演化"
-    )
-    ethos_prefer_verification_caution_min: float = Field(
-        default=0.72, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：caution 达到此阈值时偏向 verification posture",
-    )
-    ethos_prefer_verification_failure_count: int = Field(
-        default=3, ge=1,
-        description="兼容旧 judgment config snapshot：failure_count 达到此值时偏向 verification posture",
-    )
-    ethos_prefer_narrow_failure_count: int = Field(
-        default=3, ge=1,
-        description="兼容旧 judgment config snapshot：failure_count 达到此值时偏向 narrow posture",
-    )
-    ethos_prefer_narrow_error_streak: int = Field(
-        default=4, ge=1,
-        description="兼容旧 judgment config snapshot：error streak 达到此值时偏向 narrow posture",
-    )
-    ethos_preserve_continuity_min: float = Field(
-        default=0.60, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：continuity 低于此值时避免打断当前任务链",
-    )
-    ethos_avoid_overclaiming_down_regulate_streak: int = Field(
-        default=5, ge=1,
-        description="兼容旧 judgment config snapshot：down-regulate streak 达到此值时增强谨慎性",
-    )
-    ethos_failure_adjust_count: int = Field(
-        default=2, ge=1,
-        description="兼容旧 judgment config snapshot：failure 调整基准次数",
-    )
-    ethos_failure_truth_delta: float = Field(
-        default=0.11, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：failure 后 truth 调整幅度",
-    )
-    ethos_failure_caution_delta: float = Field(
-        default=0.10, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：failure 后 caution 调整幅度",
-    )
-    ethos_failure_curiosity_delta: float = Field(
-        default=0.08, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：failure 后 curiosity 调整幅度",
-    )
-    ethos_high_error_adjust_streak: int = Field(
-        default=4, ge=1,
-        description="兼容旧 judgment config snapshot：连续高错误调整阈值",
-    )
-    ethos_high_error_truth_delta: float = Field(
-        default=0.10, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：高错误 streak 后 truth 调整幅度",
-    )
-    ethos_high_error_caution_delta: float = Field(
-        default=0.12, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：高错误 streak 后 caution 调整幅度",
-    )
-    ethos_high_error_care_delta: float = Field(
-        default=0.07, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：高错误 streak 后 care 调整幅度",
-    )
-    ethos_active_task_continuity_delta: float = Field(
-        default=0.08, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：存在 active task 时 continuity 调整幅度",
-    )
-    ethos_next_step_continuity_delta: float = Field(
-        default=0.06, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：存在 next_step 时 continuity 调整幅度",
-    )
-    ethos_next_step_care_delta: float = Field(
-        default=0.05, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：存在 next_step 时 care 调整幅度",
-    )
-    ethos_recovering_curiosity_delta: float = Field(
-        default=0.09, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：recovering 状态下 curiosity 调整幅度",
-    )
-    ethos_recovering_care_delta: float = Field(
-        default=0.07, ge=0.0, le=1.0,
-        description="兼容旧 judgment config snapshot：recovering 状态下 care 调整幅度",
-    )
+    ethos: EthosConfig = Field(default_factory=EthosConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_flat_ethos(cls, data: Any) -> Any:
+        """向后兼容：将旧格式的扁平 ethos_* 字段升级到 ethos: EthosConfig。"""
+        if not isinstance(data, dict):
+            return data
+        flat = {k: v for k, v in data.items() if k.startswith("ethos_")}
+        if not flat:
+            return data
+        merged = {k: v for k, v in data.items() if not k.startswith("ethos_")}
+        ethos: dict = dict(merged.pop("ethos", {}))
+        if "ethos_baseline" in flat:
+            ethos.setdefault("baseline", flat.pop("ethos_baseline"))
+        for k, v in flat.items():
+            ethos.setdefault(k[6:], v)   # strip "ethos_" prefix
+        merged["ethos"] = ethos
+        return merged
+
 
 class ThresholdsConfig(BaseModel):
     """内部感知驱动任务的触发阈值。
@@ -813,6 +772,13 @@ class ThresholdsConfig(BaseModel):
     wm_pri_monitor: float = Field(default=0.58, ge=0.0, le=1.0, description="后台监控状态摘要（run_monitor）的 WM 优先级")
 
 
+class GatewayConfig(BaseModel):
+    default_channel: Literal["local", "wechat", "webhook"] = Field(
+        default="local",
+        description="gateway start/run 在未显式传 --channel 时使用的默认消息渠道",
+    )
+
+
 class Config(BaseModel):
     """所有配置的统一入口。改行为 = 改 lingzhou.json，不改代码。"""
 
@@ -888,6 +854,7 @@ class Config(BaseModel):
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     thresholds: ThresholdsConfig = Field(default_factory=ThresholdsConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
 
     # 配置文件所在目录，用于解析相对路径（由 load() 填充）
     _base_dir: Path = Path(".")
@@ -978,7 +945,9 @@ class Config(BaseModel):
         from provider.catalog import resolve_context_window  # 延迟导入，避免循环
 
         context_window = resolve_context_window(
-            self.active_model_id, self.context_window_tokens
+            self.active_model_id,
+            self.context_window_tokens,
+            catalog_path=self.workspace_dir / "models.json",
         )
         if context_window is None:
             raise ValueError(
@@ -1025,3 +994,44 @@ class Config(BaseModel):
             f"也未找到内置回退: {builtin}\n"
             f"（config.prompts.{key} = {raw_path!r}）"
         )
+
+
+def _format_config_doc_default(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def config_reference_defaults() -> dict[str, str]:
+    """导出 docs/CONFIG.md 中核心默认值表格的源码真相。"""
+    loop = LoopConfig()
+    memory = MemoryConfig()
+    evolution = EvolutionConfig()
+    gateway = GatewayConfig()
+    return {
+        "loop.max_concurrent_ticks": _format_config_doc_default(loop.max_concurrent_ticks),
+        "loop.max_tick_queue": _format_config_doc_default(loop.max_tick_queue),
+        "loop.max_idle_gap": _format_config_doc_default(loop.max_idle_gap),
+        "loop.active_idle_gap": _format_config_doc_default(loop.active_idle_gap),
+        "loop.min_act_gap": _format_config_doc_default(loop.min_act_gap),
+        "loop.chat_reply_timeout": _format_config_doc_default(loop.chat_reply_timeout),
+        "loop.max_tool_rounds": _format_config_doc_default(loop.max_tool_rounds),
+        "loop.judge_every": _format_config_doc_default(loop.judge_every),
+        "loop.max_consecutive_errors": _format_config_doc_default(loop.max_consecutive_errors),
+        "loop.evolve_every": _format_config_doc_default(loop.evolve_every),
+        "memory.working_capacity": _format_config_doc_default(memory.working_capacity),
+        "memory.max_events": _format_config_doc_default(memory.max_events),
+        "memory.semantic_decay_lambda": _format_config_doc_default(memory.semantic_decay_lambda),
+        "memory.embedding_weight": _format_config_doc_default(memory.embedding_weight),
+        "evolution.enabled": _format_config_doc_default(evolution.enabled),
+        "evolution.trigger_min_failures": _format_config_doc_default(evolution.trigger_min_failures),
+        "evolution.trigger_window_minutes": _format_config_doc_default(evolution.trigger_window_minutes),
+        "evolution.error_streak_evolve": _format_config_doc_default(evolution.error_streak_evolve),
+        "evolution.max_attempts": _format_config_doc_default(evolution.max_attempts),
+        "evolution.backup": _format_config_doc_default(evolution.backup),
+        "gateway.default_channel": _format_config_doc_default(gateway.default_channel),
+    }

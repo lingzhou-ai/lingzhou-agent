@@ -35,23 +35,117 @@ if TYPE_CHECKING:
 
 
 class _ScopedTaskStore:
-    """透传所有 TaskStore 方法，仅覆盖 get_active() 始终返回指定子任务。
+    """显式暴露并行任务所需的 TaskStore 表面，并固定 get_active()。
 
     并行执行时多个 _run_one_task 协程共享同一个 ctx，
     而 _dispatch_act 内部调用 ctx.task_store.get_active() 确定当前活跃任务。
     注入 pin 后确保每个子任务的 dispatch 只操作自己的行，
     避免 run 记录、update_task_result、record_failure 写入错误任务。
+    新增 TaskStore 方法时，只有并行路径确实需要时才应显式加入这里。
     """
 
     def __init__(self, inner: Any, pinned: "Task") -> None:
         self._inner = inner
         self._pinned = pinned
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+    async def _call(self, method: str, /, *args: Any, **kwargs: Any) -> Any:
+        return await getattr(self._inner, method)(*args, **kwargs)
 
     async def get_active(self) -> "Task":
         return self._pinned
+
+    async def get_task_by_id(self, task_id: int) -> "Task | None":
+        return await self._call("get_task_by_id", task_id)
+
+    async def add_task(self, title: str, goal: str = "", **kwargs: Any) -> int:
+        return await self._call("add_task", title, goal, **kwargs)
+
+    async def list_tasks(self, *, status: str | None = None, limit: int = 20) -> list[Any]:
+        return await self._call("list_tasks", status=status, limit=limit)
+
+    async def update_status(
+        self,
+        task_id: int,
+        status: str,
+        next_step: str | None = None,
+        *,
+        current_step: str | None = None,
+        model_tier: str | None = None,
+        result_json: dict[str, Any] | None = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {
+            "current_step": current_step,
+            "model_tier": model_tier,
+        }
+        if result_json is not None:
+            kwargs["result_json"] = result_json
+        await self._inner.update_status(task_id, status, next_step, **kwargs)
+
+    async def mark_waiting(self, task_id: int, **kwargs: Any) -> None:
+        await self._call("mark_waiting", task_id, **kwargs)
+
+    async def resume_task(self, task_id: int, status: str = "in_progress", **kwargs: Any) -> None:
+        await self._call("resume_task", task_id, status=status, **kwargs)
+
+    async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
+        await self._call("update_task_data", task_id, extra_dict)
+
+    async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
+        await self._call("update_task_result", task_id, result_json)
+
+    async def list_runs(self, **kwargs: Any) -> list[Any]:
+        return await self._call("list_runs", **kwargs)
+
+    async def add_run(self, **kwargs: Any) -> int:
+        return await self._call("add_run", **kwargs)
+
+    async def update_run(self, run_id: int, **kwargs: Any) -> None:
+        await self._call("update_run", run_id, **kwargs)
+
+    async def add_meta_reflection(self, **kwargs: Any) -> int:
+        return await self._call("add_meta_reflection", **kwargs)
+
+    async def list_failures(self, limit: int = 20) -> list[Any]:
+        return await self._call("list_failures", limit=limit)
+
+    async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list[Any]:
+        return await self._call("list_failures_for_task", task_id, limit=limit)
+
+    async def record_failure(self, **kwargs: Any) -> int:
+        return await self._call("record_failure", **kwargs)
+
+    async def dismiss_failure(self, failure_id: int) -> None:
+        await self._call("dismiss_failure", failure_id)
+
+    async def get_fact(self, key: str) -> tuple[str, bool]:
+        return await self._call("get_fact", key)
+
+    async def set_fact(self, key: str, value: str, *, scope: str = "general") -> None:
+        await self._call("set_fact", key, value, scope=scope)
+
+    async def list_facts(self, prefix: str = "", limit: int = 20) -> list[tuple[str, str]]:
+        return await self._call("list_facts", prefix=prefix, limit=limit)
+
+    async def add_signal(
+        self,
+        title: str,
+        run_at: str,
+        repeat_secs: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        return await self._call("add_signal", title, run_at, repeat_secs, payload)
+
+    async def list_signals(self, limit: int = 50, include_done: bool = False) -> list[dict[str, Any]]:
+        return await self._call("list_signals", limit=limit, include_done=include_done)
+
+    async def get_signal(self, signal_id: int) -> dict[str, Any] | None:
+        return await self._call("get_signal", signal_id)
+
+    async def ack_signal(self, signal_id: int) -> None:
+        await self._call("ack_signal", signal_id)
+
+    async def cancel_signal(self, signal_id: int) -> None:
+        await self._call("cancel_signal", signal_id)
 
 
 async def _run_one_task(
@@ -140,9 +234,8 @@ async def _run_one_task(
         "ok_steps": ok_steps,
         "terminal_decision": terminal_decision,
     }
-    await loop._task_store.update_task_result(task.id, result_data)
     if error:
-        await loop._task_store.update_status(task.id, "failed")
+        await loop._task_store.update_status(task.id, "failed", result_json=result_data)
     elif terminal_decision in {"wait", "pause"}:
         wait_key = str(getattr(task, "parent_task_id", "") or "")
         next_step = (str(getattr(task, "next_step", "") or "").strip() or (final_rationale or "").strip() or None)
@@ -156,9 +249,10 @@ async def _run_one_task(
                 "terminal_decision": terminal_decision,
             },
             next_step=next_step,
+            result_json=result_data,
         )
     else:
-        await loop._task_store.update_status(task.id, "done")
+        await loop._task_store.update_status(task.id, "done", result_json=result_data)
 
     # 构建返回给主 tick 的 history entry
     steps_text = "\n".join(

@@ -1,8 +1,6 @@
 """tools/task_ops.py — 任务管理工具（供 LLM 通过判断层调用）。"""
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
 import uuid
 from typing import Any
 
@@ -30,35 +28,27 @@ from tools.registry import (
     ToolParam,
     ToolResult,
     ToolContext,
-    ToolRegistry,
     tool,
-    tool_name_has_capability,
+    tool_has_capability,
+    CAPS_EXEMPT,
 )
 from memory.semantic import MemoryNode
 
 
-@lru_cache(maxsize=1)
-def _ensure_tool_capabilities_loaded() -> bool:
-    reg = ToolRegistry()
-    reg.discover(Path(__file__).resolve().parent)
-    return True
+def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:
+    return tool_has_capability(ctx.registry, tool_name, capability)
 
 
-def _has_capability(tool_name: str, capability: str) -> bool:
-    _ensure_tool_capabilities_loaded()
-    return tool_name_has_capability(tool_name, capability)
+def _is_completion_info_tool(ctx: ToolContext, tool_name: str) -> bool:
+    return _has_capability(ctx, tool_name, "completion_info_only")
 
 
-def _is_completion_info_tool(tool_name: str) -> bool:
-    return _has_capability(tool_name, "completion_info_only")
+def _is_completion_mutation_tool(ctx: ToolContext, tool_name: str) -> bool:
+    return _has_capability(ctx, tool_name, "completion_mutation")
 
 
-def _is_completion_mutation_tool(tool_name: str) -> bool:
-    return _has_capability(tool_name, "completion_mutation")
-
-
-def _is_completion_verify_tool(tool_name: str) -> bool:
-    return _has_capability(tool_name, "completion_verify")
+def _is_completion_verify_tool(ctx: ToolContext, tool_name: str) -> bool:
+    return _has_capability(ctx, tool_name, "completion_verify")
 
 
 def _task_metadata(task: Any) -> dict[str, Any]:
@@ -69,7 +59,7 @@ def _task_metadata(task: Any) -> dict[str, Any]:
     name="task.advance",
     description="将活跃任务推进到 in_progress 状态并更新 next_step（首次取任务时调用）",
     progress_category="mutation",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
         params=[
         ToolParam("task_id", "number", "可选：显式指定要推进的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "计划的下一步描述", required=False),
@@ -159,7 +149,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.complete",
     description="将当前活跃任务标记为完成，并将任务叙事编译进语义记忆",
     progress_category="mutation",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
         params=[
         ToolParam("task_id", "number", "可选：显式指定要完成的任务 id；不传则使用当前 active task", required=False),
         ToolParam("force", "boolean", "可选：强制完成，跳过轻量证据门槛", required=False),
@@ -191,7 +181,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             r.tool_name for r in recent_runs
             if r.status == "succeeded" and r.tool_name and not r.tool_name.startswith("task.")
         ]
-        only_info_browsing = bool(recent_tools) and all(_is_completion_info_tool(t) for t in recent_tools)
+        only_info_browsing = bool(recent_tools) and all(_is_completion_info_tool(ctx, t) for t in recent_tools)
         explicit_progress = bool((task.current_step or "").strip() or str(task.result_json.get("summary") or "").strip())
         if only_info_browsing and not explicit_progress:
             return ToolResult(
@@ -209,13 +199,13 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         # 要求其后至少有一个成功的验证动作（如跑测试）。
         # 注意：list_runs 返回的是 ORDER BY id DESC（最新在前），
         # 因此用 min(idx) 找最新 mutation，[:idx] 取比它更新的工具。
-        has_mutation = any(_is_completion_mutation_tool(t) for t in recent_tools)
+        has_mutation = any(_is_completion_mutation_tool(ctx, t) for t in recent_tools)
         if has_mutation:
             # 最新 mutation 的索引（DESC 顺序下 min = 最近）
-            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if _is_completion_mutation_tool(t))
+            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if _is_completion_mutation_tool(ctx, t))
             # 比最新 mutation 更近的工具（索引更小）
             post_mutation_tools = recent_tools[:latest_mutation_idx]
-            verified_after = any(_is_completion_verify_tool(t) for t in post_mutation_tools)
+            verified_after = any(_is_completion_verify_tool(ctx, t) for t in post_mutation_tools)
             if not verified_after:
                 return ToolResult(
                     summary=(
@@ -250,7 +240,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         node = MemoryNode(
             id=f"skill-{uuid.uuid4().hex[:12]}",
             kind="learned_skill",
-            title=f"完成: {task.title[:80]}",
+            title=f"完成: task#{task.id} {task.title[:80]}",
             body=narrative[:1200],
             activation=0.8,
             valence=0.5,
@@ -278,7 +268,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     description="列出任务列表",
     prefer_tier="reader",
     progress_category="info",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only"),
         params=[
         ToolParam("status", "string", "过滤状态: pending/in_progress/ready/resumed/waiting/done/all", required=False),
         ToolParam("limit", "number", "最多返回条数，默认 10", required=False),
@@ -305,7 +295,7 @@ async def task_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.update",
     description="更新当前活跃任务的 next_step 或状态。仅在有实质状态变更时调用，不用于记录思考进度。",
     progress_category="mutation",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
         params=[
         ToolParam("task_id", "number", "可选：显式指定要更新的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "下一步计划", required=False),
@@ -326,14 +316,19 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             summary=f"任务 [{task.id}] 当前处于 waiting，不能直接降级为 {status}，请使用 task.resume 恢复",
             skipped=True,
         )
-    next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
-    current_step = str(params.get("current_step") or "").strip() if "current_step" in params else task.current_step
-    model_tier = str(params.get("model_tier") or "").strip() if "model_tier" in params else task.model_tier
-    if "current_step" in params:
-        await ctx.task_store.update_task_data(task.id, {"current_step": current_step})
-    if "model_tier" in params:
-        await ctx.task_store.update_task_data(task.id, {"model_tier": model_tier})
-    await ctx.task_store.update_status(task.id, status, next_step)
+    has_next_step = "next_step" in params
+    has_current_step = "current_step" in params
+    has_model_tier = "model_tier" in params
+    next_step = str(params.get("next_step") or "").strip() if has_next_step else task.next_step
+    current_step = str(params.get("current_step") or "").strip() if has_current_step else task.current_step
+    model_tier = str(params.get("model_tier") or "").strip() if has_model_tier else task.model_tier
+    await ctx.task_store.update_status(
+        task.id,
+        status,
+        next_step if has_next_step else None,
+        current_step=current_step if has_current_step else None,
+        model_tier=model_tier if has_model_tier else None,
+    )
     return ToolResult(
         summary=f"任务 [{task.id}] 已更新: status={status}",
         evidence=f"task_id={task.id} next_step={next_step[:80]}",
@@ -347,7 +342,7 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.fail",
     description="将当前活跃任务标记为失败，记录失败原因并写入失败日志（触发进化反馈）",
     progress_category="mutation",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
         params=[
         ToolParam("task_id", "number", "可选：显式指定要失败的任务 id；不传则使用当前 active task", required=False),
         ToolParam("reason", "string", "失败原因摘要", required=True),
@@ -383,7 +378,7 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.wait",
     description="把任务切到 waiting，并记录等待条件（外部结果 / 定时器 / 子任务等）",
     progress_category="mutation",
-    capabilities=("completion_mutation", "plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=("completion_mutation", *CAPS_EXEMPT),
     params=[
         ToolParam("task_id", "number", "可选：显式指定任务 id；不传则使用当前 active task", required=False),
         ToolParam("wait_kind", "string", "等待类型，如 process/task/signal/time/external", required=True),
@@ -425,7 +420,7 @@ async def task_wait(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.resume",
     description="把 waiting/blocked 的任务恢复到 resumed/ready，并附带恢复结果",
     progress_category="mutation",
-    capabilities=("completion_mutation", "plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=("completion_mutation", *CAPS_EXEMPT),
     params=[
         ToolParam("task_id", "number", "要恢复的任务 id", required=True),
         ToolParam("status", "string", "恢复后的状态，默认 resumed，也可设为 ready/in_progress", required=False),
@@ -459,7 +454,7 @@ async def task_resume(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.steer",
     description="向指定任务的 inbox 注入转向指令；下一个 tick 该任务执行时将优先处理 inbox 消息",
     progress_category="mutation",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
     params=[
         ToolParam("task_id", "number", "目标任务 id；不传则使用当前 active task", required=False),
         ToolParam("message", "string", "转向指令内容（清晰描述新方向或修正要求）", required=True),

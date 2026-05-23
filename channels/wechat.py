@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from store.memory.ingress import IngressStore
+
 try:
     import requests  # type: ignore[import]
 except ImportError:
@@ -151,12 +153,12 @@ class WechatChannel:
     reply_loop: chat_messages -> iLink sendMessage
     """
 
-    def __init__(self, wc_cfg: WechatConfig, db_path: str):
+    def __init__(self, wc_cfg: WechatConfig, db_path: str | Path):
         self._cfg = wc_cfg
-        self._db_path = db_path
+        self._db_path = str(db_path)
+        self._ingress = IngressStore(db_path)
         self._stop = threading.Event()
         self._replied: set[int] = set()
-        self._user_msg_ids: dict[str, int] = {}
 
     def run_poll(self) -> None:
         if not self._cfg.poll_base_url:
@@ -202,33 +204,15 @@ class WechatChannel:
 
         ctx_token = msg.get("context_token", "")
         short = text.replace("\n", " ")[:50]
-
-        import sqlite3
-
-        conn = sqlite3.connect(self._db_path)
-        try:
-            conn.execute(
-                "INSERT INTO chat_messages (role, content, session_id, status, created_at) "
-                "VALUES (?,?,?,?,datetime('now'))",
-                ("user", text, f"wechat:{from_user}", "pending"),
-            )
-            conn.commit()
-            msg_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            if ctx_token:
-                conn.execute(
-                    "INSERT OR REPLACE INTO facts (key, value) VALUES (?,?)",
-                    (f"wechat:ctx:{from_user}", ctx_token),
-                )
-                conn.commit()
-            conn.execute(
-                "INSERT OR REPLACE INTO facts (key, value) VALUES (?,?)",
-                ("wechat:last_user", from_user),
-            )
-            conn.commit()
-            self._user_msg_ids[from_user] = msg_id
-            log.info("[wechat] chat_msg id=%d from=%s: %s", msg_id, from_user[:16], short)
-        finally:
-            conn.close()
+        facts: dict[str, str | tuple[str, str]] = {"wechat:last_user": from_user}
+        if ctx_token:
+            facts[f"wechat:ctx:{from_user}"] = ctx_token
+        msg_id = self._ingress.ingest_user_message(
+            text,
+            chat_id=f"wechat:{from_user}",
+            facts=facts,
+        )
+        log.info("[wechat] chat_msg id=%d from=%s: %s", msg_id, from_user[:16], short)
 
     def run_reply(self) -> None:
         log.info("[wechat] reply 监控启动 interval=%ds", self._cfg.reply_poll_sec)
@@ -241,27 +225,15 @@ class WechatChannel:
             self._stop.wait(self._cfg.reply_poll_sec)
 
     def _check_and_reply(self) -> None:
-        import sqlite3
-
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute(
-                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
-                "WHERE role = 'assistant' AND session_id LIKE 'wechat:%' "
-                "AND status IN ('pending', 'processed') "
-                "ORDER BY id ASC LIMIT 20"
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = self._ingress.list_pending_assistant_messages(chat_prefix="wechat:", limit=20)
 
         for row in rows:
-            mid = row["id"]
+            mid = int(row["id"])
             if mid in self._replied:
                 continue
 
-            content = row["content"]
-            chat_id = row["chat_id"] or ""
+            content = str(row["content"] or "")
+            chat_id = str(row["chat_id"] or "")
             from_user = chat_id.replace("wechat:", "", 1)
 
             if not from_user or not content:
@@ -282,30 +254,11 @@ class WechatChannel:
                     time.sleep(1)
 
     def _get_ctx_token(self, from_user: str) -> str:
-        import sqlite3
-
-        conn = sqlite3.connect(self._db_path)
-        try:
-            row = conn.execute(
-                "SELECT value FROM facts WHERE key = ?",
-                (f"wechat:ctx:{from_user}",),
-            ).fetchone()
-            return row[0] if row else ""
-        finally:
-            conn.close()
+        value, found = self._ingress.get_fact(f"wechat:ctx:{from_user}")
+        return value if found else ""
 
     def _mark_delivered(self, msg_id: int) -> None:
-        import sqlite3
-
-        conn = sqlite3.connect(self._db_path)
-        try:
-            conn.execute(
-                "UPDATE chat_messages SET status = 'delivered' WHERE id = ?",
-                (msg_id,),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self._ingress.mark_chat_message_delivered(msg_id)
 
     def _download_images(self, items: list[dict], from_user: str) -> list[dict]:
         """下载并解密 iLink 图片（AES-ECB）。"""
@@ -381,7 +334,7 @@ class WechatChannel:
         log.info("[wechat] 通道已停止")
 
 
-def start_wechat_channel(wc_cfg: dict, db_path: str) -> WechatChannel:
+def start_wechat_channel(wc_cfg: dict[str, Any], db_path: str | Path) -> WechatChannel:
     config = WechatConfig(
         base_url=wc_cfg.get("base_url", DEFAULT_BASE_URL),
         poll_base_url=wc_cfg.get("poll_base_url", ""),
@@ -392,3 +345,10 @@ def start_wechat_channel(wc_cfg: dict, db_path: str) -> WechatChannel:
     channel = WechatChannel(config, db_path)
     channel.start()
     return channel
+
+
+def describe_wechat_channel(wc_cfg: dict[str, Any]) -> str:
+    poll_url = wc_cfg.get("poll_base_url") or wc_cfg.get("base_url", DEFAULT_BASE_URL)
+    send_url = wc_cfg.get("base_url", DEFAULT_BASE_URL)
+    poll_sec = int(wc_cfg.get("poll_sec", DEFAULT_POLL_SEC))
+    return f"微信 iLink: poll={poll_url}  send={send_url}  interval={poll_sec}s"

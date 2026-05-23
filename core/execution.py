@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 from core.config import run_result_memory_affect
 from core.worker import WorkerLayer
-from tools.registry import ToolResult, ToolContext, tool_has_capability, tool_name_has_capability
+from memory.task_store import build_task_run_result_patch
+from tools.registry import ToolResult, ToolContext, tool_has_capability
 
 _log = logging.getLogger("lingzhou.execution")
 
@@ -199,14 +200,19 @@ def _resolved_run_task_id(result: ToolResult, active_task_id: int) -> int:
     return active_task_id
 
 
-def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> tuple[str, str]:
+def _infer_run_profile(
+    tool_name: str,
+    params: dict[str, Any] | None = None,
+    *,
+    registry: "ToolRegistry | None" = None,
+) -> tuple[str, str]:
     p = params or {}
     if p.get("monitor_fact_key") or p.get("status_fact_key"):
         _log.debug("[run-profile] tool=%s classified as llm-worker via fact monitor", tool_name)
         return "llm", "llm-worker"
-    if tool_name_has_capability(tool_name, "run_spawn"):
+    if tool_has_capability(registry, tool_name, "run_spawn"):
         return "exec", "exec-worker"
-    if tool_name_has_capability(tool_name, "multimodal"):
+    if tool_has_capability(registry, tool_name, "multimodal"):
         return "multimodal", "multimodal-worker"
     return "tool_chain", "tool-chain-worker"
 
@@ -291,21 +297,25 @@ def _record_run_started(
     )
 
 
-def _record_run_outcome(
-    ctx: ToolContext,
+def record_run_outcome_memory(
+    episodic: Any | None,
+    semantic: Any | None,
     *,
+    memory_cfg: Any | None,
     run_id: int,
     task_id: int,
     tool_name: str,
     worker_type: str,
     status: str,
     progress: str,
-    result: ToolResult,
+    summary: str,
+    error: str,
+    evidence: str = "",
 ) -> None:
-    is_failure = bool(result.error)
-    if ctx.episodic is not None:
+    is_failure = bool(error) or status == "failed"
+    if episodic is not None:
         event_type = "run_failed" if is_failure or status == "failed" else "run_completed"
-        ctx.episodic.record_event(
+        episodic.record_event(
             event_type,
             {
                 "run_id": run_id,
@@ -313,11 +323,11 @@ def _record_run_outcome(
                 "tool_name": tool_name,
                 "worker_type": worker_type,
                 "status": status,
-                "summary": result.summary[:800],
-                "error": (result.error or "")[:400],
+                "summary": summary[:800],
+                "error": error[:400],
             },
         )
-    if ctx.semantic is None:
+    if semantic is None:
         return
     from memory.semantic import MemoryNode
 
@@ -336,17 +346,17 @@ def _record_run_outcome(
     ]
     if progress:
         body_parts.append(f"progress={progress}")
-    if result.summary:
-        body_parts.append(f"summary={result.summary}")
-    if result.error:
-        body_parts.append(f"error={result.error}")
-    if result.evidence:
-        body_parts.append(f"evidence={result.evidence[:1200]}")
+    if summary:
+        body_parts.append(f"summary={summary}")
+    if error:
+        body_parts.append(f"error={error}")
+    if evidence:
+        body_parts.append(f"evidence={evidence[:1200]}")
     activation, valence = run_result_memory_affect(
-        getattr(ctx.config, "memory", None),
-        is_failure=is_failure or status == "failed",
+        memory_cfg,
+        is_failure=is_failure,
     )
-    ctx.semantic.upsert(MemoryNode(
+    semantic.upsert(MemoryNode(
         id=f"run-result-{run_id}",
         kind="run_result",
         title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
@@ -357,30 +367,11 @@ def _record_run_outcome(
     ))
 
 
-def record_run_result(
-    ctx: ToolContext,
-    run_id: int,
-    task_id: int,
-    tool_name: str,
-    worker_type: str,
-    status: str,
-    progress: str,
-    result: ToolResult,
+def record_meta_reflection_memory(
+    episodic: Any | None,
+    semantic: Any | None,
+    meta: dict[str, str | int],
 ) -> None:
-    """兼容导出：保留旧函数名，内部统一走 _record_run_outcome。"""
-    _record_run_outcome(
-        ctx,
-        run_id=run_id,
-        task_id=task_id,
-        tool_name=tool_name,
-        worker_type=worker_type,
-        status=status,
-        progress=progress,
-        result=result,
-    )
-
-
-def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None:
     reflection_id = str(meta.get("reflection_id") or "")
     target_kind = str(meta.get("target_kind") or "")
     loop_level = str(meta.get("loop_level") or "")
@@ -392,8 +383,8 @@ def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None
     proposal = str(meta.get("proposal") or "")
     verification_plan = str(meta.get("verification_plan") or "")
 
-    if ctx.episodic is not None and loop_level == "double":
-        ctx.episodic.record_event(
+    if episodic is not None and loop_level == "double":
+        episodic.record_event(
             "double_loop_reflection",
             {
                 "reflection_id": reflection_id,
@@ -404,7 +395,7 @@ def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None
                 "decision": decision,
             },
         )
-    if ctx.semantic is None:
+    if semantic is None:
         return
     from memory.semantic import MemoryNode
 
@@ -413,7 +404,7 @@ def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None
         tags.append(tool_name)
     if task_id:
         tags.append(f"task:{task_id}")
-    ctx.semantic.upsert(MemoryNode(
+    semantic.upsert(MemoryNode(
         id=f"meta-reflection-{reflection_id}",
         kind="meta_reflection",
         title=f"[{decision}] {target_kind or 'reflection'} run#{run_id}",
@@ -427,10 +418,12 @@ def record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None
         tags=tags,
     ))
     if decision in {"apply", "rollback"}:
-        ctx.semantic.upsert(MemoryNode(
+        rule_target = target_kind or "rule"
+        rule_tool = tool_name or "unknown-tool"
+        semantic.upsert(MemoryNode(
             id=f"rule-revision-{reflection_id}",
             kind="rule_revision",
-            title=f"[{decision}] {target_kind or 'rule'}",
+            title=f"[{decision}] {rule_target} via {rule_tool} run#{run_id}",
             body=(
                 f"target_kind={target_kind}\n"
                 f"tool_name={tool_name}\n"
@@ -591,7 +584,11 @@ class ExecutionLayer:
         durable_threshold = int(durable_policy.get("threshold") or _DURABLE_FAILURE_THRESHOLD)
         durable_ttl_sec = int(durable_policy.get("ttl_sec") or _DURABLE_FAILURE_TTL_SEC)
         if ctx.task_store is not None:
-            run_type, worker_type = _infer_run_profile(action.chosen_action_id or "", action.params)
+            run_type, worker_type = _infer_run_profile(
+                action.chosen_action_id or "",
+                action.params,
+                registry=self._registry,
+            )
             run_id = await ctx.task_store.add_run(
                 task_id=run_task_id,
                 run_type=run_type,
@@ -840,28 +837,32 @@ class ExecutionLayer:
             _state_log or "-",
         )
         if _should_record_run_outcome(status):
-            _record_run_outcome(
-                ctx,
+            record_run_outcome_memory(
+                ctx.episodic,
+                ctx.semantic,
+                memory_cfg=getattr(ctx.config, "memory", None),
                 run_id=run_id,
                 task_id=resolved_task_id,
                 tool_name=str(result.metadata.get("tool_name") or ""),
                 worker_type=str(result.metadata.get("worker_type") or ""),
                 status=status,
                 progress=progress,
-                result=result,
+                summary=result.summary,
+                error=result.error or "",
+                evidence=result.evidence,
             )
         if resolved_task_id:
             await ctx.task_store.update_task_result(
                 resolved_task_id,
-                {
-                    "last_run_id": run_id,
-                    "last_run_status": status,
-                    "worker_type": str(result.metadata.get("worker_type") or ""),
-                    "tool_name": str(result.metadata.get("tool_name") or ""),
-                    "session_id": str(result.metadata.get("session_id") or ""),
-                    "summary": result.summary,
-                    "error": result.error,
-                },
+                build_task_run_result_patch(
+                    run_id=run_id,
+                    status=status,
+                    worker_type=str(result.metadata.get("worker_type") or ""),
+                    tool_name=str(result.metadata.get("tool_name") or ""),
+                    session_id=str(result.metadata.get("session_id") or ""),
+                    summary=result.summary,
+                    error=result.error,
+                ),
             )
         meta = build_meta_reflection(
             run_id=run_id,
@@ -883,4 +884,4 @@ class ExecutionLayer:
                 run_id=int(meta["run_id"]),
                 tool_name=str(meta["tool_name"]),
             )
-            record_meta_reflection(ctx, meta)
+            record_meta_reflection_memory(ctx.episodic, ctx.semantic, meta)

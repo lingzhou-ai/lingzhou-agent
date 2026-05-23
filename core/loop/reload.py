@@ -12,6 +12,7 @@ from core.execution import ExecutionLayer
 from core.judgment import JudgmentLayer
 from core.perception import PerceptionLayer
 from provider import create_provider
+from provider.base import EmbeddingProvider
 
 from .startup import _build_routing_providers
 
@@ -68,7 +69,7 @@ async def _close_provider_stack(provider: Any, routing_providers: dict[str, Any]
 
 def _refresh_semantic_embed_runtime(loop: "CognitionLoop") -> None:
     semantic = cast(Any, loop._semantic)
-    semantic._embed_fn = getattr(loop._provider, "embed", None) if loop._cfg.memory.embedding_model else None
+    semantic._embed_fn = loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None
     semantic._embedding_weight = loop._cfg.memory.embedding_weight
 
 

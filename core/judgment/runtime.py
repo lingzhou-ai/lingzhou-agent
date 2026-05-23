@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -85,6 +86,19 @@ if TYPE_CHECKING:
     from provider.base import Provider
 
 
+# ── 认知基底（传入 decide/assemble_context 的感知+记忆层快照） ─────────────────
+
+@dataclass(slots=True)
+class CognitionFrame:
+    """6 个认知基底字段的轻量容器，替代 decide() / _assemble_context() 的位置参数展开。"""
+    percept: "Percept"
+    wm: "WorkingMemory"
+    task_store: "TaskStore"
+    episodic: "EpisodicMemory"
+    semantic: "SemanticMemory"
+    emotion: "EmotionState"
+
+
 # ── 判断层 ─────────────────────────────────────────────────────────────────────
 
 class JudgmentLayer:
@@ -106,21 +120,8 @@ class JudgmentLayer:
         self._skills = SkillRegistry(skills_dir=_skills_dir)
         self._ref_resolver = ReferenceResolver(
             provider=provider,
-            min_confidence=cfg.thresholds.reference_min_confidence,
-            local_signal_base=cfg.thresholds.reference_local_signal_base,
-            local_signal_step=cfg.thresholds.reference_local_signal_step,
-            local_confidence_cap=cfg.thresholds.reference_local_confidence_cap,
-            max_anchors=cfg.thresholds.reference_max_anchors,
-            topic_top_k=cfg.thresholds.reference_topic_top_k,
-            recent_narrative_limit=cfg.thresholds.reference_recent_narrative_limit,
-            recent_semantic_top_k=cfg.thresholds.reference_recent_semantic_top_k,
-            candidate_cap=cfg.thresholds.reference_candidate_cap,
-            entity_section_limit=cfg.thresholds.reference_entity_section_limit,
-            anchor_text_chars=cfg.thresholds.reference_anchor_text_chars,
-            candidate_body_chars=cfg.thresholds.reference_candidate_body_chars,
-            entity_snippet_chars=cfg.thresholds.reference_entity_snippet_chars,
+            thresholds=cfg.thresholds,
             reason_temperature=cfg.temperature,
-            topic_anchor_min_chars=cfg.thresholds.reference_topic_anchor_min_chars,
         )
         # 自我模型追踪：持久化运行态与任务连续性
         self.self_model = SelfModel()
@@ -307,9 +308,9 @@ class JudgmentLayer:
         """按 model_ref 找到或创建 provider（用于 routing_overrides 临时覆盖）。"""
         if model_ref == self._cfg.model:
             return self._provider
-        # _routing_providers 按 tier 存储，用完整 model_ref 匹配（不能用 p._model 短 ID，会永远不等）
+        # _routing_providers 按 tier 存储，用完整 model_ref 匹配
         for p in self._routing_providers.values():
-            p_ref = getattr(p, "_model_ref", None) or getattr(p, "_model", None)
+            p_ref = getattr(p, "model_ref", None) or getattr(p, "_model_ref", None)
             if p_ref == model_ref:
                 return p
         if model_ref not in self._override_providers:
@@ -618,6 +619,7 @@ class JudgmentLayer:
         registry: "Any | None" = None,
     ) -> str:
         effective_registry = self._effective_registry(registry)
+        catalog_path = self._cfg.workspace_dir / "models.json"
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -628,7 +630,7 @@ class JudgmentLayer:
                 continue
             seen.add(key)
             model_id = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
-            spec = lookup_model(model_id) or {}
+            spec = lookup_model(model_id, catalog_path=catalog_path) or {}
             reasoning = bool(spec.get("reasoning"))
             last_error = self._provider_errors.get(model_ref)
             health = self._get_health(model_ref)
@@ -798,8 +800,8 @@ class JudgmentLayer:
         # 全量 catalog 模型列表（所有 provider 所有模型），让 LLM 能看到可用选项
         from provider import catalog as _cat
         catalog_entries: list[dict[str, Any]] = []
-        for _pname in _cat.list_providers():
-            for _m in _cat.list_provider_models(_pname):
+        for _pname in _cat.list_providers(catalog_path=catalog_path):
+            for _m in _cat.list_provider_models(_pname, catalog_path=catalog_path):
                 catalog_entries.append({
                     "model": f"{_pname}/{_m.get('id', '')}",
                     "provider": _pname,
@@ -821,12 +823,8 @@ class JudgmentLayer:
 
     async def decide(
         self,
-        percept: "Percept",
-        wm: "WorkingMemory",
-        task_store: "TaskStore",
-        episodic: "EpisodicMemory",
-        semantic: "SemanticMemory",
-        emotion: "EmotionState",
+        frame: "CognitionFrame",
+        *,
         active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
@@ -851,7 +849,7 @@ class JudgmentLayer:
             self._context_cache.clear()
             _clear_context_cache()
             context_text = await self._assemble_context(
-                percept, wm, task_store, episodic, semantic, emotion,
+                frame,
                 active_task=active_task,
                 user_message=user_message,
                 ethos_state=ethos_state,
@@ -915,7 +913,7 @@ class JudgmentLayer:
             output,
             context_text=context_text,
             raw=raw,
-            record_parse_failure=task_store.record_failure,
+            record_parse_failure=frame.task_store.record_failure,
         )
         _applied = self._record_applied_skills(output)
         _log.info(
@@ -1087,12 +1085,7 @@ class JudgmentLayer:
 
     async def _assemble_context(
         self,
-        percept: "Percept",
-        wm: "WorkingMemory",
-        task_store: "TaskStore",
-        episodic: "EpisodicMemory",
-        semantic: "SemanticMemory",
-        emotion: "EmotionState",
+        frame: "CognitionFrame",
         active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
@@ -1108,6 +1101,9 @@ class JudgmentLayer:
         registry_override: "Any | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
+        percept, wm = frame.percept, frame.wm
+        task_store, episodic = frame.task_store, frame.episodic
+        semantic, emotion = frame.semantic, frame.emotion
         effective_registry = self._effective_registry(registry_override)
         task = active_task if active_task is not None else await task_store.get_active()
 
@@ -1202,7 +1198,7 @@ class JudgmentLayer:
         soul_section = _fmt_soul(
             axioms_val,
             ethos_val,
-            json.dumps(self._cfg.soul.ethos_baseline, ensure_ascii=False, sort_keys=True),
+            json.dumps(self._cfg.soul.ethos.baseline, ensure_ascii=False, sort_keys=True),
             json.dumps(self._cfg.soul.hard_axioms, ensure_ascii=False),
         )
 

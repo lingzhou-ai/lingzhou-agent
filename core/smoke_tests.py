@@ -26,6 +26,7 @@ SMOKE_TESTS: dict[str, str] = {
     "core/perception/ethos.py": """
 s = mod.EthosState()
 _ = hash(s)          # 必须可哈希，这是历史 P0 bug 的根因
+from core.config import EthosConfig
 e = mod.derive_ethos_state(
     failure_count=0,
     high_error_streak=0,
@@ -33,13 +34,7 @@ e = mod.derive_ethos_state(
     has_next_step=False,
     perception_trend="neutral",
     emotion_down_regulate_streak=0,
-    seed_values={
-        "truth": 0.85,
-        "caution": 0.70,
-        "continuity": 0.65,
-        "curiosity": 0.60,
-        "care": 0.55,
-    },
+    ethos_cfg=EthosConfig(),
 )
 assert 0.0 <= e.values.truth <= 1.0, f"truth out of range: {e.values.truth}"
 assert isinstance(e.bias.reasons, list)
@@ -393,7 +388,25 @@ assert hasattr(mod, "subagent_absorb"), "subagent_absorb function missing"
     "tools/ask.py": """assert True""",
     "tools/browser.py": """assert True""",
     "tools/image.py": """assert True""",
-    "tools/image_gen.py": """assert True""",
+    "tools/image_gen.py": """
+import asyncio
+from types import SimpleNamespace
+from tools.registry import _registry
+
+entry = _registry.get("image.generate")
+assert entry is not None, "image.generate manifest missing"
+assert entry.manifest.name == "image.generate"
+param_names = [p.name for p in entry.manifest.params]
+assert "prompt" in param_names, "prompt param missing"
+assert "size" in param_names, "size param missing"
+assert "provider" in param_names, "provider param missing"
+
+empty = asyncio.run(mod.image_generate({}, SimpleNamespace()))
+assert empty.error == "EmptyPrompt", f"unexpected empty prompt error: {empty.error!r}"
+
+bad_provider = asyncio.run(mod.image_generate({"prompt": "demo", "provider": "bad"}, SimpleNamespace()))
+assert bad_provider.error == "BadProvider", f"unexpected provider error: {bad_provider.error!r}"
+""",
     "tools/notify.py": """assert True""",
     "tools/schedule.py": """assert True""",
     "tools/tts.py": """assert True""",

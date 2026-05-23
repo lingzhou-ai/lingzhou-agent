@@ -13,18 +13,56 @@ import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Annotated, Any, Optional
-
 import typer
 
 from cli.bootstrap import onboarding_status
+from channels import describe_channel_runtime, start_channel_runtime
+from typing import Annotated, Any, Optional
+
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
 from cli.plugin import plugin_app
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 _LOCK_FILE = Path("~/.lingzhou/lingzhou.lock").expanduser()
-_LOCK_FD = None  # 保持打开的锁文件描述符，进程退出时自动释放锁
+_LOCK_FD: Any = None  # 保持打开的锁文件描述符，进程退出时自动释放锁
+
+
+def _startup_config_log_line(
+    cfg: Any,
+    requested_config: Path,
+    *,
+    channel: str,
+    daemon: bool,
+) -> str:
+    requested = requested_config.expanduser().resolve()
+    base_dir = Path(getattr(cfg, "_base_dir", requested.parent)).expanduser().resolve()
+    effective = (base_dir / "lingzhou.json").resolve()
+    routing = getattr(cfg, "routing", {}) or {}
+    routing_items = ", ".join(
+        f"{tier}={model_ref}" for tier, model_ref in sorted(routing.items())
+    ) if routing else "(none)"
+    return (
+        "[startup] "
+        f"channel={channel} daemon={daemon} "
+        f"requested_config={requested} effective_config={effective} "
+        f"main_model={getattr(cfg, 'model', '')} routing={routing_items}"
+    )
+
+
+def _restart_mode_log_line(
+    requested_config: Path,
+    *,
+    mode: str,
+    channel: str | None,
+) -> str:
+    requested = requested_config.expanduser().resolve()
+    return (
+        "[restart] "
+        f"mode={mode} "
+        f"channel={channel or '(auto)'} "
+        f"requested_config={requested}"
+    )
 
 
 def _ensure_singleton() -> None:
@@ -392,9 +430,11 @@ def gateway_restart(
     避免 systemd 与 PID 文件双管理导致多实例竞争。
     """
     if _is_systemd_managed():
+        console.print(f"[dim]{_restart_mode_log_line(config, mode='systemd', channel=channel)}[/dim]")
         if _restart_via_systemd():
             return  # systemd 已接管，不需要后续操作
     # 非 systemd 管理：使用原有的 PID 文件模式
+    console.print(f"[dim]{_restart_mode_log_line(config, mode='pid', channel=channel)}[/dim]")
     _kill_existing_loop(quiet=False)
     gateway_start(channel=channel, config=config, debug=debug, dry_run=dry_run, daemon=True)
 
@@ -424,20 +464,16 @@ def gateway_start(
         console.print("[dim]检测到 systemd 管理，使用 systemctl restart...[/dim]")
         _restart_via_systemd()
         return
-    
-    # 从 config 读取默认渠道（直接读 JSON，避免 Pydantic 模型不包含 gateway 字段）
-    if channel is None:
-        try:
-            _raw = _json.loads(config.read_text(encoding="utf-8"))
-            channel = _raw.get("gateway", {}).get("default_channel", "local")
-        except Exception:
-            channel = "local"
 
     ready, reason = onboarding_status(config)
     if not ready:
         console.print(f"[yellow]{reason}[/yellow]")
         console.print("[dim]先运行: lingzhou onboard[/dim]")
         raise typer.Exit(1)
+
+    cfg = load_cfg(config)
+    if channel is None:
+        channel = str(cfg.gateway.default_channel or "local").strip() or "local"
 
     if channel not in _GATEWAY_CHANNELS:
         console.print(f"[yellow]{channel} 渠道尚在开发中。当前可用: {', '.join(_GATEWAY_READY)}[/yellow]")
@@ -469,7 +505,6 @@ def gateway_start(
             raise typer.Exit(1)
         gw_conf = _json.loads(gw_cfg_path.read_text(encoding="utf-8"))
 
-    cfg = load_cfg(config)
     # 加载 .env 确保 daemon 进程有 API keys
     try:
         from dotenv import load_dotenv  # type: ignore[import-untyped]
@@ -486,12 +521,13 @@ def gateway_start(
     log_level = logging.DEBUG if (debug or cfg.loop.debug) else logging.INFO
     log_file, console_log_file = _configure_lingzhou_logging(log_dir, log_level)
     console.print(f"[dim]渠道: [cyan]{channel}[/cyan]  日志: {log_file}  console: {console_log_file}[/dim]")
+    logging.getLogger("lingzhou.gateway").info(
+        _startup_config_log_line(cfg, config, channel=channel, daemon=daemon)
+    )
 
     # 启动 channel sidecar（loop 主线程仍是 asyncio）
-    if channel == "webhook":
-        _start_webhook_sidecar(gw_conf, cfg)
-    elif channel == "wechat":
-        _start_wechat_sidecar(gw_conf, cfg)
+    if channel != "local":
+        _start_external_channel_runtime(channel, gw_conf, db_path=cfg.db_path)
 
     from core.loop import CognitionLoop
     loop_instance = CognitionLoop(cfg)
@@ -540,93 +576,6 @@ def stop() -> None:
         raise typer.Exit(1)
 
 
-def _start_webhook_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
-    """在 daemon 线程中启动 webhook HTTP 服务，与主 loop asyncio 并行。
-
-    POST /message  {"message": "...", "priority": "high"}
-    → 同步写入 SQLite tasks 表 → loop 下一个 tick 消费
-    """
-    import sqlite3
-    import datetime as _dt
-
-    host = gw_conf.get("host", "0.0.0.0")
-    port = int(gw_conf.get("port", 8765))
-    secret = gw_conf.get("secret")
-    db_path = str(cfg.db_path)
-
-    console.print(
-        f"[dim]Webhook 监听: http://{host}:{port}/message"
-        f"{'  (Bearer token)' if secret else '  (无鉴权)'}[/dim]"
-    )
-
-    class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
-            pass  # 静默访问日志
-
-        def do_POST(self) -> None:
-            if self.path != "/message":
-                self.send_response(404); self.end_headers(); return
-            if secret:
-                if self.headers.get("Authorization", "") != f"Bearer {secret}":
-                    self.send_response(401); self.end_headers(); return
-            try:
-                length = min(int(self.headers.get("Content-Length", 0)), 65536)
-            except (ValueError, TypeError):
-                self.send_response(400); self.end_headers(); return
-            body = self.rfile.read(length)
-            try:
-                payload = _json.loads(body)
-                msg = payload.get("message", "").strip()
-                priority = payload.get("priority", "high")
-            except Exception:
-                self.send_response(400); self.end_headers(); return
-            if not msg:
-                self.send_response(400); self.end_headers()
-                self.wfile.write(b'{"error":"empty message"}'); return
-
-            short = msg.replace("\n", " ")[:28] + ("..." if len(msg) > 28 else "")
-            now = _dt.datetime.now(_dt.UTC).isoformat()
-            try:
-                conn = sqlite3.connect(db_path)
-                try:
-                    data_json = _json.dumps(
-                        {"goal": msg, "source": "gateway:webhook", "next_step": ""},
-                        ensure_ascii=False,
-                    )
-                    conn.execute(
-                        "INSERT INTO tasks (title, status, priority, created_at, data) VALUES (?,?,?,?,?)",
-                        (f"webhook: {short}", "pending", priority, now, data_json),
-                    )
-                    conn.commit()
-                    task_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                finally:
-                    conn.close()
-                resp = _json.dumps({"ok": True, "task_id": task_id}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(resp)
-                console.print(f"[green][webhook] 注入任务 id={task_id}: {short}[/green]")
-            except Exception as e:
-                self.send_response(500); self.end_headers()
-                self.wfile.write(_json.dumps({"error": str(e)}).encode())
-
-    server = HTTPServer((host, port), _Handler)
-    t = threading.Thread(target=server.serve_forever, daemon=True, name="webhook-gateway")
-    t.start()
-
-
-def _start_wechat_sidecar(gw_conf: dict[str, Any], cfg: Any) -> None:
-    """启动微信 iLink 通道 sidecar（daemon 线程）。
-
-    iLink long-poll → 写入 SQLite tasks 表 → loop 消费 → 回复通过 iLink 发送
-    """
-    from channels.wechat import start_wechat_channel
-
-    db_path = str(cfg.db_path)
-    poll_url = gw_conf.get("poll_base_url") or gw_conf.get("base_url", "https://ilinkai.weixin.qq.com")
-    send_url = gw_conf.get("base_url", "https://ilinkai.weixin.qq.com")
-    console.print(
-        f"[dim]微信 iLink: poll={poll_url}  send={send_url}  interval={gw_conf.get('poll_sec', 35)}s[/dim]"
-    )
-    start_wechat_channel(gw_conf, db_path)
+def _start_external_channel_runtime(channel: str, gw_conf: dict[str, Any], *, db_path: str | Path) -> object:
+    console.print(f"[dim]{describe_channel_runtime(channel, gw_conf)}[/dim]")
+    return start_channel_runtime(channel, gw_conf, db_path)

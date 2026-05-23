@@ -41,6 +41,7 @@ from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory
 from memory.task_store import TaskStore, Task
 from provider import create_provider
+from provider.base import EmbeddingProvider
 from tools.registry import ToolRegistry, ToolContext, ToolResult
 from core.behavior_tracker import BehaviorTracker
 from core.soul import SoulManager
@@ -142,9 +143,9 @@ class CognitionLoop:
             except Exception as _e:
                 import logging as _lg
                 _lg.getLogger("lingzhou.loop").warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", _e)
-                _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
+                _embed_fn = self._provider.embed if cfg.memory.embedding_model and isinstance(self._provider, EmbeddingProvider) else None
         elif cfg.memory.embedding_model:
-            _embed_fn = getattr(self._provider, "embed", None)
+            _embed_fn = self._provider.embed if isinstance(self._provider, EmbeddingProvider) else None
         self._semantic = SemanticMemory(
             cfg.memory_dir,
             decay_lambda=cfg.memory.semantic_decay_lambda,
@@ -162,6 +163,7 @@ class CognitionLoop:
                 "edit_caution": cfg.thresholds.wm_pri_self_aware,
                 "belief_stale": cfg.thresholds.wm_pri_critical,
             },
+            registry=self._registry,
         )
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)
@@ -376,6 +378,7 @@ class CognitionLoop:
                     "edit_caution": self._cfg.thresholds.wm_pri_self_aware,
                     "belief_stale": self._cfg.thresholds.wm_pri_critical,
                 },
+                registry=self._registry,
             ),
             "_judgment": chain_judgment,
             "_conv_history": deque(maxlen=6),

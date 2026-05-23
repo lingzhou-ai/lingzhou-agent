@@ -21,14 +21,12 @@ if TYPE_CHECKING:
 _READER_TOOLS = frozenset({
     "file.list", "file.read",
     "memory.get_fact", "memory.search",
-    "schedule.list", "schedule.ack", "schedule.cancel",
+    "schedule.list",
     "shell.capabilities",
     "task.list",
-    "failure.dismiss",
     # 探针：只读列举，不触发执行
     "probe.list",
 })
-READER_TOOLS = _READER_TOOLS  # 公开别名，供外部模块引用
 
 _TOOL_TIER_MAPPING = {
     "reader": sorted(_READER_TOOLS),

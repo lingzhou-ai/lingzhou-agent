@@ -117,6 +117,24 @@ def test_episodic_no_rotation():
         assert len(events) == 20
 
 
+def test_semantic_store_reflection_title_uses_unique_suffix():
+    from memory.semantic import SemanticMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0)
+        first_id = sm.store_reflection('baseline', '洞察A')
+        second_id = sm.store_reflection('baseline', '洞察B')
+
+        first = sm.get(first_id)
+        second = sm.get(second_id)
+
+        assert first is not None
+        assert second is not None
+        assert first.title.startswith('[baseline] [')
+        assert second.title.startswith('[baseline] [')
+        assert first.title != second.title
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — search() 质量验证
 # ══════════════════════════════════════════════════════════════════════════════

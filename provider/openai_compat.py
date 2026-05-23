@@ -383,7 +383,9 @@ class OpenAICompatProvider:
 
     def __init__(self, cfg: "Config") -> None:
         provider = cfg.active_provider
+        self.model_ref = cfg.model
         self._model = cfg.active_model_id
+        self._catalog_path = cfg.workspace_dir / "models.json"
         self._temperature = cfg.temperature
         self._thinking_level = cfg.thinking
         self._extra_body: dict[str, Any] = dict(provider.extra_body)
@@ -557,7 +559,7 @@ class OpenAICompatProvider:
         return max(int(budget_max * frac), budget_min)
 
     def _model_spec(self) -> dict[str, Any]:
-        spec = lookup_model(self._model)
+        spec = lookup_model(self._model, catalog_path=getattr(self, "_catalog_path", None))
         return spec if isinstance(spec, dict) else {}
 
     def _record_usage(self, usage: dict | None) -> None:

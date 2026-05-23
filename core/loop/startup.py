@@ -168,16 +168,17 @@ def _build_routing_providers(cfg: Config) -> dict[str, Any]:
     if not cfg.routing:
         return {}
     from provider.catalog import lookup_model_ref, lookup_model
+    catalog_path = cfg.workspace_dir / "models.json"
     providers: dict[str, Any] = {}
     for tier, model_ref in cfg.routing.items():
         if not model_ref or model_ref == cfg.model:
             continue
         # 启动期校验：若 model_id 不在指定 provider 的目录中，但存在于其他 provider，提前告警
         if "/" in model_ref:
-            if lookup_model_ref(model_ref) is None:
+            if lookup_model_ref(model_ref, catalog_path=catalog_path) is None:
                 model_id = model_ref.split("/", 1)[1]
                 provider_name = model_ref.split("/", 1)[0]
-                alt = lookup_model(model_id)
+                alt = lookup_model(model_id, catalog_path=catalog_path)
                 if alt is not None:
                     _log.warning(
                         "[routing] tier=%s model=%s: 模型 %r 未在 provider %r 的内置目录中注册，"
@@ -210,12 +211,47 @@ def _routing_summary_text(cfg: Config, routing_providers: dict[str, Any]) -> str
     return "\n".join(routing_lines) if routing_lines else "  (无路由配置,全部使用主模型)"
 
 
+def _runtime_config_snapshot(
+    cfg: Config,
+    routing_providers: dict[str, Any],
+    *,
+    stage: str,
+) -> tuple[str, str]:
+    config_path = (cfg._base_dir / "lingzhou.json").resolve()
+    routing_items = ", ".join(
+        f"{tier}={model_ref}" for tier, model_ref in sorted(cfg.routing.items())
+    ) if cfg.routing else "(none)"
+    startup_line = (
+        "[startup] "
+        f"stage={stage} config={config_path} "
+        f"main_model={cfg.model} routing={routing_items}"
+    )
+    return startup_line, _routing_summary_text(cfg, routing_providers)
+
+
+def _log_runtime_config(
+    cfg: Config,
+    routing_providers: dict[str, Any],
+    *,
+    stage: str,
+) -> str:
+    startup_line, routing_summary = _runtime_config_snapshot(
+        cfg,
+        routing_providers,
+        stage=stage,
+    )
+    _log.info(startup_line)
+    _log.info("[routing] effective summary:\n%s", routing_summary)
+    return routing_summary
+
+
 async def _open_runtime_impl(loop: Any) -> None:
     from core.paths import project_root as _project_root
     _startup_health_check(loop._cfg, _project_root())
     await loop._task_store.open()
     await ensure_models_json(loop._cfg)
     loop._routing_providers = _build_routing_providers(loop._cfg)
+    _log_runtime_config(loop._cfg, loop._routing_providers, stage="open")
     loop._judgment.set_routing_providers(loop._routing_providers)
     loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
     loop._judgment.self_model.record_start(name="lingzhou")
@@ -233,6 +269,7 @@ async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
     cfg = loop._cfg
     await ensure_models_json(cfg)
     loop._routing_providers = _build_routing_providers(cfg)
+    routing_summary = _log_runtime_config(cfg, loop._routing_providers, stage="run")
     loop._judgment.set_routing_providers(loop._routing_providers)
     loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
     loop._judgment.self_model.record_start(name="lingzhou")
@@ -241,7 +278,7 @@ async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
     # 探针系统：从 probes.json 加载（已在 ProbeManager.__init__ 同步完成），启动调度 Task
     await loop._probe_manager.start(loop._wm, loop_ref=loop)
     await _restore_state_from_db_impl(loop)
-    return cfg, _routing_summary_text(cfg, loop._routing_providers)
+    return cfg, routing_summary
 
 
 async def _restore_state_from_db_impl(loop: Any) -> None:

@@ -26,20 +26,35 @@ def _sync_routing_models_on_primary_switch(
     old_model: str,
     new_model: str,
 ) -> list[str]:
-    """切换主模型时，全量同步 lingzhou.json 里所有 routing 条目到新模型。
+    """切换主模型时，仅同步跟随主模型的 routing 条目。
 
-    `lingzhou dev model` 的用户心智是"把当前运行模型切过去"。
-    全量同步避免"顶层 model 已切，routing.reasoner 仍是旧模型"的错觉。
-    reader 等因成本原因单独配置的条目，在 DB routing_overrides 里仍可保留原值。
+    规则：
+    - 常规切换时，仅同步精确指向旧主模型的 routing 条目。
+    - 若用户重选当前主模型，则修复仍停留在同 provider 旧模型上的残留 routing 条目。
+
+    这样既能让主推理链路跟随当前主模型，又不会覆盖 reader 等明确分流到其他 provider 的配置。
     """
-    if not old_model or not new_model or old_model == new_model:
+    if not old_model or not new_model:
         return []
     routing = cfg_data.get("routing")
     if not isinstance(routing, dict):
         return []
+
+    def _provider_name(model_ref: str) -> str:
+        provider, _, _ = model_ref.partition("/")
+        return provider
+
+    repair_same_provider = old_model == new_model
+    new_provider = _provider_name(new_model)
     changed: list[str] = []
     for tier, model_ref in routing.items():
-        if isinstance(model_ref, str) and model_ref != new_model:
+        if not isinstance(model_ref, str) or model_ref == new_model:
+            continue
+        if model_ref == old_model or (
+            repair_same_provider
+            and new_provider
+            and _provider_name(model_ref) == new_provider
+        ):
             routing[tier] = new_model
             changed.append(str(tier))
     return changed
@@ -68,14 +83,14 @@ def _sync_db_routing_overrides(cfg_path: Path, *, old_model: str, new_model: str
         if not row:
             conn.close()
             return
-        overrides = json.loads(row[0])
+        overrides = _json.loads(row[0])
         changed = [tier for tier, model in overrides.items() if model == old_model]
         for tier in changed:
             overrides[tier] = new_model
         if changed:
             conn.execute(
                 "UPDATE facts SET value=? WHERE key='pref:routing_overrides'",
-                (json.dumps(overrides, ensure_ascii=False),),
+                (_json.dumps(overrides, ensure_ascii=False),),
             )
             conn.commit()
             console.print(

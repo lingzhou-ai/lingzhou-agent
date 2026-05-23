@@ -204,6 +204,42 @@ async def _task_update_can_clear_runtime_fields():
         await store.close()
 
 
+def test_update_status_can_patch_runtime_fields_in_one_call():
+    asyncio.run(_update_status_can_patch_runtime_fields_in_one_call())
+
+
+async def _update_status_can_patch_runtime_fields_in_one_call():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "status-patch.db")
+        await store.open()
+        task_id = await store.add_task(
+            "状态补丁任务",
+            goal="验证单次 update_status 可同步 runtime 字段",
+            next_step="旧下一步",
+            current_step="旧当前步骤",
+            model_tier="reader",
+        )
+
+        await store.update_status(
+            task_id,
+            "in_progress",
+            "",
+            current_step="",
+            model_tier="",
+        )
+
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "in_progress"
+        assert task.next_step == ""
+        assert task.current_step == ""
+        assert task.model_tier == ""
+
+        await store.close()
+
+
 def test_task_wait_resume_can_clear_runtime_fields():
     asyncio.run(_task_wait_resume_can_clear_runtime_fields())
 
@@ -257,6 +293,48 @@ async def _task_wait_resume_can_clear_runtime_fields():
         assert resumed.status == "ready"
         assert resumed.current_step == ""
         assert resumed.next_step == ""
+
+        await store.close()
+
+
+def test_status_transitions_can_merge_result_json_in_one_call():
+    asyncio.run(_status_transitions_can_merge_result_json_in_one_call())
+
+
+async def _status_transitions_can_merge_result_json_in_one_call():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "status-result.db")
+        await store.open()
+        task_id = await store.add_task(
+            "状态结果合并",
+            goal="验证 status/waiting 可顺带合并 result_json",
+            result_json={"seed": "present"},
+        )
+
+        await store.update_status(task_id, "done", result_json={"summary": "ok"})
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "done"
+        assert task.result_json == {"seed": "present", "summary": "ok"}
+
+        await store.mark_waiting(
+            task_id,
+            wait_kind="task",
+            wait_key="parent-1",
+            wait_json={"terminal_decision": "wait"},
+            result_json={"terminal_decision": "wait"},
+        )
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.status == "waiting"
+        assert task.wait_key == "parent-1"
+        assert task.result_json == {
+            "seed": "present",
+            "summary": "ok",
+            "terminal_decision": "wait",
+        }
 
         await store.close()
 
@@ -424,8 +502,63 @@ async def _chat_pending_messages_are_recoverable_until_processed():
         await reopened.close()
 
 
+async def _ingress_store_unifies_external_chat_and_task_writes():
+    from memory.task_store import TaskStore
+    from store.memory.ingress import IngressStore
+
+    with tempfile.TemporaryDirectory() as d:
+        db_path = Path(d) / "ingress.db"
+        store = TaskStore(db_path)
+        await store.open()
+        await store.close()
+
+        ingress = IngressStore(db_path)
+        msg_id = ingress.ingest_user_message(
+            "\x1b[31mhi\x1b[0m\ufeff\u200b\ufffdthere",
+            chat_id="wechat:user-1",
+            facts={
+                "wechat:ctx:user-1": "ctx-1",
+                "wechat:last_user": "user-1",
+            },
+        )
+        task_id = ingress.add_task(
+            " webhook: inbound ",
+            goal="来自 webhook 的外部任务",
+            priority="high",
+            source="gateway:webhook",
+        )
+
+        verify = TaskStore(db_path)
+        await verify.open()
+        messages = await verify.get_chat_messages_since(0, chat_id="wechat:user-1")
+        assert len(messages) == 1
+        assert messages[0]["id"] == msg_id
+        assert messages[0]["content"] == "hithere"
+        ctx_value, ctx_found = await verify.get_fact("wechat:ctx:user-1")
+        assert ctx_found is True
+        assert ctx_value == "ctx-1"
+        task = await verify.get_task_by_id(task_id)
+        assert task is not None
+        assert task.title == "webhook: inbound"
+        assert task.goal == "来自 webhook 的外部任务"
+        assert task.source == "gateway:webhook"
+        assistant_id = await verify.add_chat_message("assistant", "已收到", chat_id="wechat:user-1")
+        await verify.close()
+
+        outbound = ingress.list_pending_assistant_messages(chat_prefix="wechat:", limit=10)
+        assert len(outbound) == 1
+        assert outbound[0]["id"] == assistant_id
+        assert outbound[0]["chat_id"] == "wechat:user-1"
+        ingress.mark_chat_message_delivered(assistant_id)
+        assert ingress.list_pending_assistant_messages(chat_prefix="wechat:", limit=10) == []
+
+
 def test_task_store_migration():
     asyncio.run(_task_store_migration())
+
+
+def test_ingress_store_unifies_external_chat_and_task_writes():
+    asyncio.run(_ingress_store_unifies_external_chat_and_task_writes())
 
 async def _task_store_migration():
     """旧列式 schema → JSON-first 自动迁移。"""

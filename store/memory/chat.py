@@ -30,6 +30,18 @@ def sanitize_chat_content(content: str) -> str:
     return text.strip()
 
 
+def build_chat_message_insert(
+    role: str,
+    content: str,
+    *,
+    chat_id: str = "",
+    status: str = "pending",
+) -> tuple[str, str, str, str]:
+    cleaned = sanitize_chat_content(content)
+    resolved_chat_id = str(chat_id or "")
+    return str(role), cleaned, resolved_chat_id, str(status or "pending")
+
+
 class ChatMessageStore:
     def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
         self._db_getter = db_getter
@@ -44,11 +56,14 @@ class ChatMessageStore:
         content: str,
         chat_id: str = "",
     ) -> int:
-        cleaned = sanitize_chat_content(content)
-        resolved_chat_id = str(chat_id or "")
+        resolved_role, cleaned, resolved_chat_id, _ = build_chat_message_insert(
+            role,
+            content,
+            chat_id=chat_id,
+        )
         async with self._db.execute(
             "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
-            (role, cleaned, resolved_chat_id),
+            (resolved_role, cleaned, resolved_chat_id),
         ) as cur:
             row_id: int = cur.lastrowid or 0
         await self._db.commit()

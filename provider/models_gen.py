@@ -14,7 +14,7 @@
         skip  — 指纹命中内存缓存，直接返回
         noop  — 指纹未缓存但文件内容与生成结果一致，仅更新缓存
         write — 内容不同，写入文件
-    - 写入后自动调用 catalog.set_runtime_path()，catalog 无需感知工作区路径。
+    - 只负责生成 workspace_dir/models.json；catalog 消费方自行显式传路径。
 
 调用点：
     CognitionLoop.run() / CognitionLoop.open() 在 task_store.open() 之后、
@@ -38,9 +38,17 @@ _log = logging.getLogger("lingzhou.models_gen")
 
 # 内存指纹缓存：str(workspace_models_path) → fingerprint
 _READY_CACHE: dict[str, str] = {}
+_READY_CACHE_MAX = 32
 
 # 从 ProviderDefinition 中写入 models.json 的连接字段（过滤掉敏感字段如 api_key）
 _PROVIDER_CATALOG_FIELDS = ("base_url", "mode", "type", "api_key_env")
+
+
+def _remember_ready_fingerprint(cache_key: str, fingerprint: str) -> None:
+    _READY_CACHE.pop(cache_key, None)
+    _READY_CACHE[cache_key] = fingerprint
+    while len(_READY_CACHE) > _READY_CACHE_MAX:
+        _READY_CACHE.pop(next(iter(_READY_CACHE)))
 
 
 def _deep_merge_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -143,12 +151,10 @@ class EnsureResult:
 async def ensure_models_json(cfg: "Config") -> EnsureResult:
     """确保 workspace_dir/models.json 是基于当前 config 生成的最新版本。
 
-    三态行为（skip/noop/write）：
-      skip  — 指纹命中内存缓存，直接激活 catalog 路径并返回
-      noop  — 指纹未缓存，但生成内容与磁盘文件一致，仅更新缓存
+        三态行为（skip/noop/write）：
+            skip  — 指纹命中内存缓存，直接返回
+            noop  — 指纹未缓存，但生成内容与磁盘文件一致，仅更新缓存
       write — 生成内容与磁盘不同（或文件不存在），写入文件
-
-    始终调用 catalog.set_runtime_path() 激活运行时 catalog。
     """
     workspace = cfg.workspace_dir
     workspace.mkdir(parents=True, exist_ok=True)
@@ -170,7 +176,6 @@ async def ensure_models_json(cfg: "Config") -> EnsureResult:
 
     # ── skip ──────────────────────────────────────────────────────────────
     if _READY_CACHE.get(cache_key) == fp:
-        _catalog.set_runtime_path(target)
         _log.debug("[models_gen] skip — 指纹命中缓存")
         return EnsureResult(wrote=False, path=target)
 
@@ -186,15 +191,13 @@ async def ensure_models_json(cfg: "Config") -> EnsureResult:
 
     # ── noop ──────────────────────────────────────────────────────────────
     if target.exists() and target.read_text(encoding="utf-8") == new_content:
-        _READY_CACHE[cache_key] = fp
-        _catalog.set_runtime_path(target)
+        _remember_ready_fingerprint(cache_key, fp)
         _log.debug("[models_gen] noop — 文件内容未变: %s", target)
         return EnsureResult(wrote=False, path=target)
 
     # ── write ─────────────────────────────────────────────────────────────
     was_new = not target.exists()
     target.write_text(new_content, encoding="utf-8")
-    _READY_CACHE[cache_key] = fp
-    _catalog.set_runtime_path(target)
+    _remember_ready_fingerprint(cache_key, fp)
     _log.info("[models_gen] %s: %s", "已创建" if was_new else "已更新", target)
     return EnsureResult(wrote=True, path=target)

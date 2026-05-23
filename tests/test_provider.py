@@ -325,7 +325,7 @@ def test_copilot_transport_selection_and_limits_are_metadata_driven(monkeypatch)
     provider._thinking_level = "high"
     provider._extra_body = {}
 
-    monkeypatch.setattr(mod, "lookup_model", lambda model_id: {
+    monkeypatch.setattr(mod, "lookup_model", lambda model_id, catalog_path=None: {
         "api": "responses",
         "reasoning": True,
         "max_tokens": 1234,
@@ -395,22 +395,41 @@ def test_models_gen_merges_provider_model_overrides_modalities_and_capabilities(
     cfg = Config.load(cfg_path)
     cfg.loop.workspace_dir = str(tmp_path / "workspace")
 
+    asyncio.run(ensure_models_json(cfg))
+
+    runtime_path = tmp_path / "workspace" / "models.json"
+    runtime_catalog = _json.loads(runtime_path.read_text(encoding="utf-8"))
+    copilot_models = {m["id"]: m for m in runtime_catalog["copilot"]["models"]}
+
+    assert copilot_models["gpt-5.4"]["api"] == "responses"
+    assert copilot_models["gpt-5.4"]["max_tokens"] == 65536
+    assert copilot_models["gpt-5.4"]["input"] == ["text"]
+    assert copilot_models["gpt-5.4"]["capabilities"] == ["text_generation", "thinking"]
+    assert copilot_models["gpt-5.4"]["request_params"]["unsupported"] == ["temperature", "top_p"]
+    assert copilot_models["future-vision"]["input"] == ["text", "image"]
+    assert copilot_models["future-vision"]["capabilities"] == ["text_generation", "vision"]
+    assert copilot_models["future-vision"]["api"] == "responses"
+    assert catalog_mod.lookup_model("future-vision") is None
+    explicit_model = catalog_mod.lookup_model("future-vision", catalog_path=runtime_path)
+    assert explicit_model is not None
+    assert explicit_model["api"] == "responses"
+
+
+def test_models_gen_ready_cache_is_bounded():
+    from provider import models_gen as models_gen_mod
+
+    previous_cache = dict(models_gen_mod._READY_CACHE)
     try:
-        asyncio.run(ensure_models_json(cfg))
+        models_gen_mod._READY_CACHE.clear()
+        for index in range(models_gen_mod._READY_CACHE_MAX + 5):
+            models_gen_mod._remember_ready_fingerprint(f"workspace-{index}", f"fp-{index}")
 
-        runtime_catalog = _json.loads((tmp_path / "workspace" / "models.json").read_text(encoding="utf-8"))
-        copilot_models = {m["id"]: m for m in runtime_catalog["copilot"]["models"]}
-
-        assert copilot_models["gpt-5.4"]["api"] == "responses"
-        assert copilot_models["gpt-5.4"]["max_tokens"] == 65536
-        assert copilot_models["gpt-5.4"]["input"] == ["text"]
-        assert copilot_models["gpt-5.4"]["capabilities"] == ["text_generation", "thinking"]
-        assert copilot_models["gpt-5.4"]["request_params"]["unsupported"] == ["temperature", "top_p"]
-        assert copilot_models["future-vision"]["input"] == ["text", "image"]
-        assert copilot_models["future-vision"]["capabilities"] == ["text_generation", "vision"]
-        assert copilot_models["future-vision"]["api"] == "responses"
+        assert len(models_gen_mod._READY_CACHE) == models_gen_mod._READY_CACHE_MAX
+        assert "workspace-0" not in models_gen_mod._READY_CACHE
+        assert f"workspace-{models_gen_mod._READY_CACHE_MAX + 4}" in models_gen_mod._READY_CACHE
     finally:
-        catalog_mod.set_runtime_path(catalog_mod.BUILTIN_CATALOG_PATH)
+        models_gen_mod._READY_CACHE.clear()
+        models_gen_mod._READY_CACHE.update(previous_cache)
 
 
 def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():

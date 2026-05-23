@@ -298,7 +298,7 @@ def _run_init(
             if not soul_exists or force:
                 seeded = True
                 hard_axioms = list(cfg.soul.hard_axioms)
-                ethos_baseline = dict(cfg.soul.ethos_baseline)
+                ethos_baseline = dict(cfg.soul.ethos.baseline)
 
                 await store.set_fact("soul:hard_axioms", _json.dumps(hard_axioms, ensure_ascii=False), scope="soul")
                 await store.set_fact("soul:ethos_baseline", _json.dumps(ethos_baseline, ensure_ascii=False), scope="soul")

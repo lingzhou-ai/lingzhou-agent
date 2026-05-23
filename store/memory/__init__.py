@@ -3,6 +3,7 @@
 from .chat import ChatMessageStore, sanitize_chat_content
 from .fact import FactStore
 from .failure import FailureStore
+from .ingress import IngressStore
 from .reflection import MetaReflectionStore
 from .run import RunStore
 from .signal import SignalStore
@@ -13,6 +14,7 @@ __all__ = [
     "ChatMessageStore",
     "FactStore",
     "FailureStore",
+    "IngressStore",
     "RunStore",
     "MetaReflectionStore",
     "SignalStore",

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, CAPS_EXEMPT
 from core.probe.types import ProbeConfig, normalize_probe_coverage_tags
 
 _log = logging.getLogger("lingzhou.probe")
@@ -197,7 +197,7 @@ async def probe_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     params=[],
     prefer_tier="reader",
     progress_category="info",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
 ))
 async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     probe_mgr = _get_probe_manager(ctx)

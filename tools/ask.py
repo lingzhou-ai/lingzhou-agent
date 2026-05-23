@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext, CAPS_EXEMPT
 
 
 @tool(ToolManifest(
@@ -21,7 +21,7 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
     ),
     prefer_tier="reasoner",
     progress_category="info",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=CAPS_EXEMPT,
     params=[
         ToolParam("question", "string", "要问的问题", required=True),
         ToolParam("choices", "object", "可选项列表（JSON 数组，最多4个）", required=False),

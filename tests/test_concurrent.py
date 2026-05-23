@@ -159,7 +159,7 @@ async def _scoped_task_store_get_active_returns_pinned():
 
 
 def test_scoped_task_store_delegates_other_methods():
-    """除 get_active() 外的所有方法必须透传给 inner store。"""
+    """_ScopedTaskStore 必须显式暴露并行路径依赖的方法。"""
     asyncio.run(_scoped_task_store_delegates_other_methods())
 
 
@@ -169,7 +169,7 @@ async def _scoped_task_store_delegates_other_methods():
     calls: list[str] = []
 
     class _InnerStore:
-        async def update_status(self, task_id, status, next_step=None):
+        async def update_status(self, task_id, status, next_step=None, *, current_step=None, model_tier=None):
             calls.append(f"update_status:{task_id}:{status}")
 
         async def update_task_result(self, task_id, result_json):
@@ -197,6 +197,20 @@ async def _scoped_task_store_delegates_other_methods():
     assert run_id == 42
     # get_active 被 scoped 覆盖，inner 的 get_active 不应被调用
     assert "inner_get_active" not in calls
+
+
+def test_scoped_task_store_does_not_leak_unknown_methods():
+    """_ScopedTaskStore 不应再通过 __getattr__ 泄漏父 store 的新增方法。"""
+    from core.loop.task_parallel import _ScopedTaskStore
+
+    class _InnerStore:
+        async def delete_fact(self, key):
+            raise AssertionError(f"delete_fact 不应透传: {key}")
+
+    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, SimpleNamespace(id=5, goal="pin")))
+
+    with pytest.raises(AttributeError):
+        _ = scoped.delete_fact
 
 
 # ── 2. _run_one_task ctx 隔离测试 ─────────────────────────────────────────────
@@ -325,20 +339,24 @@ async def _run_one_task_surfaces_terminal_wait_decision_to_parent_history():
     waiting_calls: list[dict[str, Any]] = []
 
     class _FakeStore:
-        async def update_task_result(self, task_id, result_json):
-            captured_result_json.update(dict(result_json))
+        async def update_task_result(self, *args, **kwargs):
+            raise AssertionError("terminal wait 不应再单独调用 update_task_result")
 
-        async def update_status(self, task_id, status, next_step=None):
+        async def update_status(self, task_id, status, next_step=None, *, result_json=None):
             status_calls.append((int(task_id), str(status)))
+            if result_json is not None:
+                captured_result_json.update(dict(result_json))
 
-        async def mark_waiting(self, task_id, *, wait_kind, wait_key="", wait_json=None, current_step=None, next_step=None):
+        async def mark_waiting(self, task_id, *, wait_kind, wait_key="", wait_json=None, current_step=None, next_step=None, result_json=None):
             waiting_calls.append({
                 "task_id": int(task_id),
                 "wait_kind": str(wait_kind),
                 "wait_key": str(wait_key),
                 "wait_json": dict(wait_json or {}),
                 "next_step": next_step,
+                "result_json": dict(result_json or {}),
             })
+            captured_result_json.update(dict(result_json or {}))
 
     class _MockJudgment:
         async def decide_continue(self, *, tool_history, user_message="",
@@ -373,6 +391,13 @@ async def _run_one_task_surfaces_terminal_wait_decision_to_parent_history():
         "wait_key": "7",
         "wait_json": {"wait_kind": "task", "wait_key": "7", "terminal_decision": "wait"},
         "next_step": "等待父任务审查",
+        "result_json": {
+            "summary": "还缺一个外部输入",
+            "error": "",
+            "rounds": 0,
+            "ok_steps": 0,
+            "terminal_decision": "wait",
+        },
     }]
 
 

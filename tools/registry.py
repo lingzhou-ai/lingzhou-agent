@@ -11,6 +11,7 @@ import importlib
 import importlib.util
 import sys
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
@@ -24,6 +25,10 @@ if TYPE_CHECKING:
 
 
 # ── 数据模型 ───────────────────────────────────────────────────────────────────
+
+# 高频 capabilities 组合常量，避免在每个 @tool 里重复字符串
+CAPS_EXEMPT: tuple[str, ...] = ("plan_bootstrap_exempt", "plan_alignment_exempt")
+CAPS_RUN_SPAWN: tuple[str, ...] = ("run_spawn",)
 
 @dataclass
 class ToolParam:
@@ -119,22 +124,27 @@ class ToolEntry:
 _registry: dict[str, ToolEntry] = {}
 
 
+@lru_cache(maxsize=1)
+def default_tool_registry() -> "ToolRegistry":
+    reg = ToolRegistry()
+    reg.discover(Path(__file__).resolve().parent)
+    return reg
+
+
 def manifest_has_capability(manifest: ToolManifest | None, capability: str) -> bool:
     return bool(manifest and capability and capability in manifest.capabilities)
 
 
 def tool_has_capability(registry: "ToolRegistry | None", tool_name: str, capability: str) -> bool:
-    if registry is None or not tool_name or not capability:
+    if not tool_name or not capability:
         return False
-    entry = registry.get(tool_name)
+    effective_registry = registry or default_tool_registry()
+    entry = effective_registry.get(tool_name)
     return manifest_has_capability(entry.manifest if entry else None, capability)
 
 
 def tool_name_has_capability(tool_name: str, capability: str) -> bool:
-    if not tool_name or not capability:
-        return False
-    entry = _registry.get(tool_name)
-    return manifest_has_capability(entry.manifest if entry else None, capability)
+    return tool_has_capability(default_tool_registry(), tool_name, capability)
 
 
 def tool(manifest: ToolManifest) -> Callable[[ToolHandler], ToolHandler]:
@@ -184,6 +194,9 @@ class ToolRegistry:
 
     def get(self, name: str) -> ToolEntry | None:
         return _registry.get(name)
+
+    def has_capability(self, name: str, capability: str) -> bool:
+        return tool_has_capability(self, name, capability)
 
     def list_manifests(self) -> list[ToolManifest]:
         return [e.manifest for e in _registry.values()]

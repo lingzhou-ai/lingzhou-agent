@@ -9,7 +9,7 @@ from pathlib import Path
 from core.paths import project_root, data_dir
 from typing import Any
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
 
 _log = logging.getLogger("lingzhou.tools.file")
 
@@ -320,7 +320,7 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     description="列出目录内容。支持 shallow list，用于替代 shell.run 的 ls/find 场景。",
     prefer_tier="reader",
     progress_category="info",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only", "result_streak_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only", "result_streak_only"),
     params=[
         ToolParam("path", "string", "目录路径", required=True),
         ToolParam("limit", "number", "最多返回多少项，默认 200", required=False),
@@ -374,7 +374,7 @@ async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ),
     prefer_tier="reader",
     progress_category="info",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only", "result_streak_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only", "result_streak_only"),
     params=[
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("offset", "number", "起始行号（1-indexed），配合 limit 使用", required=False),

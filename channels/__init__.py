@@ -1,5 +1,18 @@
 """channels — 外部消息通道入口。"""
 
-from channels.wechat import WechatChannel, WechatConfig, start_wechat_channel
+from channels.runtime import describe_channel_runtime, start_channel_runtime
+from channels.wechat import WechatChannel, WechatConfig, describe_wechat_channel, start_wechat_channel
+from channels.webhook import WebhookChannel, WebhookConfig, describe_webhook_channel, start_webhook_channel
 
-__all__ = ["WechatChannel", "WechatConfig", "start_wechat_channel"]
+__all__ = [
+	"describe_channel_runtime",
+	"start_channel_runtime",
+	"WechatChannel",
+	"WechatConfig",
+	"describe_wechat_channel",
+	"start_wechat_channel",
+	"WebhookChannel",
+	"WebhookConfig",
+	"describe_webhook_channel",
+	"start_webhook_channel",
+]

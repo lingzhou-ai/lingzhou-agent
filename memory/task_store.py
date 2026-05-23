@@ -45,6 +45,27 @@ _TASK_CORE_DATA_KEYS = frozenset({
     "model_tier",
 })
 
+
+def build_task_run_result_patch(
+    *,
+    run_id: int,
+    status: str,
+    worker_type: str,
+    tool_name: str,
+    session_id: str,
+    summary: str,
+    error: str | None,
+) -> dict[str, Any]:
+    return {
+        "last_run_id": int(run_id),
+        "last_run_status": str(status or ""),
+        "worker_type": str(worker_type or ""),
+        "tool_name": str(tool_name or ""),
+        "session_id": str(session_id or ""),
+        "summary": str(summary or ""),
+        "error": error,
+    }
+
 # ── 永久稳定 DDL ────────────────────────────────────────────────────────────
 _CREATE_TASKS = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -96,7 +117,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role       TEXT    NOT NULL,            -- 'user' | 'assistant'
     content    TEXT    NOT NULL,
     session_id TEXT    NOT NULL DEFAULT '',
-    status     TEXT    NOT NULL DEFAULT 'pending',  -- pending | processing | processed
+    status     TEXT    NOT NULL DEFAULT 'pending',  -- user: pending | processing | processed ; assistant: pending | processed | delivered
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_pending
@@ -606,9 +627,23 @@ class TaskStore:
         return await self._tasks.list_tasks(status=status, limit=limit)
 
     async def update_status(
-        self, task_id: int, status: str, next_step: str | None = None
+        self,
+        task_id: int,
+        status: str,
+        next_step: str | None = None,
+        *,
+        current_step: str | None = None,
+        model_tier: str | None = None,
+        result_json: dict[str, Any] | None = None,
     ) -> None:
-        await self._tasks.update_status(task_id, status, next_step)
+        await self._tasks.update_status(
+            task_id,
+            status,
+            next_step,
+            current_step=current_step,
+            model_tier=model_tier,
+            result_json=result_json,
+        )
 
     async def mark_waiting(
         self,
@@ -619,6 +654,7 @@ class TaskStore:
         wait_json: dict[str, Any] | None = None,
         current_step: str | None = None,
         next_step: str | None = None,
+        result_json: dict[str, Any] | None = None,
     ) -> None:
         await self._tasks.mark_waiting(
             task_id,
@@ -627,6 +663,7 @@ class TaskStore:
             wait_json=wait_json,
             current_step=current_step,
             next_step=next_step,
+            result_json=result_json,
         )
 
     async def resume_task(

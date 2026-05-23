@@ -368,6 +368,31 @@ def test_behavior_explore_awareness_requires_task_context():
     assert items == []
 
 
+def test_behavior_tracker_uses_explicit_registry_capabilities():
+    from core.behavior_tracker import BehaviorTracker
+    from tools.registry import ToolEntry, ToolManifest
+
+    class _Registry:
+        def get(self, name: str):
+            if name != "demo.readonly":
+                return None
+            return ToolEntry(
+                manifest=ToolManifest(
+                    name="demo.readonly",
+                    description="demo",
+                    capabilities=("result_streak_only",),
+                ),
+                handler=lambda params, ctx: None,
+            )
+
+    tracker = BehaviorTracker(registry=_Registry())
+    items = []
+    for _ in range(3):
+        items = tracker.on_act("demo.readonly", "same", task_id="task-1")
+
+    assert items == []
+
+
 def test_next_thinking_override_is_one_shot_and_strict():
     from core.loop.common import _next_thinking_override
 
@@ -503,6 +528,60 @@ def test_model_routing_section_uses_effective_thinking():
     assert payload["implicit_next_phase_default"] is None
 
 
+def test_select_provider_matches_routing_provider_by_public_model_ref():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        def __init__(self, model_ref: str):
+            self.model_ref = model_ref
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "routing": {
+            "reader": "bailian/qwen3.6-plus",
+            "reasoner": "copilot/gpt-5.4",
+        },
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    main_provider = _DummyProvider("copilot/gpt-5.4")
+    reader_provider = _DummyProvider("bailian/qwen3.6-plus")
+    layer = JudgmentLayer(main_provider, ToolRegistry(), cfg)
+    layer.set_routing_providers({"reader": reader_provider})
+
+    provider, selection = layer._select_provider(
+        phase="initial",
+        user_message="先读取配置",
+        prefer_tier="reader",
+    )
+
+    assert provider is reader_provider
+    assert selection.tier == "reader"
+    assert selection.model_ref == "bailian/qwen3.6-plus"
+
+
 def test_fmt_config_snapshot_exposes_judgment_signal_thresholds():
     from core.config import Config
     from core.judgment.context import _fmt_config_snapshot
@@ -553,15 +632,15 @@ def test_fmt_config_snapshot_exposes_judgment_signal_thresholds():
     assert "feeling_min_intensity: 0.25" in text
     assert "regulation_down_regulate_arousal_high: 0.8" in text
     assert "regulation_high_error_streak_guard: 3" in text
-    assert "## Ethos guardrails (soul.*)" in text
-    assert "ethos_prefer_verification_caution_min: 0.72" in text
-    assert "ethos_prefer_verification_failure_count: 3" in text
-    assert "ethos_prefer_narrow_error_streak: 4" in text
-    assert "ethos_avoid_overclaiming_down_regulate_streak: 5" in text
-    assert "ethos_failure_adjust_count: 2" in text
-    assert "ethos_failure_truth_delta: 0.11" in text
-    assert "ethos_high_error_adjust_streak: 4" in text
-    assert "ethos_recovering_curiosity_delta: 0.09" in text
+    assert "## Ethos guardrails (soul.ethos.*)" in text
+    assert "prefer_verification_caution_min: 0.72" in text
+    assert "prefer_verification_failure_count: 3" in text
+    assert "prefer_narrow_error_streak: 4" in text
+    assert "avoid_overclaiming_down_regulate_streak: 5" in text
+    assert "failure_adjust_count: 2" in text
+    assert "failure_truth_delta: 0.11" in text
+    assert "high_error_adjust_streak: 4" in text
+    assert "recovering_curiosity_delta: 0.09" in text
     assert "## Replay guardrails (thresholds.*)" in text
     assert "prediction_error_task: 0.8" in text
     assert "perception_replay_trend_delta: 0.2" in text
@@ -715,6 +794,9 @@ def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
     assert tool_tier("web.search", registry) == "reasoner"
     assert tool_tier("image.analyze", registry) == "reasoner"
     assert tool_tier("image.generate", registry) == "reasoner"
+    assert tool_tier("schedule.ack", registry) == "reasoner"
+    assert tool_tier("schedule.cancel", registry) == "reasoner"
+    assert tool_tier("failure.dismiss", registry) == "reasoner"
     assert tool_tier("task.list", registry) == "reader"
 
     mapping = tool_tier_mapping(registry)
@@ -726,6 +808,9 @@ def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
     assert "web.search" in mapping["reasoner"]
     assert "image.analyze" in mapping["reasoner"]
     assert "image.generate" in mapping["reasoner"]
+    assert "schedule.ack" in mapping["reasoner"]
+    assert "schedule.cancel" in mapping["reasoner"]
+    assert "failure.dismiss" in mapping["reasoner"]
     assert "task.list" in mapping["reader"]
 
     assert is_plan_alignment_exempt("task.ask", registry) is True
@@ -1371,7 +1456,7 @@ async def test_decide_continue_updates_last_call_meta_after_fallback():
 def test_action_made_progress_result_aware():
     from core.judgment import JudgmentOutput
     from core.loop.progress import _action_made_progress, _result_fingerprint
-    from tools.registry import ToolResult
+    from tools.registry import ToolEntry, ToolManifest, ToolResult
 
     list_action = _judgment_output(decision="act", chosen_action_id="file.list", params={"path": "/tmp"})
     list_res = ToolResult(summary="a.txt\nb.txt\n")
@@ -1410,6 +1495,24 @@ def test_action_made_progress_result_aware():
 
     unknown_with_delta = ToolResult(summary="", state_delta={"updated": True})
     assert _action_made_progress(unknown_action, unknown_with_delta)[0] is True
+
+    class _Registry:
+        def get(self, name: str):
+            if name != "custom.override":
+                return None
+            return ToolEntry(
+                manifest=ToolManifest(
+                    name="custom.override",
+                    description="override",
+                    progress_category="mutation",
+                ),
+                handler=lambda params, ctx: None,
+            )
+
+    override_action = _judgment_output(decision="act", chosen_action_id="custom.override", params={"id": "7"})
+    override_res = ToolResult(summary="")
+    assert _action_made_progress(override_action, override_res)[0] is False
+    assert _action_made_progress(override_action, override_res, registry=_Registry())[0] is True
 
 
 def test_write_success_stall_meta_reflection_records_task_hint():
@@ -1553,6 +1656,7 @@ async def test_finalize_tick_user_reply_does_not_synthesize_progress_reply_on_no
     ))
     store = _Store()
     loop = cast(Any, SimpleNamespace(
+        _cfg=cfg,
         _judgment=_Judgment(),
         _pending_routing_overrides=None,
         _task_store=store,
@@ -1566,7 +1670,6 @@ async def test_finalize_tick_user_reply_does_not_synthesize_progress_reply_on_no
 
     await _finalize_tick_user_reply(
         loop,
-        cfg,
         action,
         result,
         tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "读取完成"}],
@@ -1605,6 +1708,7 @@ async def test_finalize_tick_user_reply_keeps_disaster_fallback_for_reply_only_f
     ))
     store = _Store()
     loop = cast(Any, SimpleNamespace(
+        _cfg=cfg,
         _judgment=_Judgment(),
         _pending_routing_overrides=None,
         _task_store=store,
@@ -1618,7 +1722,6 @@ async def test_finalize_tick_user_reply_keeps_disaster_fallback_for_reply_only_f
 
     await _finalize_tick_user_reply(
         loop,
-        cfg,
         action,
         result,
         tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "读取完成"}],
@@ -2423,14 +2526,17 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
                 "收到新的用户消息：请你使用 puppeteer 去搜索。"
             ]
 
+            from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assemble_context(
-                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
-                WorkingMemory(capacity=20),
-                store,
-                EpisodicMemory(Path(d) / "memory"),
-                SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
-                EmotionState.from_config(cfg),
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
                 active_task=task,
                 user_message="请你使用 puppeteer 去搜索。",
             )
@@ -2481,15 +2587,18 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
         store = TaskStore(Path(d) / "ctx.db")
         await store.open()
         try:
+            from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             layer._probe_manager = None
             text = await layer._assemble_context(
-                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
-                WorkingMemory(capacity=20),
-                store,
-                EpisodicMemory(Path(d) / "memory"),
-                SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
-                EmotionState.from_config(cfg),
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
                 active_task=None,
                 user_message="帮我检查当前状态",
             )
@@ -2561,14 +2670,17 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
             emotion.valence = 0.10
             emotion.arousal = 0.95
 
+            from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             await layer._assemble_context(
-                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
-                WorkingMemory(capacity=20),
-                store,
-                EpisodicMemory(Path(d) / "memory"),
-                semantic,
-                emotion,
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=semantic,
+                    emotion=emotion,
+                ),
                 active_task=task,
                 user_message="",
             )
@@ -2626,14 +2738,17 @@ async def _assemble_context_registry_override_limits_tools_section():
         try:
             registry = _tool_registry()
             filtered = _FilteredRegistry(registry, {"task.list"}, set(_DEFAULT_BLOCKED_TOOLS))
+            from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), registry, cfg)
             text = await layer._assemble_context(
-                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
-                WorkingMemory(capacity=20),
-                store,
-                EpisodicMemory(Path(d) / "memory"),
-                SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
-                EmotionState.from_config(cfg),
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
                 active_task=None,
                 user_message="检查子灵工具边界",
                 registry_override=filtered,

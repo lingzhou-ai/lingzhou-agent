@@ -26,6 +26,17 @@ from store.memory import sanitize_chat_content
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
 _CHAT_INPUT_PROMPT = "you> "
+_DISALLOWED_INFERRED_USER_TITLES: frozenset[str] = frozenset({
+    "爸爸",
+    "老爸",
+    "爹",
+    "父亲",
+    "妈妈",
+    "老妈",
+    "妈",
+    "母亲",
+    "老爹",
+})
 
 
 def _erase_last_input_echo() -> None:
@@ -51,6 +62,18 @@ def _normalize_user_title(raw: str) -> str:
         "assistant", "user", "chat", "you",
     }
     return "" if title.lower() in blocked or title in blocked else title
+
+
+def _normalize_inferred_user_title(raw: str) -> str:
+    """仅用于 assistant/LLM 推断出的称谓。
+
+    原则：用户显式自报的称谓保留，但模型自己乱叫出来的亲属称谓
+    不能被固化成持续的 chat prompt。
+    """
+    title = _normalize_user_title(raw)
+    if title in _DISALLOWED_INFERRED_USER_TITLES:
+        return ""
+    return title
 
 
 def _infer_user_title_from_messages(messages: list[dict[str, object]]) -> str:
@@ -125,11 +148,11 @@ def _parse_user_title_from_llm_output(raw: str) -> str:
         if isinstance(data, dict):
             for key in ("user_title", "title", "appellation"):
                 if key in data:
-                    return _normalize_user_title(str(data.get(key) or ""))
+                    return _normalize_inferred_user_title(str(data.get(key) or ""))
     head = text.splitlines()[0].strip()
     if head.upper() in {"NONE", "NULL", "UNKNOWN", "UNSURE", "不确定", "未知", "无"}:
         return ""
-    return _normalize_user_title(head)
+    return _normalize_inferred_user_title(head)
 
 
 async def _infer_user_title_with_llm(provider: Any, messages: list[dict[str, object]]) -> str:

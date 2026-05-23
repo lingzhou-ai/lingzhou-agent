@@ -90,6 +90,75 @@ def _clean_old_backups(tool_path: Path, keep: int = 3) -> None:
             pass
 
 
+def _smoke_failure_artifact_paths(module_path: Path) -> tuple[Path, Path]:
+    stem = module_path.stem
+    parent = module_path.parent
+    return (
+        parent / f".{stem}.smoke-failed.py",
+        parent / f".{stem}.smoke-failed.log",
+    )
+
+
+def _clear_smoke_failure_artifacts(module_path: Path) -> None:
+    for artifact in _smoke_failure_artifact_paths(module_path):
+        try:
+            artifact.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _persist_smoke_failure_artifacts(
+    module_path: Path,
+    staged_source: str,
+    detail: str,
+) -> tuple[Path | None, Path | None]:
+    source_path, log_path = _smoke_failure_artifact_paths(module_path)
+    saved_source: Path | None = source_path
+    saved_log: Path | None = log_path
+    try:
+        source_path.write_text(staged_source, encoding="utf-8")
+    except Exception:
+        saved_source = None
+    try:
+        log_path.write_text(detail, encoding="utf-8")
+    except Exception:
+        saved_log = None
+    return saved_source, saved_log
+
+
+def _summarize_smoke_failure_preview(text: str, limit: int = 320) -> str:
+    preview = " ".join((text or "").split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 3] + "..."
+
+
+def _format_smoke_failure_message(
+    *,
+    rel_path: str,
+    detail: str,
+    source_artifact: Path | None,
+    log_artifact: Path | None,
+) -> str:
+    header_parts = [f"module={rel_path}"]
+    if source_artifact is not None:
+        header_parts.append(f"failed_source={source_artifact}")
+    if log_artifact is not None:
+        header_parts.append(f"failed_log={log_artifact}")
+    preview = _summarize_smoke_failure_preview(detail)
+    head = "smoke test failed | " + " | ".join(header_parts)
+    if preview:
+        head += f" | preview={preview}"
+    return head + "\n\n" + detail
+
+
+def _smoke_failure_summary(text: str) -> str:
+    first_line = (text or "").splitlines()[0].strip()
+    if not first_line:
+        return "smoke test failed"
+    return first_line
+
+
 class EvolutionEngine:
     """运行时自修改引擎。
 
@@ -190,13 +259,61 @@ print("SMOKE_OK")
                 cwd=str(project_root),
             )
             if result.returncode != 0 or "SMOKE_OK" not in result.stdout:
-                err = result.stderr.strip() or result.stdout.strip() or "smoke test failed (no output)"
-                return err[:1200]
+                stdout_text = result.stdout.strip()
+                stderr_text = result.stderr.strip()
+                detail_parts = [
+                    f"returncode={result.returncode}",
+                    f"module={rel_path}",
+                    f"real_module={real_module_name}",
+                    f"staging_path={staging_path}",
+                ]
+                if snippet.strip():
+                    detail_parts.append(f"[snippet]\n{snippet.strip()[:800]}")
+                if stdout_text:
+                    detail_parts.append(f"[stdout]\n{stdout_text[:2000]}")
+                if stderr_text:
+                    detail_parts.append(f"[stderr]\n{stderr_text[:4000]}")
+                if not stdout_text and not stderr_text:
+                    detail_parts.append("[output]\nsmoke test failed (no output)")
+                detail = "\n\n".join(detail_parts)
+                saved_source, saved_log = _persist_smoke_failure_artifacts(module_path, new_src, detail)
+                return _format_smoke_failure_message(
+                    rel_path=rel_path,
+                    detail=detail,
+                    source_artifact=saved_source,
+                    log_artifact=saved_log,
+                )
+            _clear_smoke_failure_artifacts(module_path)
             return None
         except subprocess.TimeoutExpired:
-            return "smoke test timed out (>15s)"
+            detail = "\n\n".join([
+                "timeout=15s",
+                f"module={rel_path}",
+                f"real_module={real_module_name}",
+                f"staging_path={staging_path}",
+                "[output]\nsmoke test timed out (>15s)",
+            ])
+            saved_source, saved_log = _persist_smoke_failure_artifacts(module_path, new_src, detail)
+            return _format_smoke_failure_message(
+                rel_path=rel_path,
+                detail=detail,
+                source_artifact=saved_source,
+                log_artifact=saved_log,
+            )
         except Exception as exc:
-            return str(exc)
+            detail = "\n\n".join([
+                f"exception={type(exc).__name__}: {exc}",
+                f"module={rel_path}",
+                f"real_module={real_module_name}",
+                f"staging_path={staging_path}",
+            ])
+            saved_source, saved_log = _persist_smoke_failure_artifacts(module_path, new_src, detail)
+            return _format_smoke_failure_message(
+                rel_path=rel_path,
+                detail=detail,
+                source_artifact=saved_source,
+                log_artifact=saved_log,
+            )
         finally:
             staging_path.unlink(missing_ok=True)
 
@@ -423,7 +540,7 @@ print("SMOKE_OK")
         import json
 
         _dims = ("truth", "caution", "continuity", "curiosity", "care")
-        baseline_seed = self._cfg.soul.ethos_baseline
+        baseline_seed = self._cfg.soul.ethos.baseline
 
         # 读取当前 ethos_baseline
         current_json, _ = await ctx.task_store.get_fact("soul:ethos_baseline")
@@ -760,9 +877,10 @@ print("SMOKE_OK")
                 _project_root = Path(__file__).parent.parent
                 smoke_err = self._smoke_test_module(new_src, tool_path, _project_root)
                 if smoke_err:
+                    smoke_summary = _smoke_failure_summary(smoke_err)
                     _log.warning(
                         "[evolution] smoke test 失败，%r 将在下一轮重试: %s",
-                        tool_name, smoke_err[:200],
+                        tool_name, smoke_summary,
                     )
                     if attempt < self._cfg.evolution.max_attempts - 1:
                         from provider.base import Message as _Msg
@@ -974,7 +1092,11 @@ print("SMOKE_OK")
 
             smoke_err = self._smoke_test_module(code, tool_path, _project_root)
             if smoke_err:
-                _log.debug("[competitive_evolve] 候选 %d smoke 失败: %s", idx, smoke_err[:100])
+                _log.debug(
+                    "[competitive_evolve] 候选 %d smoke 失败: %s",
+                    idx,
+                    _smoke_failure_summary(smoke_err),
+                )
                 continue
 
             score = _score_candidate(code)

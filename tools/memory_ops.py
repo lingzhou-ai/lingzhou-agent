@@ -8,7 +8,7 @@ from typing import Any
 
 _log = logging.getLogger("lingzhou.tools")
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
 from memory.working import WMItem
 from memory.semantic import MemoryNode
 from memory.quality_checker import evaluate_retrieval_quality
@@ -48,6 +48,23 @@ def _parse_float(val: Any, default: float) -> float:
         return float(s)
     except ValueError:
         return default
+
+
+def _disambiguate_semantic_title(ctx: ToolContext, raw_title: str, kind: str, node_id: str) -> str:
+    title = (raw_title or "").strip()
+    if not title:
+        return ""
+    finder = getattr(ctx.semantic, "find_by_title", None)
+    if not callable(finder):
+        return title
+    try:
+        existing = list(finder(title, limit=3) or [])
+    except Exception:
+        return title
+    if not existing:
+        return title
+    suffix = f" [{(kind or 'observation')[:24]}:{node_id.split('-', 1)[-1][:6]}]"
+    return f"{title}{suffix}"
 
 
 @tool(ToolManifest(
@@ -106,16 +123,18 @@ async def memory_add_semantic(params: dict[str, Any], ctx: ToolContext) -> ToolR
     body = (params.get("body") or "").strip()
     if not title or not body:
         return ToolResult(summary="title 和 body 不能为空", skipped=True)
+    node_id = f"node-{uuid.uuid4().hex[:12]}"
+    kind = str(params.get("kind") or "observation")
     node = MemoryNode(
-        id=f"node-{uuid.uuid4().hex[:12]}",
-        kind=params.get("kind") or "observation",
-        title=title,
+        id=node_id,
+        kind=kind,
+        title=_disambiguate_semantic_title(ctx, title, kind, node_id),
         body=body,
         activation=_parse_float(params.get("activation"), 0.7),
     )
     ctx.semantic.upsert(node)
     return ToolResult(
-        summary=f"已写入语义记忆: {title}",
+        summary=f"已写入语义记忆: {node.title}",
         evidence=f"node_id={node.id}",
     )
 
@@ -143,7 +162,7 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     name="memory.search",
     description="搜索语义记忆节点。当你需要先回忆再行动时使用。",
     prefer_tier="reader",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only"),
     params=[
         ToolParam("query", "string", "搜索查询", required=True),
         ToolParam("top_k", "number", "返回条数，默认 5", required=False),
@@ -199,7 +218,7 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="memory.get_fact",
     description="读取一个持久化 key-value 事实",
     prefer_tier="reader",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only"),
     params=[
         ToolParam("key", "string", "事实 key", required=True),
     ],
@@ -221,7 +240,7 @@ async def memory_get_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         "常用前缀：evolution:history:（进化事件）、soul:（身份核心）"
     ),
     prefer_tier="reader",
-    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT),
     params=[
         ToolParam("prefix", "string", "key 前缀，如 evolution:history:", required=True),
         ToolParam("limit", "number", "返回条数上限，默认 20", required=False),
@@ -246,8 +265,9 @@ async def memory_list_facts(params: dict[str, Any], ctx: ToolContext) -> ToolRes
 @tool(ToolManifest(
     name="failure.dismiss",
     description="豁免指定失败记录，同 kind 的失败以后不再重复记录",
-    prefer_tier="reader",
-    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    prefer_tier="reasoner",
+    progress_category="mutation",
+    capabilities=CAPS_EXEMPT,
     params=[
         ToolParam("failure_id", "number", "失败记录 ID", required=True),
     ],
@@ -281,11 +301,12 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
         for i in ctx.wm.get_top(8)
     )
     body = f"{insight}\n\n来源（工作记忆摘要）:\n{wm_summary}" if wm_summary else insight
+    node_id = f"reflect-{uuid.uuid4().hex[:12]}"
 
     node = MemoryNode(
-        id=f"reflect-{uuid.uuid4().hex[:12]}",
+        id=node_id,
         kind="structural",
-        title=title,
+        title=_disambiguate_semantic_title(ctx, title, "structural", node_id),
         body=body,
         activation=0.85,
     )

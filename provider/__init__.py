@@ -27,7 +27,4 @@ def create_provider_with_model(cfg: "Config", model_ref: str) -> Provider:
     """用指定 model_ref 替换 cfg.model 创建 provider（routing 路由用）。"""
     routing_cfg = cfg.model_copy(update={"model": model_ref})
     routing_cfg._base_dir = cfg._base_dir
-    p = create_provider(routing_cfg)
-    # 存储完整 model_ref，供 _find_or_create_provider 缓存比对（p._model 只存短 ID）
-    p._model_ref = model_ref  # type: ignore[attr-defined]
-    return p
+    return create_provider(routing_cfg)

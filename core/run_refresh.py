@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, cast
+from typing import Any
 
-from core.config import run_result_memory_affect
-from core.execution import build_meta_reflection, record_meta_reflection
+from core.execution import build_meta_reflection, record_meta_reflection_memory, record_run_outcome_memory
 from memory.episodic import EpisodicMemory
-from memory.semantic import SemanticMemory, MemoryNode
-from memory.task_store import TaskStore, Run
+from memory.semantic import SemanticMemory
+from memory.task_store import TaskStore, Run, build_task_run_result_patch
 from tools.registry import ToolResult
 
 _log = logging.getLogger("lingzhou.loop")
@@ -67,53 +66,6 @@ def _parse_run_monitor_snapshot(raw: str, monitor: dict[str, Any]) -> tuple[str,
         status = "running"
     progress = str(progress_value or "").strip()[:2000]
     return status, progress, payload
-
-
-def _record_refreshed_run_outcome(
-    episodic: EpisodicMemory | None,
-    semantic: SemanticMemory | None,
-    *,
-    run: Run,
-    status: str,
-    progress: str,
-    summary: str,
-    error: str,
-    memory_cfg: Any | None = None,
-) -> None:
-    if episodic is not None:
-        episodic.record_event(
-            "run_failed" if status == "failed" or error else "run_completed",
-            {
-                "run_id": run.id,
-                "task_id": run.task_id,
-                "tool_name": run.tool_name,
-                "worker_type": run.worker_type,
-                "status": status,
-                "summary": summary[:800],
-                "error": error[:400],
-            },
-        )
-    if semantic is None:
-        return
-    activation, valence = run_result_memory_affect(
-        memory_cfg,
-        is_failure=status == "failed" or bool(error),
-    )
-    semantic.upsert(MemoryNode(
-        id=f"run-result-{run.id}",
-        kind="run_result",
-        title=f"[run#{run.id}] {run.tool_name or 'unknown'} {status}",
-        body=(
-            f"status={status}\n"
-            f"tool={run.tool_name or 'unknown'}\n"
-            f"progress={progress}\n"
-            f"summary={summary}\n"
-            f"error={error}"
-        )[:4000],
-        activation=activation,
-        valence=valence,
-        tags=[x for x in [status, run.tool_name, run.worker_type, f"task:{run.task_id}" if run.task_id else ""] if x],
-    ))
 
 
 async def _finalize_refreshed_run_learning(
@@ -177,13 +129,7 @@ async def _finalize_refreshed_run_learning(
     )
     if episodic is None and semantic is None:
         return
-
-    class _ReflectionCtx:
-        def __init__(self) -> None:
-            self.episodic = episodic
-            self.semantic = semantic
-
-    record_meta_reflection(cast(Any, _ReflectionCtx()), meta)
+    record_meta_reflection_memory(episodic, semantic, meta)
 
 
 async def _refresh_run_via_fact_monitor(
@@ -232,25 +178,28 @@ async def _refresh_run_via_fact_monitor(
         if run.task_id:
             await task_store.update_task_result(
                 run.task_id,
-                {
-                    "last_run_id": run.id,
-                    "last_run_status": status,
-                    "worker_type": run.worker_type,
-                    "tool_name": run.tool_name,
-                    "session_id": run.session_id,
-                    "summary": summary,
-                    "error": error or None,
-                },
+                build_task_run_result_patch(
+                    run_id=run.id,
+                    status=status,
+                    worker_type=run.worker_type,
+                    tool_name=run.tool_name,
+                    session_id=run.session_id,
+                    summary=summary,
+                    error=error or None,
+                ),
             )
-        _record_refreshed_run_outcome(
+        record_run_outcome_memory(
             episodic,
             semantic,
-            run=run,
+            memory_cfg=memory_cfg,
+            run_id=run.id,
+            task_id=run.task_id,
+            tool_name=run.tool_name,
+            worker_type=run.worker_type,
             status=status,
             progress=progress,
             summary=summary,
             error=error,
-            memory_cfg=memory_cfg,
         )
         await _finalize_refreshed_run_learning(
             task_store,
@@ -344,25 +293,28 @@ async def _refresh_run_via_process_monitor(
     if run.task_id:
         await task_store.update_task_result(
             run.task_id,
-            {
-                "last_run_id": run.id,
-                "last_run_status": status,
-                "worker_type": run.worker_type,
-                "tool_name": run.tool_name,
-                "session_id": session_id,
-                "summary": output_json.get("stdout", "")[:200] or f"process {status}",
-                "error": output_json.get("error"),
-            },
+            build_task_run_result_patch(
+                run_id=run.id,
+                status=status,
+                worker_type=run.worker_type,
+                tool_name=run.tool_name,
+                session_id=session_id,
+                summary=output_json.get("stdout", "")[:200] or f"process {status}",
+                error=output_json.get("error"),
+            ),
         )
-    _record_refreshed_run_outcome(
+    record_run_outcome_memory(
         episodic,
         semantic,
-        run=run,
+        memory_cfg=memory_cfg,
+        run_id=run.id,
+        task_id=run.task_id,
+        tool_name=run.tool_name,
+        worker_type=run.worker_type,
         status=status,
         progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
         summary=output_json.get("stdout", "")[:200] or f"process {status}",
         error=str(output_json.get("error") or ""),
-        memory_cfg=memory_cfg,
     )
     await _finalize_refreshed_run_learning(
         task_store,

@@ -14,7 +14,7 @@ from typing import Any
 
 from rich.console import Console
 
-from core.judgment import JudgmentOutput
+from core.judgment import JudgmentOutput, CognitionFrame
 from core.perception import (
     build_emotion_replay,
     build_perception_replay,
@@ -85,6 +85,13 @@ _LLM_WAKE_WM_KINDS = {
     "self_awareness",
     "behavior_sense",
 }
+
+
+def _format_insight_title(reflection: str, node_id: str) -> str:
+    suffix = f" [{node_id.split('_', 1)[-1][:6]}]"
+    budget = max(1, _SEM_TITLE_CHARS - len(suffix))
+    prefix = (reflection or "")[:budget].rstrip()
+    return f"{prefix}{suffix}"
 
 
 @dataclass(slots=True)
@@ -265,8 +272,9 @@ async def _inject_tick_side_signals(loop: Any, running_updates: list[dict[str, A
         loop._last_heartbeat_at = now
 
 
-async def _prepare_tick_judgment_state(loop: Any, cfg: Any, active_task: Any) -> _TickJudgmentPrep:
+async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudgmentPrep:
     """构建 judgment 前需要的 perception/emotion/ethos/signals 状态。"""
+    cfg = loop._cfg
     next_step_fulfilled: bool | None = None
     if loop._last_next_step:
         next_step_fulfilled = loop._last_act_progressful
@@ -390,30 +398,8 @@ async def _prepare_tick_judgment_state(loop: Any, cfg: Any, active_task: Any) ->
         has_next_step=bool(active_task and active_task.next_step),
         perception_trend=perception_replay.trend,
         emotion_down_regulate_streak=emotion_replay.down_regulate_streak,
+        ethos_cfg=cfg.soul.ethos,
         baseline=ethos_baseline,
-        seed_values=cfg.soul.ethos_baseline,
-        ema_alpha=cfg.soul.ethos_ema_alpha,
-        floor_truth=cfg.soul.ethos_floor_truth,
-        floor_caution=cfg.soul.ethos_floor_caution,
-        prefer_verification_caution_min=cfg.soul.ethos_prefer_verification_caution_min,
-        prefer_verification_failure_count=cfg.soul.ethos_prefer_verification_failure_count,
-        prefer_narrow_failure_count=cfg.soul.ethos_prefer_narrow_failure_count,
-        prefer_narrow_error_streak=cfg.soul.ethos_prefer_narrow_error_streak,
-        preserve_continuity_min=cfg.soul.ethos_preserve_continuity_min,
-        avoid_overclaiming_down_regulate_streak=cfg.soul.ethos_avoid_overclaiming_down_regulate_streak,
-        failure_adjust_count=cfg.soul.ethos_failure_adjust_count,
-        failure_truth_delta=cfg.soul.ethos_failure_truth_delta,
-        failure_caution_delta=cfg.soul.ethos_failure_caution_delta,
-        failure_curiosity_delta=cfg.soul.ethos_failure_curiosity_delta,
-        high_error_adjust_streak=cfg.soul.ethos_high_error_adjust_streak,
-        high_error_truth_delta=cfg.soul.ethos_high_error_truth_delta,
-        high_error_caution_delta=cfg.soul.ethos_high_error_caution_delta,
-        high_error_care_delta=cfg.soul.ethos_high_error_care_delta,
-        active_task_continuity_delta=cfg.soul.ethos_active_task_continuity_delta,
-        next_step_continuity_delta=cfg.soul.ethos_next_step_continuity_delta,
-        next_step_care_delta=cfg.soul.ethos_next_step_care_delta,
-        recovering_curiosity_delta=cfg.soul.ethos_recovering_curiosity_delta,
-        recovering_care_delta=cfg.soul.ethos_recovering_care_delta,
     )
 
     _log.debug(
@@ -447,13 +433,13 @@ async def _prepare_tick_judgment_state(loop: Any, cfg: Any, active_task: Any) ->
 
 async def _decide_initial_action(
     loop: Any,
-    cfg: Any,
     cycle: int,
     user_message: str,
     active_task: Any,
     prep: _TickJudgmentPrep,
 ) -> JudgmentOutput:
     """执行 initial phase 的 skip gate 与 LLM judgment。"""
+    cfg = loop._cfg
     has_llm_wake_signal = any(
         item.get("kind") in _LLM_WAKE_WM_KINDS for item in loop._wm.get_top(20)
     )
@@ -486,12 +472,14 @@ async def _decide_initial_action(
         pending_override=pending_initial_thinking,
     )
     action = await loop._judgment.decide(
-        prep.percept,
-        loop._wm,
-        loop._task_store,
-        loop._episodic,
-        loop._semantic,
-        loop._emotion,
+        CognitionFrame(
+            percept=prep.percept,
+            wm=loop._wm,
+            task_store=loop._task_store,
+            episodic=loop._episodic,
+            semantic=loop._semantic,
+            emotion=loop._emotion,
+        ),
         active_task=active_task,
         user_message=user_message,
         ethos_state=prep.ethos_state,
@@ -514,8 +502,9 @@ async def _decide_initial_action(
     return action
 
 
-def _inject_plan_alignment_signal(loop: Any, cfg: Any, active_task: Any) -> None:
+def _inject_plan_alignment_signal(loop: Any, active_task: Any) -> None:
     """当 task.plan 与 current_step 不对齐时，注入自我觉察信号。"""
+    cfg = loop._cfg
     if active_task is None:
         return
     plan = (getattr(active_task, "extras", None) or {}).get("plan")
@@ -544,12 +533,12 @@ def _inject_plan_alignment_signal(loop: Any, cfg: Any, active_task: Any) -> None
 async def _review_delegate_tasks(
     loop: Any,
     ctx: Any,
-    cfg: Any,
     action: JudgmentOutput,
     user_message: str,
     active_task: Any,
 ) -> JudgmentOutput:
     """执行 delegate_tasks 并将结果送回 reasoner 做 gate review。"""
+    cfg = loop._cfg
     if not action.delegate_tasks:
         return action
 
@@ -630,7 +619,6 @@ async def _execute_tick_action(
 
 async def _finalize_tick_user_reply(
     loop: Any,
-    cfg: Any,
     action: JudgmentOutput,
     result: ToolResult,
     tool_history: list[dict[str, Any]],
@@ -639,7 +627,8 @@ async def _finalize_tick_user_reply(
     chat_id: str | None,
 ) -> None:
     """处理 reply_only、fallback reply 与聊天回复落库。"""
-    reply_only = await _maybe_fill_tick_user_reply(loop, cfg, action, tool_history, user_message, active_task)
+    cfg = loop._cfg
+    reply_only = await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task)
 
     if user_message and not action.reply_to_user and _should_use_fallback_user_reply(result, reply_only):
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
@@ -664,12 +653,12 @@ def _should_use_fallback_user_reply(
 
 async def _maybe_fill_tick_user_reply(
     loop: Any,
-    cfg: Any,
     action: JudgmentOutput,
     tool_history: list[dict[str, Any]],
     user_message: str,
     active_task: Any,
 ) -> JudgmentOutput | None:
+    cfg = loop._cfg
     if not user_message or action.reply_to_user:
         return None
 
@@ -743,8 +732,9 @@ async def _persist_tick_user_reply(
                 )
 
 
-def _log_tick_decision(loop: Any, cfg: Any, cycle: int, action: JudgmentOutput) -> None:
+def _log_tick_decision(loop: Any, cycle: int, action: JudgmentOutput) -> None:
     """记录本轮 initial judgment 的调用与路由信息。"""
+    cfg = loop._cfg
     loop._judgment.self_model.record_tick()
     loop._judgment.self_model.record_api_call()
     call_meta = loop._judgment.last_call_meta
@@ -825,7 +815,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     running_updates = await refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic)
     active_task = await _prepare_active_task_for_tick(loop, user_message, chat_id)
     await _inject_tick_side_signals(loop, running_updates)
-    prep = await _prepare_tick_judgment_state(loop, cfg, active_task)
+    prep = await _prepare_tick_judgment_state(loop, active_task)
     perception_replay = prep.perception_replay
     cognitive_signals = prep.cognitive_signals
     ethos_state = prep.ethos_state
@@ -833,12 +823,12 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     if active_task is None:
         await loop._maybe_curiosity_task(ethos_state)
 
-    _inject_plan_alignment_signal(loop, cfg, active_task)
+    _inject_plan_alignment_signal(loop, active_task)
 
-    action = await _decide_initial_action(loop, cfg, cycle, user_message, active_task, prep)
-    _log_tick_decision(loop, cfg, cycle, action)
+    action = await _decide_initial_action(loop, cycle, user_message, active_task, prep)
+    _log_tick_decision(loop, cycle, action)
 
-    action = await _review_delegate_tasks(loop, ctx, cfg, action, user_message, active_task)
+    action = await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
 
     result, tool_history = await _execute_tick_action(loop, ctx, active_task, action)
 
@@ -858,7 +848,6 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     await _finalize_tick_user_reply(
         loop,
-        cfg,
         action,
         result,
         tool_history,
@@ -935,6 +924,7 @@ async def _sync_tick_action_state(
         result,
         prev_sig=prev_sig,
         prev_fp=prev_fp,
+        registry=loop._registry,
     )
     loop._last_action_tool = action.chosen_action_id or ""
     loop._last_action_key = action_key_param(action.params) if action.decision == "act" else ""
@@ -1208,7 +1198,7 @@ async def _post_tick_memory_impl(
                     loop._semantic.upsert(MemoryNode(
                         id=node_id,
                         kind="task_summary",
-                        title=f"[{refreshed.status}] {refreshed.title[:60]}",
+                        title=f"[{refreshed.status}] task#{refreshed.id} {refreshed.title[:60]}",
                         body=narrative,
                         activation=0.9 if refreshed.status == "done" else 0.7,
                         valence=loop._emotion.valence,
@@ -1249,7 +1239,7 @@ async def _post_tick_memory_impl(
         loop._semantic.upsert(MemoryNode(
             id=node_id,
             kind="learned_insight",
-            title=clean_reflection[:_SEM_TITLE_CHARS],
+            title=_format_insight_title(clean_reflection, node_id),
             body=clean_reflection,
             activation=0.9,
             valence=loop._emotion.valence,
@@ -1286,7 +1276,7 @@ async def _post_tick_memory_impl(
                     loop._semantic.upsert(MemoryNode(
                         id=evt_id,
                         kind="event",
-                        title=f"[{ts_label}] {active_task.title[:_EVENT_TITLE_CHARS]}",
+                        title=f"[{ts_label}] task#{active_task.id} {active_task.title[:_EVENT_TITLE_CHARS]}",
                         body=clean_reflection[:_EVENT_NEW_BODY_CHARS],
                         activation=0.85,
                         valence=loop._emotion.valence,

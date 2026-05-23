@@ -141,7 +141,7 @@ class SoulManager:
         if not soul_path.exists():
             ethos = await self._ethos_from_db()
             axioms = await self._axioms_from_db()
-            eb = self._cfg.soul.ethos_baseline
+            eb = self._cfg.soul.ethos.baseline
             soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
             _log.info("Soul 初始化: 已写入 %s", soul_path)
 
@@ -172,7 +172,7 @@ class SoulManager:
             return
         soul_name = await self._soul_name()
         axioms = await self._axioms_from_db()
-        eb = self._cfg.soul.ethos_baseline
+        eb = self._cfg.soul.ethos.baseline
         soul_path = self._cfg.workspace_dir / "SOUL.md"
         soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
 
