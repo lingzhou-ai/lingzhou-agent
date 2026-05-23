@@ -26,34 +26,65 @@ def _sync_routing_models_on_primary_switch(
     old_model: str,
     new_model: str,
 ) -> list[str]:
-    """同步那些原本跟随旧主模型的 routing 项。
+    """切换主模型时，全量同步 lingzhou.json 里所有 routing 条目到新模型。
 
-    `lingzhou dev model` 的用户心智是“把当前运行模型切过去”。
-    若 routing.reasoner/reader 仍精确指向旧主模型，运行时会继续命中旧路由，
-    造成“顶层 model 已切，但真实判断仍像没切”的错觉。
+    `lingzhou dev model` 的用户心智是"把当前运行模型切过去"。
+    全量同步避免"顶层 model 已切，routing.reasoner 仍是旧模型"的错觉。
+    reader 等因成本原因单独配置的条目，在 DB routing_overrides 里仍可保留原值。
     """
-    if not old_model or not new_model:
+    if not old_model or not new_model or old_model == new_model:
         return []
     routing = cfg_data.get("routing")
     if not isinstance(routing, dict):
         return []
-    new_provider, _, _ = str(new_model).partition("/")
     changed: list[str] = []
     for tier, model_ref in routing.items():
-        should_follow_old = model_ref == old_model
-        stale_reasoning_route = (
-            old_model == new_model
-            and str(tier) in {"reasoner", "repair", "complex"}
-            and isinstance(model_ref, str)
-            and model_ref != new_model
-            and model_ref.partition("/")[0] == new_provider
-        )
-        if should_follow_old or stale_reasoning_route:
+        if isinstance(model_ref, str) and model_ref != new_model:
             routing[tier] = new_model
             changed.append(str(tier))
     return changed
 
 
+def _sync_db_routing_overrides(cfg_path: Path, *, old_model: str, new_model: str) -> None:
+    """将 DB pref:routing_overrides 里精确指向 old_model 的条目更新为 new_model。
+
+    DB routing_overrides 优先级高于 lingzhou.json；若不同步，切换主模型后
+    重启仍会从 DB 恢复到旧模型，导致 `dev model` 看似不生效。
+    只替换精确等于 old_model 的条目，保留用户有意设置的差异（如 reader: bailian）。
+    """
+    import sqlite3 as _sqlite3
+    if not old_model or not new_model or old_model == new_model:
+        return
+    try:
+        from core.config import Config as _Config
+        cfg = _Config.load(cfg_path)
+        db_path = cfg.db_path
+        if not db_path.exists():
+            return
+        conn = _sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT value FROM facts WHERE key='pref:routing_overrides'"
+        ).fetchone()
+        if not row:
+            conn.close()
+            return
+        overrides = json.loads(row[0])
+        changed = [tier for tier, model in overrides.items() if model == old_model]
+        for tier in changed:
+            overrides[tier] = new_model
+        if changed:
+            conn.execute(
+                "UPDATE facts SET value=? WHERE key='pref:routing_overrides'",
+                (json.dumps(overrides, ensure_ascii=False),),
+            )
+            conn.commit()
+            console.print(
+                f"[green]✓ DB routing_overrides 已同步:[/green]"
+                f" {', '.join(changed)} → [bold cyan]{new_model}[/bold cyan]"
+            )
+        conn.close()
+    except Exception as exc:
+        console.print(f"[yellow]⚠ DB routing_overrides 同步失败（非致命）: {exc}[/yellow]")
 def _preferred_model_index(catalog_models: list[dict], current_model_id: str = "") -> int:
     """优先当前模型；否则优先 reasoning/thinking 模型；都没有再退回列表首项。"""
     if not catalog_models:
@@ -377,6 +408,8 @@ def model(
     old_thinking = cfg_data.get("thinking", "off")
     cfg_data["thinking"] = chosen_thinking
     cfg_path.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步 DB routing_overrides：避免重启后从 DB 恢复到旧模型
+    _sync_db_routing_overrides(cfg_path, old_model=current, new_model=set_model)
     console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
     if synced_routing:
         console.print(
