@@ -86,11 +86,12 @@ if TYPE_CHECKING:
     from provider.base import Provider
 
 
-# ── 认知基底（传入 decide/assemble_context 的感知+记忆层快照） ─────────────────
+# ── 认知基底（传入 decide/assemble_context 的感知+记忆层快照） ────────────────
 
 @dataclass(slots=True)
 class CognitionFrame:
-    """6 个认知基底字段的轻量容器，替代 decide() / _assemble_context() 的位置参数展开。"""
+    """6 个认知基底字段的轻量容器，兼容旧调用点。"""
+
     percept: "Percept"
     wm: "WorkingMemory"
     task_store: "TaskStore"
@@ -308,9 +309,9 @@ class JudgmentLayer:
         """按 model_ref 找到或创建 provider（用于 routing_overrides 临时覆盖）。"""
         if model_ref == self._cfg.model:
             return self._provider
-        # _routing_providers 按 tier 存储，用完整 model_ref 匹配
+        # _routing_providers 按 tier 存储，用完整 model_ref 匹配（不能用 p._model 短 ID，会永远不等）
         for p in self._routing_providers.values():
-            p_ref = getattr(p, "model_ref", None) or getattr(p, "_model_ref", None)
+            p_ref = getattr(p, "_model_ref", None) or getattr(p, "_model", None)
             if p_ref == model_ref:
                 return p
         if model_ref not in self._override_providers:
@@ -619,7 +620,6 @@ class JudgmentLayer:
         registry: "Any | None" = None,
     ) -> str:
         effective_registry = self._effective_registry(registry)
-        catalog_path = self._cfg.workspace_dir / "models.json"
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -630,7 +630,7 @@ class JudgmentLayer:
                 continue
             seen.add(key)
             model_id = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
-            spec = lookup_model(model_id, catalog_path=catalog_path) or {}
+            spec = lookup_model(model_id) or {}
             reasoning = bool(spec.get("reasoning"))
             last_error = self._provider_errors.get(model_ref)
             health = self._get_health(model_ref)
@@ -800,8 +800,8 @@ class JudgmentLayer:
         # 全量 catalog 模型列表（所有 provider 所有模型），让 LLM 能看到可用选项
         from provider import catalog as _cat
         catalog_entries: list[dict[str, Any]] = []
-        for _pname in _cat.list_providers(catalog_path=catalog_path):
-            for _m in _cat.list_provider_models(_pname, catalog_path=catalog_path):
+        for _pname in _cat.list_providers():
+            for _m in _cat.list_provider_models(_pname):
                 catalog_entries.append({
                     "model": f"{_pname}/{_m.get('id', '')}",
                     "provider": _pname,
@@ -823,8 +823,12 @@ class JudgmentLayer:
 
     async def decide(
         self,
-        frame: "CognitionFrame",
-        *,
+        frame_or_percept: "CognitionFrame | Percept",
+        wm: "WorkingMemory | None" = None,
+        task_store: "TaskStore | None" = None,
+        episodic: "EpisodicMemory | None" = None,
+        semantic: "SemanticMemory | None" = None,
+        emotion: "EmotionState | None" = None,
         active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
@@ -844,12 +848,20 @@ class JudgmentLayer:
         routing_overrides: 临时覆盖 tier→model 映射（由 loop.py 从 model_strategy 读取）。
         registry_override: 临时覆盖本轮可见工具集（如子灵受限工具视图）。
         """
+        percept, wm, task_store, episodic, semantic, emotion = self._coerce_frame_args(
+            frame_or_percept,
+            wm,
+            task_store,
+            episodic,
+            semantic,
+            emotion,
+        )
         try:
             # per-tick 清空静态缓存（静态 section 仅在本 tick 复用）
             self._context_cache.clear()
             _clear_context_cache()
             context_text = await self._assemble_context(
-                frame,
+                percept, wm, task_store, episodic, semantic, emotion,
                 active_task=active_task,
                 user_message=user_message,
                 ethos_state=ethos_state,
@@ -913,7 +925,7 @@ class JudgmentLayer:
             output,
             context_text=context_text,
             raw=raw,
-            record_parse_failure=frame.task_store.record_failure,
+            record_parse_failure=task_store.record_failure,
         )
         _applied = self._record_applied_skills(output)
         _log.info(
@@ -1085,7 +1097,12 @@ class JudgmentLayer:
 
     async def _assemble_context(
         self,
-        frame: "CognitionFrame",
+        frame_or_percept: "CognitionFrame | Percept",
+        wm: "WorkingMemory | None" = None,
+        task_store: "TaskStore | None" = None,
+        episodic: "EpisodicMemory | None" = None,
+        semantic: "SemanticMemory | None" = None,
+        emotion: "EmotionState | None" = None,
         active_task: Any | None = None,
         user_message: str = "",
         ethos_state: "EthosState | None" = None,
@@ -1101,9 +1118,14 @@ class JudgmentLayer:
         registry_override: "Any | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
-        percept, wm = frame.percept, frame.wm
-        task_store, episodic = frame.task_store, frame.episodic
-        semantic, emotion = frame.semantic, frame.emotion
+        percept, wm, task_store, episodic, semantic, emotion = self._coerce_frame_args(
+            frame_or_percept,
+            wm,
+            task_store,
+            episodic,
+            semantic,
+            emotion,
+        )
         effective_registry = self._effective_registry(registry_override)
         task = active_task if active_task is not None else await task_store.get_active()
 

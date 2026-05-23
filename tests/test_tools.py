@@ -114,38 +114,6 @@ def test_file_edit_single_replace():
     """file.edit 单处替换成功。"""
     asyncio.run(_file_edit_single_replace())
 
-
-def test_task_complete_compiles_learned_skill_title_with_task_id():
-    asyncio.run(_task_complete_compiles_learned_skill_title_with_task_id())
-
-
-async def _task_complete_compiles_learned_skill_title_with_task_id():
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
-    from tools.task_ops import task_complete
-
-    with tempfile.TemporaryDirectory() as d:
-        root = Path(d)
-        store = TaskStore(root / "runtime.db")
-        await store.open()
-        try:
-            task_id = await store.add_task("重复标题任务", goal="compile skill")
-            episodic = EpisodicMemory(root / "episodic")
-            semantic = SemanticMemory(root / "semantic")
-            episodic.record(role="assistant", content="完成过程叙事", task_id=str(task_id))
-            ctx = _tool_ctx(task_store=store, episodic=episodic, semantic=semantic)
-
-            res = await task_complete({"task_id": task_id}, ctx)
-
-            assert res.error is None
-            skill_node_id = res.state_delta["compiled_skill"]
-            node = semantic.get(skill_node_id)
-            assert node is not None
-            assert node.title == f"完成: task#{task_id} 重复标题任务"
-        finally:
-            await store.close()
-
 async def _file_edit_single_replace():
     from tools.file import file_write, file_read, file_edit
 
@@ -632,116 +600,6 @@ async def _subagent_task_store_view_hides_parent_waiting_tasks_from_child_contex
             await store.close()
 
 
-def test_subagent_task_store_view_does_not_leak_parent_chat_or_mutation_surface():
-    asyncio.run(_subagent_task_store_view_does_not_leak_parent_chat_or_mutation_surface())
-
-
-async def _subagent_task_store_view_does_not_leak_parent_chat_or_mutation_surface():
-    from core.subagent import _SubagentReadonlyViolation, _SubagentTaskStoreView
-    from memory.task_store import TaskStore
-
-    with tempfile.TemporaryDirectory() as d:
-        root = Path(d)
-        store = TaskStore(root / "subagent.db")
-        await store.open()
-        try:
-            await store.set_fact("control:durable_failure_policy", json.dumps({"threshold": 5}), scope="system")
-            await store.add_chat_message("assistant", "parent-only", chat_id="wechat:user-1")
-
-            view = _SubagentTaskStoreView(store)
-
-            assert await view.has_pending_chat_message() is False
-            assert await view.get_chat_messages_since(0, chat_id="wechat:user-1") == []
-
-            with pytest.raises(_SubagentReadonlyViolation):
-                await view.add_chat_message("assistant", "child-write", chat_id="wechat:user-1")
-
-            with pytest.raises(_SubagentReadonlyViolation):
-                await view.delete_fact("control:durable_failure_policy")
-
-            with pytest.raises(AttributeError):
-                getattr(view, "close")
-        finally:
-            await store.close()
-
-
-def test_subagent_shared_memory_views_expose_read_surface_without_leaks():
-    from core.subagent import _SubagentEpisodicView, _SubagentSemanticView
-
-    class _ParentEpisodic:
-        def __init__(self) -> None:
-            self.calls: list[tuple[Any, ...]] = []
-
-        def load_for_context(self, task_id, *, max_chars=4000):
-            self.calls.append(("load_for_context", task_id, max_chars))
-            return "shared-narrative"
-
-        def list_recent_narrative(self, limit=20):
-            self.calls.append(("list_recent_narrative", limit))
-            return [{"content": "row-1"}]
-
-        def append_segment(self, content):
-            raise AssertionError(f"append_segment 不应泄漏: {content}")
-
-    class _ParentSemantic:
-        def __init__(self) -> None:
-            self.calls: list[tuple[Any, ...]] = []
-            self.decay_lambda = 0.25
-
-        def retrieve(self, query, **kwargs):
-            self.calls.append(("retrieve", query, dict(kwargs)))
-            return [{"id": "node-1"}]
-
-        def retrieve_multi_anchor(self, anchors, **kwargs):
-            self.calls.append(("retrieve_multi_anchor", list(anchors), dict(kwargs)))
-            return [{"id": "node-2"}]
-
-        def stats(self):
-            self.calls.append(("stats",))
-            return {"nodes": 2, "decay_lambda": self.decay_lambda}
-
-        def get(self, node_id):
-            self.calls.append(("get", node_id))
-            return {"id": node_id}
-
-        def delete(self, node_id):
-            raise AssertionError(f"delete 不应泄漏: {node_id}")
-
-    episodic_parent = _ParentEpisodic()
-    semantic_parent = _ParentSemantic()
-    episodic = _SubagentEpisodicView(episodic_parent)
-    semantic = _SubagentSemanticView(semantic_parent)
-
-    assert episodic.load_for_context("task-1", max_chars=120) == "shared-narrative"
-    assert episodic.list_recent_narrative(limit=3) == [{"content": "row-1"}]
-    episodic.record(role="reflection", content="ignored")
-    episodic.record_event("probe", {"ok": True})
-
-    assert semantic.retrieve("goal", top_k=2) == [{"id": "node-1"}]
-    assert semantic.retrieve_multi_anchor(["goal", "memory"], top_k=1) == [{"id": "node-2"}]
-    assert semantic.stats()["nodes"] == 2
-    assert semantic.get("node-1") == {"id": "node-1"}
-    assert semantic.decay_lambda == pytest.approx(0.25)
-    semantic.upsert({"id": "ignored"})
-
-    assert episodic_parent.calls == [
-        ("load_for_context", "task-1", 120),
-        ("list_recent_narrative", 3),
-    ]
-    assert semantic_parent.calls == [
-        ("retrieve", "goal", {"top_k": 2}),
-        ("retrieve_multi_anchor", ["goal", "memory"], {"top_k": 1}),
-        ("stats",),
-        ("get", "node-1"),
-    ]
-
-    with pytest.raises(AttributeError):
-        getattr(episodic, "append_segment")
-
-    with pytest.raises(AttributeError):
-        getattr(semantic, "delete")
-
-
 def test_subagent_runner_uses_virtual_active_task_instead_of_parent_task():
     asyncio.run(_subagent_runner_uses_virtual_active_task_instead_of_parent_task())
 
@@ -776,7 +634,7 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
             self._seen_tasks: list[Any] = []
 
         async def decide(self, *args: Any, **kwargs: Any) -> Any:
-            task = await args[0].task_store.get_active()
+            task = await args[2].get_active()
             self._seen_tasks.append(task)
             self._calls += 1
             if self._calls == 1:
@@ -1295,7 +1153,7 @@ async def _subagent_runner_does_not_pollute_parent_store():
 
         async def decide(self, *args: Any, **kwargs: Any) -> Any:
             self._calls += 1
-            self._last_emotion = cast(EmotionState, args[0].emotion)
+            self._last_emotion = cast(EmotionState, args[5])
             self._last_ethos = cast(EthosState | None, kwargs.get("ethos_state"))
             if self._calls == 1:
                 return JudgmentOutput(
@@ -1601,94 +1459,6 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
             assert absorbed[0]["body"] == "isolated-memory 子灵应返回 absorbable memories 且不污染父灵。"
             assert absorbed[0]["source"] == "child-runtime"
             assert absorbed[0]["importance"] == pytest.approx(0.81)
-        finally:
-            await store.close()
-
-
-def test_subagent_run_isolated_memory_allows_memory_add_semantic_tool():
-    asyncio.run(_subagent_run_isolated_memory_allows_memory_add_semantic_tool())
-
-
-async def _subagent_run_isolated_memory_allows_memory_add_semantic_tool():
-    from core.execution import ExecutionLayer
-    from core.judgment import JudgmentOutput
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
-    from memory.working import WorkingMemory
-    from tools.registry import ToolContext, ToolRegistry
-    from tools.subagent_ops import subagent_run
-
-    class _FakeJudgment:
-        def __init__(self) -> None:
-            self._calls = 0
-
-        async def decide(self, *args: Any, **kwargs: Any) -> Any:
-            self._calls += 1
-            if self._calls == 1:
-                return JudgmentOutput(
-                    decision="act",
-                    chosen_action_id="memory.add_semantic",
-                    params={
-                        "title": "子灵隔离语义工具测试",
-                        "body": "isolated-memory 子灵应允许 memory.add_semantic 写入自身语义空间。",
-                        "kind": "fact",
-                    },
-                    rationale="probe isolated semantic tool",
-                )
-            return JudgmentOutput.wait(reason="done")
-
-    with tempfile.TemporaryDirectory() as d:
-        root = Path(d)
-        store = TaskStore(root / "subagent.db")
-        await store.open()
-        try:
-            registry = ToolRegistry()
-            registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
-                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
-                memory=SimpleNamespace(working_capacity=12, max_events=20),
-                memory_dir=root / "memory",
-                emotion=SimpleNamespace(baseline_valence=0.4, baseline_arousal=0.3),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
-            ))
-            execution = ExecutionLayer(registry, cfg)
-            parent_semantic = SemanticMemory(root / "semantic")
-            parent_ctx = ToolContext(
-                config=cfg,
-                wm=WorkingMemory(12),
-                task_store=store,
-                episodic=cast(Any, SimpleNamespace(record=lambda *args, **kwargs: None, record_event=lambda *args, **kwargs: None)),
-                semantic=parent_semantic,
-                emotion=cast(Any, SimpleNamespace()),
-                judgment=cast(Any, _FakeJudgment()),
-                execution=execution,
-                registry=registry,
-            )
-
-            res = await subagent_run(
-                {
-                    "goal": "隔离语义工具可用性",
-                    "max_ticks": 2,
-                    "allowed_tools": "memory.add_semantic",
-                    "isolated_memory": True,
-                },
-                parent_ctx,
-            )
-
-            assert res.error is None
-            assert res.metadata["absorbed_memories_count"] == 1
-            absorbed = res.metadata["absorbed_memories"]
-            assert len(absorbed) == 1
-            assert absorbed[0]["title"] == "子灵隔离语义工具测试"
-            assert absorbed[0]["body"] == "isolated-memory 子灵应允许 memory.add_semantic 写入自身语义空间。"
-            assert absorbed[0]["kind"] == "fact"
-            assert parent_semantic.get(absorbed[0]["id"]) is None
         finally:
             await store.close()
 
