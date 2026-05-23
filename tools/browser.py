@@ -185,9 +185,22 @@ async def browser_navigate(params: dict[str, Any], ctx: ToolContext) -> ToolResu
         # agent-browser 在部分服务器环境下即使导航成功也返回非零退出码（如 -1）。
         # 以 stdout 内容为主要成功判据：有有效快照 → 成功，退出码仅作参考。
         has_content = not _snapshot_looks_blank(stdout)
+        err = ""
+        label = ""
+        if code != 0:
+            err, label = _classify_navigate_failure(code, stdout, stderr)
+            # stderr 为空时，agent-browser 也可能把失败详情打印到 stdout。
+            # 这类已知失败模式必须优先判错，不能被“stdout 非空”误认为有效快照。
+            if err != "NavigateError":
+                detail = (stderr or stdout or "").strip()
+                return ToolResult(
+                    summary=f"导航失败[{label}](exit={code}): {(detail or '无详细输出')[:200]}",
+                    error=err,
+                    evidence=detail[:500],
+                    metadata={"url": url, "exit_code": code, "failure_kind": label},
+                )
         if code != 0 and not has_content:
             detail = (stderr or stdout or "").strip()
-            err, label = _classify_navigate_failure(code, stdout, stderr)
             return ToolResult(
                 summary=f"导航失败[{label}](exit={code}): {(detail or '无详细输出')[:200]}",
                 error=err,

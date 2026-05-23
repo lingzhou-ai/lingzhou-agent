@@ -5,10 +5,16 @@
 - exec-worker：后台/前台进程执行与监控元数据规范化
 - multimodal-worker：多模态输入归一化
 - llm-worker：LLM 驱动工具的监控协议归一化
+并发语义：
+- 每类 worker 拥有独立 semaphore，形成独立并发域
+- dispatch 会记录等待时长 / inflight / limit，便于判断 worker 是否真的并发
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Awaitable, Callable
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from tools.registry import ToolContext, ToolResult
 
@@ -20,14 +26,47 @@ if TYPE_CHECKING:
 WorkerHandler = Callable[["ToolEntry", "JudgmentOutput", ToolContext], Awaitable[ToolResult]]
 
 
+@dataclass
+class _WorkerPool:
+    name: str
+    limit: int
+    semaphore: asyncio.Semaphore
+    inflight: int = 0
+    waiting: int = 0
+    peak_inflight: int = 0
+
+
+def _worker_limit(cfg: Any | None, attr_name: str) -> int:
+    loop_cfg = getattr(cfg, "loop", None)
+    raw = getattr(loop_cfg, attr_name, None)
+    try:
+        limit = int(raw or 1)
+    except (TypeError, ValueError):
+        limit = 1
+    return max(1, limit)
+
+
 class WorkerLayer:
-    def __init__(self) -> None:
+    def __init__(self, cfg: Any | None = None) -> None:
         self._handlers: dict[str, WorkerHandler] = {
             "tool-chain-worker": self._execute_tool_chain,
             "exec-worker": self._execute_exec,
             "multimodal-worker": self._execute_multimodal,
             "llm-worker": self._execute_llm,
         }
+        self._pools: dict[str, _WorkerPool] = {}
+        for worker_type, attr_name in (
+            ("tool-chain-worker", "max_tool_chain_workers"),
+            ("exec-worker", "max_exec_workers"),
+            ("multimodal-worker", "max_multimodal_workers"),
+            ("llm-worker", "max_llm_workers"),
+        ):
+            limit = _worker_limit(cfg, attr_name)
+            self._pools[worker_type] = _WorkerPool(
+                name=worker_type,
+                limit=limit,
+                semaphore=asyncio.Semaphore(limit),
+            )
 
     async def dispatch(
         self,
@@ -37,9 +76,28 @@ class WorkerLayer:
         ctx: ToolContext,
     ) -> ToolResult:
         handler = self._handlers.get(worker_type, self._execute_tool_chain)
-        result = await handler(entry, action, ctx)
+        pool = self._pools.get(worker_type) or self._pools["tool-chain-worker"]
+        wait_started = time.monotonic()
+        queued_before = pool.waiting
+        pool.waiting += 1
+        await pool.semaphore.acquire()
+        wait_ms = int((time.monotonic() - wait_started) * 1000)
+        pool.waiting = max(0, pool.waiting - 1)
+        pool.inflight += 1
+        pool.peak_inflight = max(pool.peak_inflight, pool.inflight)
+        inflight_now = pool.inflight
+        try:
+            result = await handler(entry, action, ctx)
+        finally:
+            pool.inflight = max(0, pool.inflight - 1)
+            pool.semaphore.release()
         result.metadata.setdefault("worker_type", worker_type)
         result.metadata.setdefault("tool_name", action.chosen_action_id or "")
+        result.metadata.setdefault("worker_limit", pool.limit)
+        result.metadata.setdefault("worker_wait_ms", wait_ms)
+        result.metadata.setdefault("worker_inflight", inflight_now)
+        result.metadata.setdefault("worker_waiting", max(0, queued_before))
+        result.metadata.setdefault("worker_peak_inflight", pool.peak_inflight)
         return result
 
     async def _execute_tool_chain(

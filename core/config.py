@@ -116,6 +116,35 @@ class LoopConfig(BaseModel):
             "等待中的 tick 全局队列上限。超过上限时新 tick 会被拒绝（chat 会返回繁忙提示）。"
         ),
     )
+    max_tool_chain_workers: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "tool-chain-worker 的并发上限。控制普通工具链调用的同时执行数；"
+            "超过后进入 worker 内部等待队列。"
+        ),
+    )
+    max_exec_workers: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "exec-worker 的并发上限。控制前台/后台进程类工具的同时启动数。"
+        ),
+    )
+    max_multimodal_workers: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "multimodal-worker 的并发上限。控制图像/多模态工具的同时执行数。"
+        ),
+    )
+    max_llm_workers: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "llm-worker 的并发上限。控制带 fact/run_monitor 的 LLM 驱动工具的同时执行数。"
+        ),
+    )
     # ── 事件驱动时序（替代固定 interval 概念）───────────────────────────────
     # 设计依据：
     #   Friston Active Inference (2010/2017)：认知循环由自由能（预测误差）阈值驱动，

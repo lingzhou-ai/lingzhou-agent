@@ -565,7 +565,11 @@ async def _review_delegate_tasks(
             priority=cfg.thresholds.wm_pri_user_msg,
         ))
 
-    _log.info("[loop] delegate gate review: %d task results", len(parallel_entries))
+    _log.info(
+        "[loop] delegate gate review: %d task results ids=%s",
+        len(parallel_entries),
+        [entry.get("tool", "") for entry in parallel_entries],
+    )
     return await loop._judgment.decide_continue(
         tool_history=parallel_entries or [{
             "tool": "delegate",
@@ -754,16 +758,17 @@ def _log_tick_decision(loop: Any, cfg: Any, cycle: int, action: JudgmentOutput) 
         if actual_thinking != "off"
         else f" model={actual_model} tier={actual_tier} phase={actual_phase} skills={actual_skills}"
     )
+    action_label = action.action_label() or action.decision or "-"
     console.print(
         f"[bold cyan][loop][/bold cyan] tick={cycle} "
-        f"decision={action.decision} tool={action.chosen_action_id}"
+        f"decision={action.decision} tool={action_label}"
         f"[dim]{model_tag}[/dim]"
     )
     _log.info(
         "[loop] tick=%d decision=%s tool=%s model=%s tier=%s phase=%s thinking=%s skills=%s rationale=%s",
         cycle,
         action.decision,
-        action.chosen_action_id,
+        action_label,
         actual_model,
         actual_tier,
         actual_phase,

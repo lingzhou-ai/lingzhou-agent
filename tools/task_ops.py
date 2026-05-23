@@ -61,6 +61,10 @@ def _is_completion_verify_tool(tool_name: str) -> bool:
     return _has_capability(tool_name, "completion_verify")
 
 
+def _task_metadata(task: Any) -> dict[str, Any]:
+    return {"task_id": task.id, "chain_id": task.chain_id}
+
+
 @tool(ToolManifest(
     name="task.advance",
     description="将活跃任务推进到 in_progress 状态并更新 next_step（首次取任务时调用）",
@@ -77,6 +81,20 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="无活跃任务可推进", skipped=True)
     if task.status == "in_progress":
         return ToolResult(summary=f"任务 [{task.id}] 已在进行中", skipped=True)
+    if task.status == "done":
+        return ToolResult(
+            summary=f"任务 [{task.id}] 已完成，不能再次推进",
+            skipped=True,
+            resource_key=str(task.id),
+            metadata=_task_metadata(task),
+        )
+    if task.status == "cancelled":
+        return ToolResult(
+            summary=f"任务 [{task.id}] 已取消，不能再次推进",
+            skipped=True,
+            resource_key=str(task.id),
+            metadata=_task_metadata(task),
+        )
     next_step = (params.get("next_step") or "").strip() or task.next_step
     await ctx.task_store.update_status(task.id, "in_progress", next_step)
     return ToolResult(
@@ -151,6 +169,20 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     task = await _resolve_task(params.get("task_id"), ctx)
     if not task:
         return ToolResult(summary="无活跃任务可完成", skipped=True)
+    if task.status == "done":
+        return ToolResult(
+            summary=f"任务 [{task.id}] 已完成",
+            skipped=True,
+            resource_key=str(task.id),
+            metadata=_task_metadata(task),
+        )
+    if task.status == "cancelled":
+        return ToolResult(
+            summary=f"任务 [{task.id}] 已取消，不能完成",
+            skipped=True,
+            resource_key=str(task.id),
+            metadata=_task_metadata(task),
+        )
 
     force = bool(params.get("force") or False)
     if not force and ctx.task_store is not None:

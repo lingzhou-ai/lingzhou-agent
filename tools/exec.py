@@ -499,7 +499,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         payload.update({"process_id": session_id, "meta_path": info.meta_path, "log_path": info.log_path})
         if info.return_code == 0:
             return ToolResult(
-                summary=f"执行成功:\n{truncated}",
+                summary=f"命令完成 (exit=0):\n{truncated}",
                 evidence=json.dumps(payload, ensure_ascii=False),
                 resource_key=session_id,
                 fingerprint=f"exec:{info.return_code}:{payload['output_chars']}",

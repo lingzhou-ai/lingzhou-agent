@@ -503,9 +503,13 @@ class JudgmentLayer:
             self._last_applied_skill_names = list(output.applied_skills)
         return applied
 
-    def _counts_as_exploration_budget(self, tool_name: str) -> bool:
+    def _effective_registry(self, registry: "Any | None" = None) -> Any:
+        return registry or self._registry
+
+    def _counts_as_exploration_budget(self, tool_name: str, registry: "Any | None" = None) -> bool:
+        effective_registry = self._effective_registry(registry)
         return any(
-            tool_has_capability(self._registry, tool_name, capability)
+            tool_has_capability(effective_registry, tool_name, capability)
             for capability in ("ask_evidence", "completion_info_only", "completion_verify")
         )
 
@@ -598,7 +602,7 @@ class JudgmentLayer:
             "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
             len(tool_history), selection.phase, selection.tier, selection.model_ref,
             self._last_call_meta["thinking"], applied,
-            output.decision, output.chosen_action_id,
+            output.decision, output.action_label(),
         )
         return output
 
@@ -611,7 +615,9 @@ class JudgmentLayer:
         tool_history: list[dict[str, Any]] | None,
         effective_thinking: str,
         routing_overrides: dict[str, str] | None = None,
+        registry: "Any | None" = None,
     ) -> str:
+        effective_registry = self._effective_registry(registry)
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -658,7 +664,7 @@ class JudgmentLayer:
             task_explore_count = sum(
                 1
                 for item in tool_history
-                if self._counts_as_exploration_budget(str(item.get("tool") or ""))
+                if self._counts_as_exploration_budget(str(item.get("tool") or ""), effective_registry)
             )
             if len(tool_history) >= 2:
                 _last_tool = str(tool_history[-1].get("tool", ""))
@@ -678,7 +684,7 @@ class JudgmentLayer:
 
         ask_evidence_hits = sum(
             1 for item in (tool_history or [])
-            if tool_has_capability(self._registry, str(item.get("tool") or ""), "ask_evidence")
+            if tool_has_capability(effective_registry, str(item.get("tool") or ""), "ask_evidence")
             and str(item.get("result") or "").strip()
             and not str(item.get("result") or "").startswith("ERROR[")
         )
@@ -718,14 +724,14 @@ class JudgmentLayer:
         tool_history_compact_threshold = self._cfg.thresholds.continue_tool_history_compact_threshold
         tool_history_keep_last = self._cfg.thresholds.continue_tool_history_keep_last
         tool_history_count = len(tool_history or [])
-        for manifest in self._registry.list_manifests():
+        for manifest in effective_registry.list_manifests():
             for cap in manifest.capabilities:
                 capability_mapping.setdefault(cap, []).append(manifest.name)
             if manifest.name == current_action:
                 current_action_caps = sorted(list(manifest.capabilities))
         payload = {
             "active_overrides": routing_overrides or {},
-            "tool_tier_mapping": tool_tier_mapping(self._registry),
+            "tool_tier_mapping": tool_tier_mapping(effective_registry),
             "tool_capability_mapping": {k: sorted(v) for k, v in capability_mapping.items()},
             "current_action_capabilities": current_action_caps,
             "implicit_next_phase_default": implicit_next_phase_default,
@@ -832,11 +838,13 @@ class JudgmentLayer:
         prefer_tier: "str | None" = None,
         routing_overrides: "dict[str, str] | None" = None,
         phase: str = "initial",
+        registry_override: "Any | None" = None,
     ) -> JudgmentOutput:
         """组装上下文，调用 LLM，返回决策。
         
         thinking_override: 覆盖 cfg.thinking（如 chat 模式用 "low" 加速首轮判断）。
         routing_overrides: 临时覆盖 tier→model 映射（由 loop.py 从 model_strategy 读取）。
+        registry_override: 临时覆盖本轮可见工具集（如子灵受限工具视图）。
         """
         try:
             # per-tick 清空静态缓存（静态 section 仅在本 tick 复用）
@@ -856,6 +864,7 @@ class JudgmentLayer:
                 tool_history=None,
                 effective_thinking=thinking_override or self._cfg.thinking,
                 routing_overrides=routing_overrides,
+                registry_override=registry_override,
             )
         except Exception as _ctx_exc:
             _log.exception("[judgment] _assemble_context() 异常，返回 wait 兜底: %s", _ctx_exc)
@@ -913,7 +922,7 @@ class JudgmentLayer:
             "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
             _applied,
-            output.decision, output.chosen_action_id, output.rationale or "",
+            output.decision, output.action_label(), output.rationale or "",
         )
 
         return output
@@ -1096,8 +1105,10 @@ class JudgmentLayer:
         tool_history: list[dict[str, Any]] | None = None,
         effective_thinking: str | None = None,
         routing_overrides: "dict[str, str] | None" = None,
+        registry_override: "Any | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
+        effective_registry = self._effective_registry(registry_override)
         task = active_task if active_task is not None else await task_store.get_active()
 
         task_id_str = str(task.id) if task else None
@@ -1226,7 +1237,7 @@ class JudgmentLayer:
                 max_tick_queue=self._cfg.loop.max_tick_queue,
             ),
             "soul_section": soul_section,
-            "tools_section": _fmt_tools(self._registry.list_manifests()),
+            "tools_section": _fmt_tools(effective_registry.list_manifests()),
             "shell_capabilities_section": _fmt_shell_capabilities(),
             "perception_section": _fmt_percept(percept),
             "ethos_section": _fmt_ethos(ethos_state),
@@ -1248,6 +1259,7 @@ class JudgmentLayer:
                 tool_history=tool_history,
                 effective_thinking=effective_thinking or self._cfg.thinking,
                 routing_overrides=routing_overrides,
+                registry=effective_registry,
             ),
             "current_time_section": _fmt_current_time(),
             "config_section": _fmt_config_snapshot(self._cfg),

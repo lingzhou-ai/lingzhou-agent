@@ -717,6 +717,7 @@ class TaskStore:
         self,
         run_id: int,
         *,
+        task_id: int | None = None,
         status: str | None = None,
         output_json: dict[str, Any] | None = None,
         log_text: str | None = None,
@@ -728,6 +729,7 @@ class TaskStore:
     ) -> None:
         await self._runs.update_run(
             run_id,
+            task_id=task_id,
             status=status,
             output_json=output_json,
             log_text=log_text,

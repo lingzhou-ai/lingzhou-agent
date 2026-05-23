@@ -214,7 +214,8 @@ class CognitionLoop:
         self._auth_profiles_path: Path = _AUTH_PROFILES_PATH
         self._auth_profiles_mtime: float = _AUTH_PROFILES_PATH.stat().st_mtime if _AUTH_PROFILES_PATH.exists() else 0.0
 
-        # 并发 tick 调度：默认 max_concurrent_ticks=1（行为等价于串行）
+        # 并发 tick 调度：由 cfg.loop.max_concurrent_ticks 控制；默认配置为 4。
+        # 同一 chain 内仍严格 FIFO，不同 chain 才会并行。
         self._tick_dispatcher = ConcurrentTickDispatcher(
             self,
             max_concurrent=cfg.loop.max_concurrent_ticks,

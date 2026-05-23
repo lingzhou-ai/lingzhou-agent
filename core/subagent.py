@@ -710,6 +710,7 @@ class SubagentRunner:
                     neutral_emotion,
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos
+                    registry_override=filtered_reg,
                 )
             except Exception as exc:
                 error_msg = f"judgment 异常: {exc}"

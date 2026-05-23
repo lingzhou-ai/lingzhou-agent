@@ -717,7 +717,7 @@ async def _worker_layer_dispatches_specialized_handlers():
         )
 
     entry = ToolEntry(manifest=ToolManifest(name="demo", description="demo"), handler=_handler)
-    layer = WorkerLayer()
+    layer = WorkerLayer(_test_config())
     ctx = _tool_ctx()
 
     exec_result = await layer.dispatch(
@@ -752,6 +752,140 @@ async def _worker_layer_dispatches_specialized_handlers():
     assert llm_result.metadata["worker_path"] == "llm"
     assert llm_result.metadata["reasoning_mode"] == "tool-mediated-llm"
     assert llm_result.metadata["run_monitor"]["key"] == "run:llm-1"
+
+
+def test_worker_layer_throttles_same_pool_concurrency():
+    asyncio.run(_worker_layer_throttles_same_pool_concurrency())
+
+
+async def _worker_layer_throttles_same_pool_concurrency():
+    from core.worker import WorkerLayer
+    from tools.registry import ToolEntry, ToolManifest, ToolResult
+
+    started: list[str] = []
+    first_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _handler(params, ctx):
+        label = str(params.get("label") or "")
+        started.append(label)
+        if label == "first":
+            first_started.set()
+            await release.wait()
+        return ToolResult(summary=f"ok-{label}")
+
+    entry = ToolEntry(manifest=ToolManifest(name="demo.pool", description="demo"), handler=_handler)
+    cfg = cast(Any, SimpleNamespace(loop=SimpleNamespace(
+        max_tool_chain_workers=1,
+        max_exec_workers=1,
+        max_multimodal_workers=1,
+        max_llm_workers=1,
+    )))
+    layer = WorkerLayer(cfg)
+    ctx = _tool_ctx()
+
+    first = asyncio.create_task(layer.dispatch(
+        "tool-chain-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="demo.pool", params={"label": "first"}),
+        ctx,
+    ))
+    await first_started.wait()
+
+    second = asyncio.create_task(layer.dispatch(
+        "tool-chain-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="demo.pool", params={"label": "second"}),
+        ctx,
+    ))
+    await asyncio.sleep(0)
+
+    assert started == ["first"]
+
+    await asyncio.sleep(0.01)
+    release.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert started == ["first", "second"]
+    assert first_result.metadata["worker_limit"] == 1
+    assert second_result.metadata["worker_limit"] == 1
+    assert second_result.metadata["worker_wait_ms"] > 0
+    assert second_result.metadata["worker_inflight"] == 1
+
+
+def test_worker_layer_keeps_pools_independent():
+    asyncio.run(_worker_layer_keeps_pools_independent())
+
+
+async def _worker_layer_keeps_pools_independent():
+    from core.worker import WorkerLayer
+    from tools.registry import ToolEntry, ToolManifest, ToolResult
+
+    started: set[str] = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _handler(params, ctx):
+        label = str(params.get("label") or "")
+        started.add(label)
+        if len(started) >= 2:
+            both_started.set()
+        await release.wait()
+        return ToolResult(summary=f"ok-{label}")
+
+    entry = ToolEntry(manifest=ToolManifest(name="demo.worker", description="demo"), handler=_handler)
+    cfg = cast(Any, SimpleNamespace(loop=SimpleNamespace(
+        max_tool_chain_workers=1,
+        max_exec_workers=1,
+        max_multimodal_workers=1,
+        max_llm_workers=1,
+    )))
+    layer = WorkerLayer(cfg)
+    ctx = _tool_ctx()
+
+    tool_task = asyncio.create_task(layer.dispatch(
+        "tool-chain-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="demo.worker", params={"label": "tool"}),
+        ctx,
+    ))
+    llm_task = asyncio.create_task(layer.dispatch(
+        "llm-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="demo.worker", params={"label": "llm", "monitor_fact_key": "run:demo"}),
+        ctx,
+    ))
+
+    await asyncio.wait_for(both_started.wait(), timeout=0.2)
+    assert started == {"tool", "llm"}
+
+    release.set()
+    tool_result, llm_result = await asyncio.gather(tool_task, llm_task)
+    assert tool_result.metadata["worker_type"] == "tool-chain-worker"
+    assert llm_result.metadata["worker_type"] == "llm-worker"
+    assert llm_result.metadata["run_monitor"]["key"] == "run:demo"
+
+
+def test_judgment_output_action_label_summarizes_parallel_and_delegate():
+    from core.judgment import JudgmentOutput
+
+    parallel = JudgmentOutput(
+        decision="act",
+        parallel_actions=[
+            {"action_id": "file.read", "params": {}},
+            {"action_id": "file.list", "params": {}},
+        ],
+    )
+    delegated = JudgmentOutput(
+        decision="act",
+        delegate_tasks=[
+            {"id": "alpha", "goal": "read alpha"},
+            {"id": "beta", "goal": "read beta"},
+        ],
+    )
+
+    assert parallel.action_label() == "parallel(2)[file.read, file.list]"
+    assert delegated.action_label() == "delegate(2)[alpha, beta]"
 
 
 def test_task_store_fact_listing_and_delete():
@@ -1912,6 +2046,109 @@ async def _execution_dispatch_records_run():
         assert active.result_json["last_run_id"] == runs[0].id
         assert active.result_json["last_run_status"] == "succeeded"
         assert active.result_json["worker_type"] == "tool-chain-worker"
+
+        await store.close()
+
+
+def test_execution_logs_worker_metadata(caplog):
+    asyncio.run(_execution_logs_worker_metadata(caplog))
+
+
+async def _execution_logs_worker_metadata(caplog):
+    from tempfile import TemporaryDirectory
+
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        root = Path(d)
+        target = root / "demo.txt"
+        target.write_text("hello", encoding="utf-8")
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        await store.add_task("读取文件", goal="读 demo", model_tier="reader")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = _judgment_output(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": str(target)},
+            rationale="log worker metadata",
+        )
+
+        caplog.clear()
+        caplog.set_level(logging.INFO, logger="lingzhou.execution")
+        result = await layer.dispatch(action, ctx)
+
+        assert result.error is None
+        messages = [record.getMessage() for record in caplog.records if record.name == "lingzhou.execution"]
+        tool_logs = [msg for msg in messages if "[tool-result]" in msg]
+        finalize_logs = [msg for msg in messages if "[run-finalize]" in msg]
+        assert tool_logs and "worker_meta=path=tool-chain" in tool_logs[-1]
+        assert "limit=" in tool_logs[-1]
+        assert "dispatch_ms=" in tool_logs[-1]
+        assert finalize_logs and "worker_meta=path=tool-chain" in finalize_logs[-1]
+        assert "dispatch_ms=" in finalize_logs[-1]
+
+        await store.close()
+
+
+def test_execution_dispatch_rebinds_target_task_run():
+    asyncio.run(_execution_dispatch_rebinds_target_task_run())
+
+
+async def _execution_dispatch_rebinds_target_task_run():
+    from tempfile import TemporaryDirectory
+
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        active_id = await store.add_task(
+            "active task",
+            goal="should keep focus but not own explicit target run",
+            status="in_progress",
+        )
+        target_id = await store.add_task(
+            "pending target",
+            goal="should receive explicit task.advance run",
+            status="pending",
+        )
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = _judgment_output(
+            decision="act",
+            chosen_action_id="task.advance",
+            params={"task_id": target_id},
+            rationale="rebind explicit task target",
+        )
+
+        result = await layer.dispatch(action, ctx)
+
+        assert result.error is None
+        assert result.skipped is False
+        runs = await store.list_runs(limit=5)
+        assert runs
+        assert runs[0].tool_name == "task.advance"
+        assert runs[0].task_id == target_id
+
+        target = await store.get_task_by_id(target_id)
+        assert target is not None
+        assert target.status == "in_progress"
+        assert target.result_json["last_run_id"] == runs[0].id
+        assert target.result_json["last_run_status"] == "succeeded"
+
+        active = await store.get_task_by_id(active_id)
+        assert active is not None
+        assert active.status == "in_progress"
+        assert active.result_json == {}
 
         await store.close()
 

@@ -96,6 +96,7 @@ class RunStore:
         self,
         run_id: int,
         *,
+        task_id: int | None = None,
         status: str | None = None,
         output_json: dict[str, Any] | None = None,
         log_text: str | None = None,
@@ -108,6 +109,8 @@ class RunStore:
         run = await self.get_run_by_id(run_id)
         if not run:
             return
+        if task_id is not None:
+            run.task_id = task_id
         if status:
             run.status = status
         if output_json is not None:
@@ -127,7 +130,7 @@ class RunStore:
         if run.status in {"succeeded", "failed", "cancelled"} and not run.completed_at:
             run.completed_at = datetime.now(UTC).isoformat()
         await self._db.execute(
-            "UPDATE runs SET status=?, completed_at=?, data=? WHERE id=?",
-            (run.status, run.completed_at, run.to_data_json(), run_id),
+            "UPDATE runs SET task_id=?, status=?, completed_at=?, data=? WHERE id=?",
+            (run.task_id, run.status, run.completed_at, run.to_data_json(), run_id),
         )
         await self._db.commit()

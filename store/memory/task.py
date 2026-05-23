@@ -84,9 +84,16 @@ class TaskStateStore:
                FROM tasks
                WHERE status IN ('pending','ready','in_progress','resumed')
                ORDER BY
-                 CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
-                               WHEN 'normal' THEN 2 ELSE 3 END,
-                 id
+                CASE status
+                        WHEN 'in_progress' THEN 0
+                        WHEN 'resumed' THEN 1
+                        WHEN 'ready' THEN 2
+                        WHEN 'pending' THEN 3
+                        ELSE 4
+                END,
+                CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                            WHEN 'normal' THEN 2 ELSE 3 END,
+                id
                LIMIT ?""",
             (limit,),
         ) as cur:

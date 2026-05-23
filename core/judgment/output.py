@@ -243,6 +243,35 @@ class JudgmentOutput:
         return cls(decision="wait", rationale=reason, reply_to_user="")
 
     @staticmethod
+    def _compact_items(prefix: str, items: list[str], *, max_items: int) -> str:
+        if not items:
+            return ""
+        shown = items[:max_items]
+        suffix = ""
+        if len(items) > max_items:
+            suffix = f", +{len(items) - max_items}"
+        return f"{prefix}({len(items)})[{', '.join(shown)}{suffix}]"
+
+    def action_label(self, *, max_items: int = 3) -> str:
+        if self.chosen_action_id:
+            return self.chosen_action_id
+        if self.parallel_actions:
+            action_ids = [
+                str(item.get("action_id") or "").strip()
+                for item in self.parallel_actions
+                if str(item.get("action_id") or "").strip()
+            ]
+            return self._compact_items("parallel", action_ids, max_items=max_items)
+        if self.delegate_tasks:
+            task_ids = [
+                str(item.get("id") or "").strip()
+                for item in self.delegate_tasks
+                if str(item.get("id") or "").strip()
+            ]
+            return self._compact_items("delegate", task_ids, max_items=max_items)
+        return ""
+
+    @staticmethod
     def _coerce_text(value: Any) -> str:
         if value is None:
             return ""

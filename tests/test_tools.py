@@ -29,6 +29,87 @@ from conftest import (
 # 新增工具测试（file.edit / skill_ops / exec 覆盖）
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+def test_task_store_get_active_prefers_started_task_over_pending():
+    asyncio.run(_task_store_get_active_prefers_started_task_over_pending())
+
+
+async def _task_store_get_active_prefers_started_task_over_pending():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            pending_id = await store.add_task(
+                "pending critical",
+                goal="should not outrank running task",
+                priority="critical",
+                status="pending",
+            )
+            running_id = await store.add_task(
+                "running low",
+                goal="must stay active",
+                priority="low",
+                status="in_progress",
+            )
+
+            active = await store.get_active()
+
+            assert active is not None
+            assert active.id == running_id
+            assert active.id != pending_id
+            assert active.status == "in_progress"
+        finally:
+            await store.close()
+
+
+def test_task_tools_do_not_reenter_terminal_tasks():
+    asyncio.run(_task_tools_do_not_reenter_terminal_tasks())
+
+
+async def _task_tools_do_not_reenter_terminal_tasks():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_advance, task_complete
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            done_id = await store.add_task("done task", goal="already finished", status="done")
+            cancelled_id = await store.add_task("cancelled task", goal="already cancelled", status="cancelled")
+            ctx = _tool_ctx(task_store=store)
+
+            done_advance = await task_advance({"task_id": done_id}, ctx)
+            cancelled_advance = await task_advance({"task_id": cancelled_id}, ctx)
+            done_complete = await task_complete({"task_id": done_id}, ctx)
+            cancelled_complete = await task_complete({"task_id": cancelled_id}, ctx)
+
+            assert done_advance.skipped is True
+            assert done_advance.summary == f"任务 [{done_id}] 已完成，不能再次推进"
+            assert done_advance.metadata["task_id"] == done_id
+
+            assert cancelled_advance.skipped is True
+            assert cancelled_advance.summary == f"任务 [{cancelled_id}] 已取消，不能再次推进"
+            assert cancelled_advance.metadata["task_id"] == cancelled_id
+
+            assert done_complete.skipped is True
+            assert done_complete.summary == f"任务 [{done_id}] 已完成"
+            assert done_complete.metadata["task_id"] == done_id
+
+            assert cancelled_complete.skipped is True
+            assert cancelled_complete.summary == f"任务 [{cancelled_id}] 已取消，不能完成"
+            assert cancelled_complete.metadata["task_id"] == cancelled_id
+
+            done_task = await store.get_task_by_id(done_id)
+            cancelled_task = await store.get_task_by_id(cancelled_id)
+            assert done_task is not None and done_task.status == "done"
+            assert cancelled_task is not None and cancelled_task.status == "cancelled"
+        finally:
+            await store.close()
+
 def test_file_edit_single_replace():
     """file.edit 单处替换成功。"""
     asyncio.run(_file_edit_single_replace())
@@ -333,6 +414,77 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
             assert execution._registry is registry  # type: ignore[attr-defined]
             assert execution._registry.get("task.ask") is not None  # type: ignore[attr-defined]
             assert execution._registry.get("probe.raise_registry") is not None  # type: ignore[attr-defined]
+        finally:
+            await store.close()
+
+
+def test_subagent_runner_passes_filtered_registry_to_judgment():
+    asyncio.run(_subagent_runner_passes_filtered_registry_to_judgment())
+
+
+async def _subagent_runner_passes_filtered_registry_to_judgment():
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolContext, ToolRegistry
+
+    captured_visible_tools: list[str] = []
+
+    class _RecordingJudgment:
+        async def decide(self, *args: Any, **kwargs: Any) -> Any:
+            registry_override = kwargs.get("registry_override")
+            assert registry_override is not None
+            captured_visible_tools.extend(sorted(m.name for m in registry_override.list_manifests()))
+            return JudgmentOutput.wait(reason="done")
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            registry = ToolRegistry()
+            registry.discover(_proj_root() / "tools")
+            cfg = cast(Any, SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
+                memory=SimpleNamespace(working_capacity=12),
+                emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
+                soul=SimpleNamespace(ethos_baseline={
+                    "truth": 0.91,
+                    "caution": 0.81,
+                    "continuity": 0.71,
+                    "curiosity": 0.61,
+                    "care": 0.51,
+                }),
+            ))
+            execution = ExecutionLayer(registry, cfg)
+            parent_ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(12),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast(Any, SimpleNamespace()),
+                judgment=None,
+                execution=execution,
+                registry=registry,
+            )
+
+            result = await make_subagent_runner(
+                SubagentConfig(goal="检查子灵可见工具", max_ticks=1, allowed_tools=["task.list"]),
+                parent_ctx,
+                cast(Any, _RecordingJudgment()),
+                execution,
+                registry,
+            ).run()
+
+            assert result.completed is True
+            assert "task.list" in captured_visible_tools
+            assert "shell.run" not in captured_visible_tools
+            assert "subagent.run" not in captured_visible_tools
         finally:
             await store.close()
 
@@ -1580,6 +1732,22 @@ async def _process_write_to_finished():
     w = await process_write({"session_id": sid, "data": "hello"}, ctx)
     assert w.skipped is True
     assert w.error == "ProcessFinished"
+
+
+def test_exec_foreground_success_summary_is_exit_code_neutral():
+    asyncio.run(_exec_foreground_success_summary_is_exit_code_neutral())
+
+
+async def _exec_foreground_success_summary_is_exit_code_neutral():
+    from tools.exec import exec_run
+
+    ctx = _tool_ctx()
+    res = await exec_run({"command": "printf 'payload-with-error-word'"}, ctx)
+
+    assert res.error is None
+    assert res.skipped is False
+    assert res.summary.startswith("命令完成 (exit=0):")
+    assert "payload-with-error-word" in res.summary
 
 
 def test_process_poll_exposes_handle_lost_interaction_state():

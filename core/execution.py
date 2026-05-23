@@ -121,6 +121,84 @@ def _tool_result_log_fields(result: ToolResult) -> tuple[str, str, str]:
     return summary, error, state
 
 
+def _worker_log_fields(result: ToolResult) -> str:
+    meta = result.metadata if isinstance(result.metadata, dict) else {}
+    parts: list[str] = []
+    path = str(meta.get("worker_path") or "").strip()
+    if path:
+        parts.append(f"path={path}")
+    mode = str(meta.get("execution_mode") or "").strip()
+    if mode:
+        parts.append(f"mode={mode}")
+    for key, label in (
+        ("worker_limit", "limit"),
+        ("worker_wait_ms", "wait_ms"),
+        ("worker_inflight", "inflight"),
+        ("worker_waiting", "queue"),
+        ("worker_peak_inflight", "peak"),
+        ("dispatch_ms", "dispatch_ms"),
+    ):
+        value = meta.get(key)
+        if value in (None, ""):
+            continue
+        parts.append(f"{label}={value}")
+    monitor = meta.get("run_monitor")
+    if isinstance(monitor, dict):
+        kind = str(monitor.get("kind") or "").strip()
+        if kind:
+            parts.append(f"monitor={kind}")
+    return " ".join(parts) or "-"
+
+
+def _worker_limit_for_type(cfg: "Config", worker_type: str) -> int:
+    loop_cfg = getattr(cfg, "loop", None)
+    attr_name = {
+        "tool-chain-worker": "max_tool_chain_workers",
+        "exec-worker": "max_exec_workers",
+        "multimodal-worker": "max_multimodal_workers",
+        "llm-worker": "max_llm_workers",
+    }.get(worker_type, "max_tool_chain_workers")
+    try:
+        return max(1, int(getattr(loop_cfg, attr_name, 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+_TARGET_TASK_TOOLS = frozenset({
+    "task.advance",
+    "task.complete",
+    "task.fail",
+    "task.resume",
+    "task.steer",
+    "task.update",
+    "task.wait",
+})
+
+
+def _coerce_task_id(value: Any) -> int:
+    try:
+        task_id = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return task_id if task_id > 0 else 0
+
+
+def _planned_run_task_id(action: "JudgmentOutput", active_task_id: int) -> int:
+    tool_name = action.chosen_action_id or ""
+    if tool_name in _TARGET_TASK_TOOLS:
+        return _coerce_task_id((action.params or {}).get("task_id")) or active_task_id
+    return active_task_id
+
+
+def _resolved_run_task_id(result: ToolResult, active_task_id: int) -> int:
+    tool_name = ""
+    if isinstance(result.metadata, dict):
+        tool_name = str(result.metadata.get("tool_name") or "")
+    if tool_name in _TARGET_TASK_TOOLS and isinstance(result.metadata, dict):
+        return _coerce_task_id(result.metadata.get("task_id")) or active_task_id
+    return active_task_id
+
+
 def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> tuple[str, str]:
     p = params or {}
     if p.get("monitor_fact_key") or p.get("status_fact_key"):
@@ -424,7 +502,7 @@ class ExecutionLayer:
     def __init__(self, registry: "ToolRegistry", cfg: "Config") -> None:
         self._registry = registry
         self._cfg = cfg
-        self._workers = WorkerLayer()
+        self._workers = WorkerLayer(cfg)
 
     async def dispatch(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
         """根据 decision 类型分发执行。"""
@@ -506,6 +584,8 @@ class ExecutionLayer:
         run_type = "tool_chain"
         worker_type = "tool-chain-worker"
         active_task = await ctx.task_store.get_active() if ctx.task_store is not None else None
+        active_task_id = active_task.id if active_task else 0
+        run_task_id = _planned_run_task_id(action, active_task_id)
         task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""
         durable_policy = await _load_durable_failure_policy(ctx.task_store)
         durable_threshold = int(durable_policy.get("threshold") or _DURABLE_FAILURE_THRESHOLD)
@@ -513,7 +593,7 @@ class ExecutionLayer:
         if ctx.task_store is not None:
             run_type, worker_type = _infer_run_profile(action.chosen_action_id or "", action.params)
             run_id = await ctx.task_store.add_run(
-                task_id=active_task.id if active_task else 0,
+                task_id=run_task_id,
                 run_type=run_type,
                 worker_type=worker_type,
                 status="running",
@@ -529,18 +609,19 @@ class ExecutionLayer:
                 _record_run_started(
                     ctx,
                     run_id=run_id,
-                    task_id=active_task.id if active_task else 0,
+                    task_id=run_task_id,
                     tool_name=action.chosen_action_id or "",
                     run_type=run_type,
                     worker_type=worker_type,
                     model_tier=task_tier,
                 )
                 _log.info(
-                    "[run-start] run=%s task=%s tool=%s worker=%s tier=%s",
+                    "[run-start] run=%s task=%s tool=%s worker=%s limit=%s tier=%s",
                     run_id,
-                    active_task.id if active_task else 0,
+                    run_task_id,
                     action.chosen_action_id or "-",
                     worker_type,
+                    _worker_limit_for_type(self._cfg, worker_type),
                     task_tier or "-",
                 )
 
@@ -556,7 +637,7 @@ class ExecutionLayer:
             _log.warning(
                 "[exec-miss] run=%s task=%s tool=%s not registered",
                 run_id or 0,
-                active_task.id if active_task else 0,
+                run_task_id,
                 action.chosen_action_id or "-",
             )
             result = _stamp_result_metadata(ToolResult(
@@ -585,7 +666,7 @@ class ExecutionLayer:
                         _log.info(
                             "[exec-mute] run=%s task=%s tool=%s reason=%s count=%s muted_until=%s",
                             run_id or 0,
-                            active_task.id if active_task else 0,
+                            run_task_id,
                             action.chosen_action_id or "-",
                             mute_data.get("reason") or "-",
                             mute_data.get("count") or 0,
@@ -620,7 +701,7 @@ class ExecutionLayer:
                     _log.info(
                         "[exec-gate] run=%s task=%s tool=%s blocked step=%s",
                         run_id or 0,
-                        active_task.id if active_task else 0,
+                        run_task_id,
                         action.chosen_action_id or "-",
                         _step_name,
                     )
@@ -633,13 +714,14 @@ class ExecutionLayer:
                     await self._finalize_run(run_id, result, ctx)
                     return result
 
+        dispatch_started = time.monotonic()
         try:
             result = await self._workers.dispatch(worker_type, entry, action, ctx)
         except Exception as exc:
             _log.exception(
                 "[exec-error] run=%s task=%s tool=%s worker=%s dispatch raised",
                 run_id or 0,
-                active_task.id if active_task else 0,
+                run_task_id,
                 action.chosen_action_id or "-",
                 worker_type,
             )
@@ -650,12 +732,15 @@ class ExecutionLayer:
                 kind="execute_result",
             )
         result = _stamp_result_metadata(result)
+        result.metadata.setdefault("dispatch_ms", int((time.monotonic() - dispatch_started) * 1000))
 
         _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _worker_log = _worker_log_fields(result)
         _log.info(
-            "[tool-result] tool=%s worker=%s skipped=%s error=%s summary=%s state=%s",
+            "[tool-result] tool=%s worker=%s worker_meta=%s skipped=%s error=%s summary=%s state=%s",
             action.chosen_action_id,
             worker_type,
+            _worker_log,
             result.skipped,
             _error_log or "-",
             _summary_log or "-",
@@ -664,7 +749,7 @@ class ExecutionLayer:
 
         # 失败时写入 failures 表，绑定当前任务（P2-B 任务边界原则）
         if result.error and not result.skipped and ctx.task_store is not None:
-            task_id = str(active_task.id) if active_task else ""
+            task_id = str(_resolved_run_task_id(result, run_task_id) or "")
             await ctx.task_store.record_failure(
                 kind=action.chosen_action_id,
                 summary=result.summary[:300],
@@ -711,7 +796,7 @@ class ExecutionLayer:
                     scope="system",
                 )
 
-        await self._finalize_run(run_id, result, ctx, active_task_id=active_task.id if active_task else None)
+        await self._finalize_run(run_id, result, ctx, active_task_id=run_task_id or None)
         return result
 
     async def _finalize_run(
@@ -727,10 +812,12 @@ class ExecutionLayer:
         result.metadata.setdefault("run_id", run_id)
         if isinstance(result.state_delta, dict):
             result.state_delta.setdefault("run_id", run_id)
+        resolved_task_id = _resolved_run_task_id(result, active_task_id or 0)
         status = _run_status_from_result(result)
         progress = _run_progress_text(result)
         await ctx.task_store.update_run(
             run_id,
+            task_id=resolved_task_id,
             status=status,
             output_json=result.to_dict(),
             log_text=result.summary[:4000],
@@ -739,13 +826,15 @@ class ExecutionLayer:
             progress=progress,
         )
         _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _worker_log = _worker_log_fields(result)
         _log.info(
-            "[run-finalize] run=%s task=%s status=%s tool=%s worker=%s progress=%s error=%s state=%s",
+            "[run-finalize] run=%s task=%s status=%s tool=%s worker=%s worker_meta=%s progress=%s error=%s state=%s",
             run_id,
-            active_task_id or 0,
+            resolved_task_id,
             status,
             str(result.metadata.get("tool_name") or "-"),
             str(result.metadata.get("worker_type") or "-"),
+            _worker_log,
             _clip_log_text(progress or "") or "-",
             _error_log or "-",
             _state_log or "-",
@@ -754,16 +843,16 @@ class ExecutionLayer:
             _record_run_outcome(
                 ctx,
                 run_id=run_id,
-                task_id=active_task_id or 0,
+                task_id=resolved_task_id,
                 tool_name=str(result.metadata.get("tool_name") or ""),
                 worker_type=str(result.metadata.get("worker_type") or ""),
                 status=status,
                 progress=progress,
                 result=result,
             )
-        if active_task_id:
+        if resolved_task_id:
             await ctx.task_store.update_task_result(
-                active_task_id,
+                resolved_task_id,
                 {
                     "last_run_id": run_id,
                     "last_run_status": status,
@@ -776,7 +865,7 @@ class ExecutionLayer:
             )
         meta = build_meta_reflection(
             run_id=run_id,
-            task_id=active_task_id or 0,
+            task_id=resolved_task_id,
             tool_name=str(result.metadata.get("tool_name") or ""),
             result=result,
         )

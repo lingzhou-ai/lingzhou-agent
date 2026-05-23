@@ -33,7 +33,15 @@ def _test_config(
     return cast(
         Any,
         SimpleNamespace(
-            loop=SimpleNamespace(act=act, debug=debug, workspace_dir=workspace_dir),
+            loop=SimpleNamespace(
+                act=act,
+                debug=debug,
+                workspace_dir=workspace_dir,
+                max_tool_chain_workers=8,
+                max_exec_workers=4,
+                max_multimodal_workers=2,
+                max_llm_workers=4,
+            ),
             thresholds=SimpleNamespace(
                 shell_timeout=shell_timeout,
                 shell_max_output_chars=shell_max_output_chars,
@@ -79,7 +87,7 @@ def _tool_ctx(
 def _execution_layer(reg, *, debug: bool = False):
     from core.execution import ExecutionLayer
 
-    return ExecutionLayer(reg, cast(Any, SimpleNamespace(loop=SimpleNamespace(debug=debug))))
+    return ExecutionLayer(reg, _test_config(debug=debug))
 
 
 @lru_cache(maxsize=1)

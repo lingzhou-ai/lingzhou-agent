@@ -108,7 +108,7 @@ def _format_action_feedback_line(
     *,
     progressful: bool,
 ) -> str:
-    tool = action.chosen_action_id or action.decision or "-"
+    tool = action.action_label() or action.decision or "-"
     key = action_key_param(action.params) if action.decision == "act" else ""
     status = "error" if result.error else ("skipped" if result.skipped else ("ok" if action.decision == "act" else action.decision))
     parts = [f"tool={tool}"]

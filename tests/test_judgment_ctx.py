@@ -2584,3 +2584,65 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
             await store.close()
 
 
+def test_assemble_context_registry_override_limits_tools_section():
+    asyncio.run(_assemble_context_registry_override_limits_tools_section())
+
+
+async def _assemble_context_registry_override_limits_tools_section():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from core.subagent import _DEFAULT_BLOCKED_TOOLS, _FilteredRegistry
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            registry = _tool_registry()
+            filtered = _FilteredRegistry(registry, {"task.list"}, set(_DEFAULT_BLOCKED_TOOLS))
+            layer = JudgmentLayer(_DummyProvider(), registry, cfg)
+            text = await layer._assemble_context(
+                cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                WorkingMemory(capacity=20),
+                store,
+                EpisodicMemory(Path(d) / "memory"),
+                SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                EmotionState.from_config(cfg),
+                active_task=None,
+                user_message="检查子灵工具边界",
+                registry_override=filtered,
+            )
+
+            assert "- `task.list`:" in text
+            assert "- `shell.run`:" not in text
+            assert "- `subagent.run`:" not in text
+        finally:
+            await store.close()
+
+
