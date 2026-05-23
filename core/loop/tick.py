@@ -640,7 +640,7 @@ async def _finalize_tick_user_reply(
     if user_message and not action.reply_to_user and _should_use_fallback_user_reply(result, reply_only):
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
 
-    await _persist_tick_user_reply(loop, action, active_task, chat_id)
+    await _persist_tick_user_reply(loop, action, active_task, chat_id, user_message)
 
 
 def _should_use_fallback_user_reply(
@@ -703,6 +703,7 @@ async def _persist_tick_user_reply(
     action: JudgmentOutput,
     active_task: Any,
     chat_id: str | None,
+    user_message: str = "",
 ) -> None:
     if not action.reply_to_user:
         return
@@ -721,6 +722,21 @@ async def _persist_tick_user_reply(
             action.reply_to_user,
             chat_id=outbound_chat_id,
         )
+        # autonomous tick（无 user_message）的回复需主动写入情节记忆，
+        # 有 user_message 时 _post_tick_memory_impl 已处理，避免重复记录。
+        if not user_message:
+            _episodic = getattr(loop, '_episodic', None)
+            if _episodic is not None:
+                _affect = {
+                    "valence": getattr(getattr(loop, '_emotion', None), 'valence', 0.0),
+                    "arousal": getattr(getattr(loop, '_emotion', None), 'arousal', 0.0),
+                }
+                _episodic.record(
+                    role="assistant_reply",
+                    content=action.reply_to_user,
+                    task_id=str(active_task.id) if active_task else None,
+                    affect=_affect,
+                )
 
 
 def _log_tick_decision(loop: Any, cfg: Any, cycle: int, action: JudgmentOutput) -> None:

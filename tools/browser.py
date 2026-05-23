@@ -226,10 +226,19 @@ async def browser_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResu
         code, stdout, stderr = await _browser_run("snapshot")
         if code != 0:
             return ToolResult(summary=f"快照失败: {stderr[:200]}", error="SnapshotError")
+        # agent-browser 在无已打开页面时输出字面量 "(empty page)"或空内容
+        # 将其识别为无页面状态并返回 skipped=True，避免被计为成功 run
+        raw = stdout.strip()
+        if not raw or raw.lower() == "(empty page)" or _snapshot_looks_blank(raw):
+            return ToolResult(
+                summary="当前没有已打开的页面。请先使用 browser.navigate 打开 URL。",
+                skipped=True,
+                error="NoPageOpen",
+            )
         return ToolResult(
-            summary=_make_snapshot_summary(stdout),
-            evidence=stdout[:500],
-            metadata={"snapshot_chars": len(stdout)},
+            summary=_make_snapshot_summary(raw),
+            evidence=raw[:500],
+            metadata={"snapshot_chars": len(raw)},
         )
     except Exception as e:
         return ToolResult(summary=f"快照异常: {e}", error="BrowserError")
@@ -254,7 +263,14 @@ async def browser_click(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     try:
         code, stdout, stderr = await _browser_run("click", ref)
         if code != 0:
-            return ToolResult(summary=f"点击失败: {stderr[:200]}", error="ClickError")
+            detail = (stderr or stdout or "").strip()
+            if "element not found" in detail.lower() or "not found" in detail.lower():
+                hint = (
+                    f"点击失败：ref={ref!r} 在当前 DOM 中不存在。"
+                    "请先调用 browser.snapshot 获取最新页面结构，再用新 ref 重试。"
+                )
+                return ToolResult(summary=hint, error="ElementNotFound")
+            return ToolResult(summary=f"点击失败: {detail[:200]}", error="ClickError")
         return ToolResult(
             summary=f"已点击 {ref}\n{_make_snapshot_summary(stdout)}",
             evidence=stdout[:300],
@@ -288,10 +304,21 @@ async def browser_type(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         args.append(text)
         code, stdout, stderr = await _browser_run(*args)
         if code != 0:
-            return ToolResult(summary=f"输入失败: {stderr[:200]}", error="TypeError")
+            detail = (stderr or stdout or "").strip()
+            # agent-browser 报元素不存在：ref 可能来自过期快照，指引 LLM 先重新 snapshot
+            if "element not found" in detail.lower() or "not found" in detail.lower():
+                hint = (
+                    f"输入失败：ref={ref!r} 在当前 DOM 中不存在。"
+                    "快照中的 ref 可能已过期（页面已变化）。"
+                    "请先调用 browser.snapshot 获取最新页面结构，再用新 ref 重试；"
+                    "或省略 ref 参数让浏览器使用当前焦点元素。"
+                )
+                return ToolResult(summary=hint, error="ElementNotFound")
+            return ToolResult(summary=f"输入失败: {detail[:200]}", error="TypeInputError")
         return ToolResult(
-            summary=f"已输入: {text[:50]}",
-            metadata={"text": text[:100], "ref": ref or "focus"},
+            summary=f"已输入: {text}",
+            evidence=text,
+            metadata={"text_len": len(text), "ref": ref or "focus"},
         )
     except Exception as e:
         return ToolResult(summary=f"输入异常: {e}", error="BrowserError")

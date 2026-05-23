@@ -152,10 +152,10 @@ class LoopConfig(BaseModel):
         ),
     )
     idle_no_task_bounds: list[float] = Field(
-        default=[5000, 300000],
+        default=[2000, 300000],
         description=(
             "[min, max]：LLM 通过 next_idle_gap_secs / next_idle_gap_ms 在无活跃任务时可指定的等待时长范围（毫秒）。"
-            "示例：[10000, 600000] 表示空闲时 LLM 至少等 10s、最多 600s。"
+            "示例：[2000, 300000] 表示空闲时 LLM 最快 2s 触发下一探索 tick、最慢 300s。"
         ),
     )
 

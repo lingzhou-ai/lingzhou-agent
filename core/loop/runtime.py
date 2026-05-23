@@ -346,9 +346,12 @@ class CognitionLoop:
     def _new_chain_runtime_state(self) -> dict[str, Any]:
         chain_judgment = JudgmentLayer(self._provider, self._registry, self._cfg)
         chain_judgment.set_identity_prefix(getattr(self._judgment, "_identity_prefix", ""))
-        if self._routing_providers:
-            chain_judgment.set_routing_providers(dict(self._routing_providers))
+        # routing_providers 不在此处设置：dispatch loop 在每次 tick 前会无条件覆盖，在此调用会导致首 tick 打印重复日志
         chain_judgment._probe_manager = self._probe_manager
+        # 共享主 judgment 的模型健康表：402/429 cooldown 必须跨 chain 共享，
+        # 否则每个新 chain 都会独立重试已达到 cooldown 的模型
+        chain_judgment._model_health = self._judgment._model_health
+        chain_judgment._provider_errors = self._judgment._provider_errors
         try:
             chain_judgment.self_model = copy.deepcopy(self._judgment.self_model)
         except Exception:
@@ -565,10 +568,13 @@ class CognitionLoop:
                 f"目标: {task_template['goal']}\n"
                 f"下一步建议: {task_template.get('next_step', '(未提供)')}\n"
                 "若认可这次自驱触发，可调用 task.add 创建任务；"
-                "建议显式设置 source=self_drive，以便后续去重与追踪。"
+                "建议显式设置 source=self_drive，以便后续去重与追踪。\n"
+                "本轮探索请优先读全相关文件（不加 limit），感知完整后再决定存储哪些结论。"
             ),
             priority=self._cfg.thresholds.wm_pri_signal,
         ))
+        # 自驱探索：强制下一 tick 使用 high thinking 以保障推理深度
+        self._pending_thinking_override = "high"
 
         _log.info(
             "[self_drive] 注入 WM 信号 C=%.2f domain=%s idle=%d rationale=%s",

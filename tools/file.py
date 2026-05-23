@@ -407,14 +407,24 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         start = 0
         end = total
 
+        read_state_delta: dict[str, Any] = {}
         if has_line_range:
             lines = text.split("\n")
             line_offset = max(0, int(params.get("offset", 1)) - 1)  # 1-indexed → 0-indexed
             line_limit = int(params.get("limit", 50)) if "limit" in params else 50
             selected = lines[line_offset:line_offset + line_limit]
             text = "\n".join(selected)
-            if line_offset > 0 or line_offset + line_limit < len(lines):
-                text = f"[行 {line_offset + 1}-{min(line_offset + line_limit, len(lines))} / 共 {len(lines)} 行]\n{text}"
+            total_lines = len(lines)
+            read_end = line_offset + line_limit
+            has_more = read_end < total_lines
+            if line_offset > 0 or has_more:
+                text = f"[行 {line_offset + 1}-{min(read_end, total_lines)} / 共 {total_lines} 行]\n{text}"
+            if has_more:
+                read_state_delta = {
+                    "has_more": True,
+                    "total_lines": total_lines,
+                    "next_offset": read_end + 1,  # 1-indexed，直接传给下一次 file.read offset
+                }
         elif has_range:
             start = int(params.get("start") or 0)
             end_raw = params.get("end")
@@ -429,6 +439,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=str(path),
             fingerprint=f"read:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
+            state_delta=read_state_delta,
             metadata={
                 "path": str(path),
                 "chars": len(text),
