@@ -101,15 +101,16 @@ class ProviderDefinition(BaseModel):
 
 class LoopConfig(BaseModel):
     max_concurrent_ticks: int = Field(
-        default=1,
+        default=4,
         ge=1,
         description=(
-            "tick 并发上限。1=严格串行（默认）；>1 时启用分链并发："
+            "tick 并发上限。1=严格串行；>1 时启用分链并发："
             "同一 chain 内按顺序执行，不同 chain 可并行。"
+            "默认 4：支持多用户同时对话（每位用户独立 chain）+ 自驱 auto tick 并行。"
         ),
     )
     max_tick_queue: int = Field(
-        default=8,
+        default=100,
         ge=1,
         description=(
             "等待中的 tick 全局队列上限。超过上限时新 tick 会被拒绝（chat 会返回繁忙提示）。"

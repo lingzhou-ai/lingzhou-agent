@@ -333,14 +333,16 @@ class CognitionLoop:
         chat_id: str | None = None,
         source: str = "auto",
     ) -> str:
+        # chat 消息始终使用独立的 per-session 链，与 task 自动 tick 并行
+        # 避免 auto-tick 队列积压导致聊天消息饥饿（starved behind auto ticks）
+        cid = str(chat_id or "").strip()
+        if cid:
+            return f"chat:{cid}"
         if active_task is not None:
             chain_id = str(getattr(active_task, "chain_id", "") or "").strip()
             if chain_id:
                 return f"task-chain:{chain_id}"
             return f"task:{active_task.id}"
-        cid = str(chat_id or "").strip()
-        if cid:
-            return f"chat:{cid}"
         return f"global:{source}"
 
     def _new_chain_runtime_state(self) -> dict[str, Any]:
@@ -534,25 +536,30 @@ class CognitionLoop:
         if not signal.should_explore:
             return
 
-        # 去重①：队列中已存在未完成的 self_drive 任务时跳过
-        runnable = await self._task_store.list_runnable_tasks(limit=20)
-        if any(t.source == "self_drive" for t in runnable):
-            return
-
-        # 去重②：最近 2 小时内已有 self_drive 任务完成，跳过（防止刚完成就重新触发）
+        # 感知上下文：未完成 self_drive 任务数 + 上次完成时间，注入 WM 供 LLM 感知决策
         import time as _time
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        runnable = await self._task_store.list_runnable_tasks(limit=20)
+        _pending_sd = [t for t in runnable if getattr(t, "source", None) == "self_drive"]
         _recent_done = await self._task_store.list_tasks(status="done", limit=10)
-        _two_hours_ago = _time.time() - 7200
+        _last_done_ago = "无"
         for _t in _recent_done:
             if getattr(_t, "source", None) != "self_drive":
                 continue
             try:
                 _ts = _dt.fromisoformat(_t.created_at.replace("Z", "+00:00")).timestamp()
+                _secs = int(_time.time() - _ts)
+                if _secs < 60:
+                    _last_done_ago = f"{_secs} 秒前"
+                elif _secs < 3600:
+                    _last_done_ago = f"{_secs // 60} 分钟前"
+                elif _secs < 86400:
+                    _last_done_ago = f"{_secs // 3600} 小时前"
+                else:
+                    _last_done_ago = f"{_secs // 86400} 天前"
             except Exception:
-                continue
-            if _ts >= _two_hours_ago:
-                return
+                pass
+            break
 
         task_template = self._self_drive.generate_exploration_task(
             signal.suggested_domain or "self_evolution"
@@ -564,6 +571,7 @@ class CognitionLoop:
                 f"自驱力 C={signal.curiosity_score:.2f}。\n"
                 f"触发原因: {signal.rationale}\n"
                 f"建议方向: {signal.suggested_domain or 'self_evolution'}\n"
+                f"待运行 self_drive 任务: {len(_pending_sd)} 个；上次 self_drive 完成: {_last_done_ago}\n"
                 f"候选任务: {task_template['title']}\n"
                 f"目标: {task_template['goal']}\n"
                 f"下一步建议: {task_template.get('next_step', '(未提供)')}\n"

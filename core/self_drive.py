@@ -210,27 +210,30 @@ class SelfDriveEngine:
             should_explore = True
             rationale_parts.append(f"惊奇事件 {s.surprise_count} 个")
 
-        # 选择探索领域（跳过冷却期内的域，默认 3600s）
-        _DOMAIN_COOLDOWN = 3600.0  # 同一域 60 分钟内不重复生成任务
+        # 选择探索领域（冷却期仅作参考，不作硬拦截，由 LLM 感知决策）
+        _DOMAIN_COOLDOWN = 3600.0
         if should_explore:
-            now_wall = time.time()  # 用 wall clock 比较，保证跨重启后冷却仍有效
-            # 选兴趣最高的领域（但加一点随机性避免卡死），过滤掉冷却中的域
-            ranked = sorted(
+            import random
+            now_wall = time.time()
+            available = sorted(
                 [(d, v) for d, v in s.interests.items()
                  if now_wall - s.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
                 key=lambda x: -x[1],
             )
-            if not ranked:
-                # 所有域均在冷却期 → 不触发探索
-                should_explore = False
-                rationale_parts.append("所有域均在冷却期，跳过")
-            else:
-                import random
-                if random.random() < 0.6 or len(ranked) <= 1:
-                    suggested_domain = ranked[0][0]
+            if available:
+                if random.random() < 0.6 or len(available) <= 1:
+                    suggested_domain = available[0][0]
                 else:
-                    suggested_domain = random.choice(ranked[1:])[0]
-                rationale_parts.append(f"探索领域: {suggested_domain}")
+                    suggested_domain = random.choice(available[1:])[0]
+            else:
+                # 全域冷却期内：选最久未探索的，由 LLM 决定是否继续
+                cooldown_ranked = sorted(
+                    s.interests.items(),
+                    key=lambda x: s.last_explored_at.get(x[0], 0.0),
+                )
+                suggested_domain = cooldown_ranked[0][0]
+                rationale_parts.append(f"所有域在冷却期，最久未探索: {suggested_domain}")
+            rationale_parts.append(f"探索领域: {suggested_domain}")
 
         rationale = "; ".join(rationale_parts) if rationale_parts else "好奇心未达阈值"
         _log.debug(

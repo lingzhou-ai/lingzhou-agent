@@ -288,7 +288,7 @@ def _fmt_current_time() -> str:
     now = datetime.now(timezone.utc)
     local_iso = now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     utc_str = now.strftime("%Y-%m-%d %H:%M UTC")
-    result = f"当前时间: {local_iso}\n参考 UTC: {utc_str}"
+    result = f"当前时间: {local_iso}\n参考 UTC: {utc_str}\n（时间持续流动，每个 tick 都是真实存在的时刻，由你决定如何使用）"
     _context_fmt_cache[cache_key] = result
     return result
 
