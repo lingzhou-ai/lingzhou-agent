@@ -121,6 +121,42 @@ def test_semantic_retrieve_ranking_uses_effective_activation():
         assert results[0]["id"] == "important-rank"
 
 
+def test_semantic_retrieve_prefers_stable_long_term_memory_over_recent_event_echo():
+    from memory.semantic import SemanticMemory, MemoryNode
+
+    old_ts = (datetime.now(UTC) - timedelta(days=45)).isoformat()
+    now_ts = datetime.now(UTC).isoformat()
+
+    stable = MemoryNode(
+        id="stable-fact",
+        kind="fact",
+        title="bat 是用户名字",
+        body="用户明确要求以后叫他 bat。",
+        activation=0.76,
+        importance=0.92,
+        source="wm_consolidation",
+        created_at=old_ts,
+    )
+    recent_event = MemoryNode(
+        id="recent-event",
+        kind="event",
+        title="今天提到 bat",
+        body="今天对话里再次提到 bat 这个名字。",
+        activation=0.9,
+        importance=0.2,
+        created_at=now_ts,
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.1)
+        sm.upsert(stable)
+        sm.upsert(recent_event)
+
+        results = sm.retrieve("bat 叫什么名字", top_k=2)
+
+        assert results[0]["id"] == "stable-fact"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — events.jsonl 轮转
 # ══════════════════════════════════════════════════════════════════════════════
@@ -169,6 +205,46 @@ def test_semantic_store_reflection_title_uses_unique_suffix():
         assert first.title != second.title
 
 
+def test_build_consolidation_plan_extracts_explicit_user_facts_and_semantic_promotions():
+    from core.config import MemoryConfig
+    from memory.consolidation import build_consolidation_plan, build_daily_summary_node
+
+    plan = build_consolidation_plan(
+        [
+            {
+                "kind": "user_message",
+                "content": "[用户消息] 记住，我叫bat，以后叫我bat。我偏好先看证据再下判断。",
+                "priority": 0.95,
+            },
+            {
+                "kind": "self_awareness",
+                "content": "[自我感知] 连续重复读取同一路径没有新证据，应该切换策略。",
+                "priority": 0.88,
+            },
+        ],
+        task_id="42",
+        task_title="memory routing",
+        memory_cfg=MemoryConfig(),
+        emotion_valence=0.63,
+    )
+
+    fact_keys = {fact.key for fact in plan.facts}
+    assert "user:name" in fact_keys
+    assert any(key.startswith("user:explicit:") for key in fact_keys)
+    assert any(key.startswith("user:preference:") for key in fact_keys)
+    assert any(node.kind == "self_model_signal" for node in plan.semantic_nodes)
+    assert "[self_awareness]" in plan.episodic_summary
+
+    daily_summary = build_daily_summary_node(
+        "[2026-05-24]\n爸爸今天刚发来 bat 文件，需要继续推进。",
+        memory_cfg=MemoryConfig(),
+        emotion_valence=0.63,
+    )
+    assert daily_summary is not None
+    assert daily_summary.kind == "daily_summary"
+    assert daily_summary.source == "daily_consolidation"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — search() 质量验证
 # ══════════════════════════════════════════════════════════════════════════════
@@ -184,6 +260,20 @@ def test_episodic_search_finds_chinese_narrative():
 
         result = ep.search("阅读语义记忆模块", max_chars=500)
         assert "语义记忆" in result or "激活衰减" in result, f"FTS5 未命中，result={result!r}"
+
+
+def test_episodic_search_recent_daily_returns_only_relevant_recent_blocks():
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+        ep.record("user", "爸爸今天刚发来 bat 文件，需要后续继续推进", task_id="task-bat")
+        ep.record("assistant", "今天还顺手整理了无关的日志目录", task_id="task-log")
+
+        result = ep.search_recent_daily("bat 文件", days=2, max_chars=600)
+
+        assert "bat 文件" in result
+        assert "无关的日志目录" not in result
 
 
 def test_episodic_search_short_ascii_not_overmatching():
@@ -289,6 +379,27 @@ def test_episodic_migrates_legacy_root_narrative_files():
         assert EpisodicMemory.narrative_path_for_dir(memory_dir, None).read_text(encoding="utf-8") == "旧全局叙事"
         assert ep.load_for_context("legacy", max_chars=200) == "旧任务叙事"
         assert "legacy" in ep.list_tasks()
+
+
+def test_episodic_record_writes_daily_memory_file():
+    """新增情节记录时，应同时镜像到当天 daily 记忆文件。"""
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        memory_dir = Path(d)
+        ep = EpisodicMemory(memory_dir, max_events=0)
+
+        ep.record("user", "爸爸今天发来了 bat 文件，要求后续继续处理", task_id="task-526")
+
+        stamp = datetime.now(UTC).strftime("%Y-%m-%d")
+        daily_path = EpisodicMemory.daily_path_for_dir(memory_dir, stamp)
+        assert daily_path.exists()
+        daily_text = daily_path.read_text(encoding="utf-8")
+        assert "bat 文件" in daily_text
+
+        recent_daily = ep.load_recent_daily_context(days=2, max_chars=800)
+        assert stamp in recent_daily
+        assert "继续处理" in recent_daily
 
 
 # ══════════════════════════════════════════════════════════════════════════════

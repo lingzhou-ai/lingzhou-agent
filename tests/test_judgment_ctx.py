@@ -82,6 +82,39 @@ def test_fill_template_raises_when_variable_missing():
         _fill_template("hello {{ missing_field }}", {"other": "value"})
 
 
+def test_memory_honesty_guard_rewrites_reply_when_daily_gap_fill():
+    from core.judgment.runtime import _apply_memory_honesty_guard
+
+    output = _judgment_output(
+        decision="wait",
+        reply_to_user="我记得你之前说过你叫 bat。",
+    )
+
+    guarded = _apply_memory_honesty_guard(
+        output,
+        context_text="recall_mode: daily_gap_fill\ndaily_fallback_used: yes",
+    )
+
+    assert guarded.reply_to_user.startswith("从近期线索看，")
+    assert "我记得" not in guarded.reply_to_user
+
+
+def test_memory_honesty_guard_keeps_reply_when_long_term_memory_is_strong():
+    from core.judgment.runtime import _apply_memory_honesty_guard
+
+    output = _judgment_output(
+        decision="wait",
+        reply_to_user="我记得你之前说过你叫 bat。",
+    )
+
+    guarded = _apply_memory_honesty_guard(
+        output,
+        context_text="recall_mode: long_term_primary\ndaily_fallback_used: no",
+    )
+
+    assert guarded.reply_to_user == "我记得你之前说过你叫 bat。"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 今日新增功能验证
 # ══════════════════════════════════════════════════════════════════════════════
@@ -695,10 +728,19 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
             "fact_context_exclude_prefixes": ["pref:", "run:"],
             "fact_context_task_limit": 8,
             "fact_context_global_limit": 5,
+            "fact_context_priority_prefixes": ["user:", "profile:"],
+            "fact_context_priority_limit": 2,
             "fact_context_recent_scan_multiplier": 4,
             "fact_context_recent_scan_min": 10,
             "chat_history_turn_limit": 2,
             "chat_history_max_chars": 180,
+            "daily_recall_days": 3,
+            "daily_recall_max_chars": 640,
+            "daily_recall_semantic_score_threshold": 0.62,
+            "daily_summary_days": 5,
+            "daily_summary_max_chars": 1500,
+            "daily_summary_activation": 0.77,
+            "daily_summary_importance": 0.84,
         },
     })
 
@@ -724,6 +766,17 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
     assert "## Memory guardrails (memory.*)" in text
     assert "consolidate_threshold: 0.74" in text
     assert "consolidate_low_pressure_skip_threshold: 0.81" in text
+    assert "promotion_priority_threshold: 0.78" in text
+    assert "promotion_max_nodes_per_consolidation: 6" in text
+    assert "promotion_body_max_chars: 1200" in text
+    assert "promotion_reinforce_delta: 0.05" in text
+    assert "daily_recall_days: 3" in text
+    assert "daily_recall_max_chars: 640" in text
+    assert "daily_recall_semantic_score_threshold: 0.62" in text
+    assert "daily_summary_days: 5" in text
+    assert "daily_summary_max_chars: 1500" in text
+    assert "daily_summary_activation: 0.77" in text
+    assert "daily_summary_importance: 0.84" in text
     assert "global_md_warn_bytes: 12345" in text
     assert "global_md_warn_lines: 67" in text
     assert "reference_topic_anchor_min_chars: 4" in text
@@ -738,6 +791,8 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
     assert 'fact_context_exclude_prefixes: ["pref:", "run:"]' in text
     assert "fact_context_task_limit: 8" in text
     assert "fact_context_global_limit: 5" in text
+    assert 'fact_context_priority_prefixes: ["user:", "profile:"]' in text
+    assert "fact_context_priority_limit: 2" in text
     assert "fact_context_recent_scan_multiplier: 4" in text
     assert "fact_context_recent_scan_min: 10" in text
     assert "## Chat history guardrails (thresholds.*)" in text
@@ -2409,6 +2464,11 @@ async def _load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limi
                     ('task:7:b', 'B'),
                     ('task:7:c', 'C'),
                 ][:limit]
+            if prefix == 'user:':
+                return [
+                    ('user:name', 'bat'),
+                    ('user:explicit:1', '记住我叫 bat'),
+                ][:limit]
             return [
                 ('pref:hidden', 'P'),
                 ('soul:visible', 'S'),
@@ -2424,14 +2484,17 @@ async def _load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limi
         exclude_prefixes=['pref:', 'run:'],
         task_limit=2,
         global_limit=2,
+        priority_prefixes=['user:'],
+        priority_limit=1,
         recent_scan_multiplier=4,
         recent_scan_min=9,
     )
 
-    assert store.calls == [('task:7:', 2), (None, 9)]
+    assert store.calls == [('task:7:', 2), ('user:', 1), (None, 9)]
     assert facts == [
         ('task:7:a', 'A'),
         ('task:7:b', 'B'),
+        ('user:name', 'bat'),
         ('soul:visible', 'S'),
         ('evolution:visible', 'E'),
     ]
@@ -2848,6 +2911,154 @@ async def _assemble_context_registry_override_limits_tools_section():
             assert "- `task.list`:" in text
             assert "- `shell.run`:" not in text
             assert "- `subagent.run`:" not in text
+        finally:
+            await store.close()
+
+
+def test_assemble_context_includes_recent_daily_continuity():
+    asyncio.run(_assemble_context_includes_recent_daily_continuity())
+
+
+def test_assemble_context_skips_daily_when_long_term_memory_is_strong():
+    asyncio.run(_assemble_context_skips_daily_when_long_term_memory_is_strong())
+
+
+async def _assemble_context_includes_recent_daily_continuity():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            episodic = EpisodicMemory(Path(d) / "memory")
+            episodic.record("user", "爸爸今天刚发来 bat 文件，需要后续继续推进", task_id="task-bat")
+
+            from core.judgment import CognitionFrame
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assemble_context(
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=episodic,
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="继续处理 bat",
+            )
+
+            assert "### 近两日连续性（跨任务 daily 片段）" in text
+            assert "### 记忆召回路径（本轮）" in text
+            assert "recall_mode: daily_gap_fill" in text
+            assert "daily_fallback_used: yes" in text
+            assert "爸爸今天刚发来 bat 文件" in text
+        finally:
+            await store.close()
+
+
+async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import MemoryNode, SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "memory": {
+            "daily_recall_semantic_score_threshold": 0.55,
+        },
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            episodic = EpisodicMemory(Path(d) / "memory")
+            episodic.record("user", "爸爸今天刚发来 bat 文件，需要后续继续推进", task_id="task-bat")
+            semantic = SemanticMemory(Path(d) / "memory", decay_lambda=0.0)
+            semantic.upsert(MemoryNode(
+                id="user-bat-name",
+                kind="fact",
+                title="bat 是用户名字",
+                body="用户明确要求以后叫他 bat。",
+                activation=0.85,
+                importance=0.95,
+                source="wm_consolidation",
+            ))
+
+            from core.judgment import CognitionFrame
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assemble_context(
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=episodic,
+                    semantic=semantic,
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="继续处理 bat",
+            )
+
+            assert "### 近两日连续性（跨任务 daily 片段）" in text
+            assert "### 记忆召回路径（本轮）" in text
+            assert "recall_mode: long_term_primary" in text
+            assert "daily_fallback_used: no" in text
+            assert "本轮不额外注入 daily 补短" in text
+            assert "爸爸今天刚发来 bat 文件" not in text
         finally:
             await store.close()
 

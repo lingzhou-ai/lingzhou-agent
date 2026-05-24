@@ -13,6 +13,7 @@ import asyncio
 import copy
 import logging
 from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from .tick import (
     _tick_impl,
 )
 from memory.working import WorkingMemory, WMItem
+from memory.consolidation import build_consolidation_plan, build_daily_summary_node, current_week_key, merge_promoted_node
 from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory
 from memory.task_store import TaskStore, Task
@@ -151,6 +153,9 @@ class CognitionLoop:
             decay_lambda=cfg.memory.semantic_decay_lambda,
             embed_fn=_embed_fn,
             embedding_weight=cfg.memory.embedding_weight,
+            source_weight=cfg.memory.semantic_source_weight,
+            temporal_weight=cfg.memory.semantic_temporal_weight,
+            temporal_window_days=cfg.memory.semantic_temporal_window_days,
         )
 
         # 子系统:Soul 文件管理 + 行为模式追踪
@@ -711,13 +716,44 @@ class CognitionLoop:
             ))
 
     async def _consolidate(self, active_task: Task | None) -> None:
-        """将 WM 高优先级条目写入情节记忆,然后清空 WM,保留身份锚点。"""
+        """将 WM 分流到情节记忆、长期语义层和 durable facts。"""
         items = self._wm.get_top(25)
         if not items:
             return
         task_id = str(active_task.id) if active_task else None
-        summary = "\n".join(f"- [{i['kind']}] {i['content']}" for i in items)
-        self._episodic.record(role="consolidation", content=summary, task_id=task_id)
+        plan = build_consolidation_plan(
+            items,
+            task_id=task_id,
+            task_title=active_task.title if active_task else None,
+            memory_cfg=self._cfg.memory,
+            emotion_valence=self._emotion.valence,
+        )
+        if plan.episodic_summary:
+            self._episodic.record(role="consolidation", content=plan.episodic_summary, task_id=task_id)
+        for fact in plan.facts:
+            await self._task_store.set_fact(fact.key, fact.value, scope=fact.scope)
+        for node in plan.semantic_nodes:
+            merged = merge_promoted_node(self._semantic.get(node.id), node, memory_cfg=self._cfg.memory)
+            self._semantic.upsert(merged)
+        today_stamp = datetime.now(UTC).strftime("%Y-%m-%d")
+        week_key = current_week_key()
+        daily_summary_marker = f"memory:daily_summary:{week_key}:{today_stamp}"
+        _, daily_summary_done = await self._task_store.get_fact(daily_summary_marker)
+        if not daily_summary_done:
+            recent_daily_text = self._episodic.load_recent_daily_context(
+                self._cfg.memory.daily_summary_days,
+                self._cfg.memory.daily_summary_max_chars,
+            )
+            daily_summary_node = build_daily_summary_node(
+                recent_daily_text,
+                week_key=week_key,
+                memory_cfg=self._cfg.memory,
+                emotion_valence=self._emotion.valence,
+                existing=self._semantic.get(f"daily-summary-{week_key}"),
+            )
+            if daily_summary_node is not None:
+                self._semantic.upsert(daily_summary_node)
+            await self._task_store.set_fact(daily_summary_marker, "1", scope="system")
         # 保留身份锚点(bootstrap_identity)和自我感知信号(self_awareness)
         # self_awareness 包含行为循环检测等信号，清除后 LLM 会失去对空转的感知
         self._wm.clear(preserve_kinds={"bootstrap_identity", "self_awareness"})
@@ -742,4 +778,9 @@ class CognitionLoop:
             ))
         # 同步感知基准,避免下一轮因 WM 大小骤降产生假预测误差
         self._perception.reset_wm_baseline(len(self._wm))
-        _log.info("[consolidate] WM→episodic %d items, WM cleared (bootstrap+task_anchor preserved)", len(items))
+        _log.info(
+            "[consolidate] WM items=%d semantic_promoted=%d facts_promoted=%d, WM cleared (bootstrap+task_anchor preserved)",
+            len(items),
+            len(plan.semantic_nodes),
+            len(plan.facts),
+        )

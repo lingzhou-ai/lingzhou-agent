@@ -890,6 +890,71 @@ async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
             await store.close()
 
 
+def test_consolidate_promotes_semantic_nodes_and_durable_user_facts():
+    asyncio.run(_consolidate_promotes_semantic_nodes_and_durable_user_facts())
+
+
+async def _consolidate_promotes_semantic_nodes_and_durable_user_facts():
+    from core.config import MemoryConfig
+    from core.loop.runtime import CognitionLoop
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory, WMItem
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        memory_dir = root / "memory"
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("记忆巩固测试", goal="consolidate memory", status="in_progress")
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+
+            loop = cast(Any, SimpleNamespace(
+                _wm=WorkingMemory(capacity=20),
+                _episodic=EpisodicMemory(memory_dir),
+                _semantic=SemanticMemory(memory_dir, decay_lambda=0.0),
+                _task_store=store,
+                _perception=SimpleNamespace(reset_wm_baseline=lambda size: None),
+                _emotion=SimpleNamespace(valence=0.61),
+                _cfg=SimpleNamespace(memory=MemoryConfig()),
+            ))
+            loop._wm.add(WMItem(
+                kind="user_message",
+                content="[用户消息] 记住，我叫bat，以后叫我bat。",
+                priority=0.95,
+            ))
+            loop._wm.add(WMItem(
+                kind="self_awareness",
+                content="[自我感知] 连续重复查看同一路径没有新证据，应该切换策略。",
+                priority=0.88,
+            ))
+
+            await CognitionLoop._consolidate(loop, active_task)
+
+            name, found = await store.get_fact("user:name")
+            assert found is True
+            assert name == "bat"
+            explicit = await store.list_facts(prefix="user:explicit:", limit=5)
+            assert explicit
+
+            semantic_hits = loop._semantic.retrieve("切换策略 新证据", top_k=5)
+            assert any(hit["kind"] == "self_model_signal" for hit in semantic_hits)
+
+            week_key = datetime.now(UTC).strftime("%G-W%V")
+            weekly_summary = loop._semantic.get(f"daily-summary-{week_key}")
+            assert weekly_summary is not None
+            assert weekly_summary.kind == "daily_summary"
+            assert "切换策略" in weekly_summary.body or "我叫bat" in weekly_summary.body
+
+            narrative = loop._episodic.load_for_context(str(task_id), max_chars=2000)
+            assert "切换策略" in narrative
+        finally:
+            await store.close()
+
+
 def test_post_tick_memory_formats_learned_insight_title_with_hash_suffix():
     asyncio.run(_post_tick_memory_formats_learned_insight_title_with_hash_suffix())
 

@@ -59,11 +59,23 @@
 ### 情节记忆（当前任务叙事片段）
 {{episodic_section}}
 
+### 近两日连续性（跨任务 daily 片段）
+{{daily_continuity_section}}
+
 ### 跨 chat 实体线索（共指消解）
 {{entity_section}}
 
 ### 相关长期记忆
 {{memories_section}}
+
+### 记忆召回路径（本轮）
+{{memory_recall_section}}
+
+> 记忆使用规则：
+> - `recall_mode=long_term_primary`：优先依赖长期记忆，但仍要看 `score` 是否足够高。
+> - `recall_mode=episodic_cross_task`：说明跨任务情节命中，可用于连续性判断，但不要把它当稳定事实。
+> - `recall_mode=daily_gap_fill`：说明长期层不够强，这里只是短期补短线索，不等于长期结论。
+> - `recall_mode=no_relevant_memory`：说明本轮没有可靠召回，不要臆造“我记得”。
 
 ### 记忆系统状态（runtime 真相）
 {{memory_system_section}}

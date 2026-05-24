@@ -169,6 +169,8 @@ async def _load_context_facts_snapshot(
     exclude_prefixes: list[str] | tuple[str, ...] | None = None,
     task_limit: int = 6,
     global_limit: int = 4,
+    priority_prefixes: list[str] | tuple[str, ...] | None = None,
+    priority_limit: int = 2,
     recent_scan_multiplier: int = 3,
     recent_scan_min: int = 12,
 ) -> list[tuple[str, str]]:
@@ -176,8 +178,10 @@ async def _load_context_facts_snapshot(
     selected: list[tuple[str, str]] = []
     task_prefix = f"task:{task.id}:" if task else ""
     exclude_prefixes_tuple = tuple(exclude_prefixes) if exclude_prefixes is not None else _FACT_CONTEXT_EXCLUDE_PREFIXES
+    priority_prefixes_tuple = tuple(priority_prefixes or ())
 
-    async def _add_facts(items: list[tuple[str, str]], limit: int) -> None:
+    async def _add_facts(items: list[tuple[str, str]], limit: int) -> int:
+        added = 0
         for key, value in items:
             if key in seen:
                 continue
@@ -189,19 +193,30 @@ async def _load_context_facts_snapshot(
                 continue
             seen.add(key)
             selected.append((key, value))
-            if limit > 0 and len(selected) >= limit:
-                return
+            added += 1
+            if limit > 0 and added >= limit:
+                return added
+        return added
 
     if task_prefix:
         task_facts = await task_store.list_facts(prefix=task_prefix, limit=task_limit)
         await _add_facts(task_facts, task_limit)
+
+    if priority_prefixes_tuple and priority_limit > 0:
+        remaining = priority_limit
+        for prefix in priority_prefixes_tuple:
+            if remaining <= 0:
+                break
+            priority_facts = await task_store.list_facts(prefix=prefix, limit=remaining)
+            added = await _add_facts(priority_facts, remaining)
+            remaining -= added
 
     current_global = len(selected)
     if global_limit > 0:
         recent_scan_limit = max(global_limit * recent_scan_multiplier, recent_scan_min)
         recent_facts = await task_store.list_facts(limit=recent_scan_limit)
         before = len(selected)
-        await _add_facts(recent_facts, current_global + global_limit)
+        await _add_facts(recent_facts, global_limit)
         if len(selected) == before and not selected:
             return []
 
@@ -420,6 +435,30 @@ def _fmt_memories(memories: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_memory_recall(
+    *,
+    query: str,
+    anchors: list[str],
+    memories: list[dict[str, Any]],
+    semantic_top_score: float,
+    episodic_cross_task_hit: bool,
+    daily_fallback_used: bool,
+    recall_mode: str,
+) -> str:
+    query_text = (query or "").strip() or "（空）"
+    anchor_text = ", ".join(anchor[:40] for anchor in anchors[:4]) if anchors else "（无）"
+    lines = [
+        f"query: {query_text[:120]}",
+        f"anchors: {anchor_text}",
+        f"semantic_hits: {len(memories)}",
+        f"semantic_top_score: {semantic_top_score:.3f}",
+        f"episodic_cross_task_hit: {'yes' if episodic_cross_task_hit else 'no'}",
+        f"daily_fallback_used: {'yes' if daily_fallback_used else 'no'}",
+        f"recall_mode: {recall_mode}",
+    ]
+    return "\n".join(lines)
+
+
 def _fmt_memory_system(
     *,
     runtime_db: str,
@@ -513,6 +552,17 @@ def _fmt_config_snapshot(cfg: "Config") -> str:
         "## Memory guardrails (memory.*)",
         f"  consolidate_threshold: {me.consolidate_threshold}",
         f"  consolidate_low_pressure_skip_threshold: {me.consolidate_low_pressure_skip_threshold}",
+        f"  promotion_priority_threshold: {me.promotion_priority_threshold}",
+        f"  promotion_max_nodes_per_consolidation: {me.promotion_max_nodes_per_consolidation}",
+        f"  promotion_body_max_chars: {me.promotion_body_max_chars}",
+        f"  promotion_reinforce_delta: {me.promotion_reinforce_delta}",
+        f"  daily_recall_days: {me.daily_recall_days}",
+        f"  daily_recall_max_chars: {me.daily_recall_max_chars}",
+        f"  daily_recall_semantic_score_threshold: {me.daily_recall_semantic_score_threshold}",
+        f"  daily_summary_days: {me.daily_summary_days}",
+        f"  daily_summary_max_chars: {me.daily_summary_max_chars}",
+        f"  daily_summary_activation: {me.daily_summary_activation}",
+        f"  daily_summary_importance: {me.daily_summary_importance}",
         f"  global_md_warn_bytes: {me.global_md_warn_bytes}",
         f"  global_md_warn_lines: {me.global_md_warn_lines}",
         "",
@@ -574,6 +624,8 @@ def _fmt_config_snapshot(cfg: "Config") -> str:
         f"  fact_context_exclude_prefixes: {json.dumps(th.fact_context_exclude_prefixes, ensure_ascii=False)}",
         f"  fact_context_task_limit: {th.fact_context_task_limit}",
         f"  fact_context_global_limit: {th.fact_context_global_limit}",
+        f"  fact_context_priority_prefixes: {json.dumps(th.fact_context_priority_prefixes, ensure_ascii=False)}",
+        f"  fact_context_priority_limit: {th.fact_context_priority_limit}",
         f"  fact_context_recent_scan_multiplier: {th.fact_context_recent_scan_multiplier}",
         f"  fact_context_recent_scan_min: {th.fact_context_recent_scan_min}",
         "",
@@ -715,6 +767,7 @@ def apply_context_budget(
     priority = [
         "skills_catalog_section",  # 工具目录（字典性信息）最先耸
         "memories_section",
+        "daily_continuity_section",
         "episodic_section",
         "skills_section",          # 技能正文次优先
         "wm_section",              # 实时感知保留到倒数第二
@@ -724,6 +777,8 @@ def apply_context_budget(
         "skills_section": skill_min_tokens,
         "skills_catalog_section": max(40, skill_min_tokens // 2),
         "memories_section": 1,
+        "memory_recall_section": 256,
+        "daily_continuity_section": 1,
         "episodic_section": 2,
         "wm_section": 1,
         "tools_section": 2,

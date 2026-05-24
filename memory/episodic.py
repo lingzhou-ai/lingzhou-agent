@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import re
@@ -94,11 +95,56 @@ class EpisodicMemory:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._narrative_dir = self._dir / "episodic"
         self._narrative_dir.mkdir(parents=True, exist_ok=True)
+        self._daily_dir = self._narrative_dir / "daily"
+        self._daily_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_narrative_files()
         self._max_events = max_events
         self._db_path = memory_dir / "episodic.db"
-        self._conn = self._open_db()
-        self._migrate_from_jsonl()  # 一次性历史数据导入
+        self._conn = None
+        self._session_depth = 0
+        with self._db_session():
+            self._migrate_from_jsonl()  # 一次性历史数据导入
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self, "_conn_ref", None)
+        if conn is None:
+            raise RuntimeError("episodic db session is not open")
+        return conn
+
+    @_conn.setter
+    def _conn(self, value: sqlite3.Connection | None) -> None:
+        self._conn_ref = value
+
+    @contextmanager
+    def _db_session(self):
+        if self._conn_ref is not None:
+            self._session_depth += 1
+            try:
+                yield self._conn_ref
+            finally:
+                self._session_depth -= 1
+            return
+
+        conn = self._open_db()
+        self._conn = conn
+        self._session_depth = 1
+        try:
+            yield conn
+        finally:
+            self._session_depth -= 1
+            if self._session_depth == 0:
+                self.close()
+
+    def close(self) -> None:
+        conn = getattr(self, "_conn_ref", None)
+        self._conn_ref = None
+        self._session_depth = 0
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     @property
     def max_events(self) -> int:
@@ -159,9 +205,17 @@ class EpisodicMemory:
     def _narrative_filename(task_id: str | None) -> str:
         return f"task-{task_id}.md" if task_id else "global.md"
 
+    @staticmethod
+    def _daily_filename(day_stamp: str) -> str:
+        return f"{day_stamp}.md"
+
     @classmethod
     def narrative_path_for_dir(cls, memory_dir: Path, task_id: str | None) -> Path:
         return Path(memory_dir) / "episodic" / cls._narrative_filename(task_id)
+
+    @classmethod
+    def daily_path_for_dir(cls, memory_dir: Path, day_stamp: str) -> Path:
+        return Path(memory_dir) / "episodic" / "daily" / cls._daily_filename(day_stamp)
 
     @classmethod
     def legacy_narrative_path_for_dir(cls, memory_dir: Path, task_id: str | None) -> Path:
@@ -169,6 +223,9 @@ class EpisodicMemory:
 
     def _task_path(self, task_id: str | None) -> Path:
         return self.narrative_path_for_dir(self._dir, task_id)
+
+    def _daily_path(self, day_stamp: str) -> Path:
+        return self.daily_path_for_dir(self._dir, day_stamp)
 
     def _legacy_task_path(self, task_id: str | None) -> Path:
         return self.legacy_narrative_path_for_dir(self._dir, task_id)
@@ -209,6 +266,16 @@ class EpisodicMemory:
                 legacy_path.rename(target)
             except OSError as exc:
                 _log.warning("[episodic] 迁移 narrative 文件失败: %s -> %s (%s)", legacy_path, target, exc)
+
+    @staticmethod
+    def _append_markdown_block(path: Path, block: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(block)
+
+    @staticmethod
+    def _day_stamp_from_ts(ts: str) -> str:
+        return (ts or "").strip()[:10]
 
     def _insert_narrative_row(
         self,
@@ -265,36 +332,36 @@ class EpisodicMemory:
         block = f"\n---\n**[{ts}]** `{meta}`\n\n{content.strip()}\n"
 
         # 1. 写 .md（人类可读叙事，LLM context 注入源）
-        path = self._task_path(task_id)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(block)
+        self._append_markdown_block(self._task_path(task_id), block)
+        self._append_markdown_block(self._daily_path(self._day_stamp_from_ts(ts)), block)
 
         affect_json = json.dumps(affect, ensure_ascii=False) if affect else None
 
-        # 2. 先稳定写 narrative 表（供 recent-turns / recent-narrative 使用）
-        try:
-            row_id = self._insert_narrative_row(
-                task_id=task_id,
-                role=role,
-                source_type=src,
-                content=content,
-                affect_json=affect_json,
-                ts=ts,
-            )
-        except Exception as _narrative_err:
-            _log.warning("[episodic] narrative 写入失败（.md 已保留）: %s", _narrative_err)
-            return
+        with self._db_session():
+            # 2. 先稳定写 narrative 表（供 recent-turns / recent-narrative 使用）
+            try:
+                row_id = self._insert_narrative_row(
+                    task_id=task_id,
+                    role=role,
+                    source_type=src,
+                    content=content,
+                    affect_json=affect_json,
+                    ts=ts,
+                )
+            except Exception as _narrative_err:
+                _log.warning("[episodic] narrative 写入失败（.md 已保留）: %s", _narrative_err)
+                return
 
-        # 3. 再同步 FTS5（失败时仅影响全文检索，不影响主叙事层）
-        try:
-            self._sync_narrative_fts(
-                row_id=row_id,
-                task_id=task_id,
-                role=role,
-                content=content,
-            )
-        except Exception as _fts_err:
-            _log.warning("[episodic] FTS5 写入失败（narrative 已提交，search 将退回 .md 扫描）: %s", _fts_err)
+            # 3. 再同步 FTS5（失败时仅影响全文检索，不影响主叙事层）
+            try:
+                self._sync_narrative_fts(
+                    row_id=row_id,
+                    task_id=task_id,
+                    role=role,
+                    content=content,
+                )
+            except Exception as _fts_err:
+                _log.warning("[episodic] FTS5 写入失败（narrative 已提交，search 将退回 .md 扫描）: %s", _fts_err)
 
     def load_for_context(self, task_id: str | None, max_chars: int = 4000) -> str:
         """读取情节记忆，注入 LLM context。
@@ -324,6 +391,114 @@ class EpisodicMemory:
         """任务叙事模式（Ricoeur 1984）：跨 chat 读取该任务的完整情节流。"""
         return self.load_for_context(task_id, max_chars)
 
+    def load_recent_daily_context(self, days: int = 2, max_chars: int = 1200) -> str:
+        """读取最近若干天的 daily 叙事，用于跨任务的短程连续性。"""
+        days = max(1, days)
+        if max_chars <= 0:
+            return ""
+
+        stamps = [
+            (datetime.now(UTC) - timedelta(days=offset)).strftime("%Y-%m-%d")
+            for offset in range(days)
+        ]
+        per_day_limit = max(120, max_chars // max(1, len(stamps)))
+        sections: list[str] = []
+        total_chars = 0
+
+        for stamp in stamps:
+            path = self._daily_path(stamp)
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+
+            snippet = text
+            if len(snippet) > per_day_limit:
+                omitted = len(snippet) - per_day_limit
+                snippet = f"… （省略约 {omitted} 字符的更早内容）…\n\n{snippet[-per_day_limit:]}"
+            block = f"[{stamp}]\n{snippet}"
+            if total_chars + len(block) > max_chars:
+                remaining = max_chars - total_chars
+                if remaining <= 0:
+                    break
+                block = block[:remaining]
+            sections.append(block)
+            total_chars += len(block)
+            if total_chars >= max_chars:
+                break
+
+        return "\n\n---\n\n".join(sections)
+
+    def search_recent_daily(self, query: str, days: int = 2, max_chars: int = 1200) -> str:
+        """在最近若干天的 daily 中按 query 检索相关片段。
+
+        用于长期记忆命中不足时的短期补短，避免每轮固定注入整段 recent daily。
+        """
+        query = (query or "").strip()
+        if not query:
+            return ""
+        days = max(1, days)
+        if max_chars <= 0:
+            return ""
+
+        safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
+        strict = [t.lower() for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
+        relaxed = [t.lower() for t in safe.split() if len(t) > 1]
+        term_sets = [strict if strict else relaxed]
+        if strict and relaxed != strict:
+            term_sets.append(relaxed)
+        if not term_sets[0]:
+            return ""
+
+        scored_hits: list[tuple[int, int, str]] = []
+        for terms in term_sets:
+            scored_hits = []
+            for offset in range(days):
+                stamp = (datetime.now(UTC) - timedelta(days=offset)).strftime("%Y-%m-%d")
+                path = self._daily_path(stamp)
+                if not path.exists():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                for block in reversed(text.split("---")):
+                    block = block.strip()
+                    if not block:
+                        continue
+                    body = "\n".join(
+                        line for line in block.splitlines()
+                        if line.strip() and not line.startswith("**[")
+                    ).strip()
+                    if not body:
+                        continue
+                    lower_body = body.lower()
+                    match_count = sum(1 for term in terms if term in lower_body)
+                    if match_count <= 0:
+                        continue
+                    snippet = f"[{stamp}]\n{block[:400]}"
+                    # 优先保留更多 query 词命中的片段；同分时优先更新近的记录。
+                    scored_hits.append((match_count, -offset, snippet))
+            if scored_hits:
+                break
+
+        if not scored_hits:
+            return ""
+
+        scored_hits.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        hits: list[str] = []
+        total = 0
+        for _, _, snippet in scored_hits:
+            hits.append(snippet)
+            total += len(snippet)
+            if total >= max_chars:
+                return "\n\n---\n\n".join(hits)
+        return "\n\n---\n\n".join(hits)
+
     def get_recent_turns(
         self,
         task_id: str | None,
@@ -340,24 +515,25 @@ class EpisodicMemory:
             ts: str (UTC)
             affect: dict | None  {"valence": float, "arousal": float}
         """
-        try:
-            if task_id:
-                sql = (
-                    "SELECT role, content, ts, affect FROM narrative "
-                    "WHERE task_id = ? AND role IN ('user', 'assistant_reply') "
-                    "ORDER BY id DESC LIMIT ?"
-                )
-                rows = self._conn.execute(sql, (task_id, limit)).fetchall()
-            else:
-                sql = (
-                    "SELECT role, content, ts, affect FROM narrative "
-                    "WHERE role IN ('user', 'assistant_reply') "
-                    "ORDER BY id DESC LIMIT ?"
-                )
-                rows = self._conn.execute(sql, (limit,)).fetchall()
-        except Exception as e:
-            _log.warning("[episodic] get_recent_turns 失败: %s", e)
-            return []
+        with self._db_session():
+            try:
+                if task_id:
+                    sql = (
+                        "SELECT role, content, ts, affect FROM narrative "
+                        "WHERE task_id = ? AND role IN ('user', 'assistant_reply') "
+                        "ORDER BY id DESC LIMIT ?"
+                    )
+                    rows = self._conn.execute(sql, (task_id, limit)).fetchall()
+                else:
+                    sql = (
+                        "SELECT role, content, ts, affect FROM narrative "
+                        "WHERE role IN ('user', 'assistant_reply') "
+                        "ORDER BY id DESC LIMIT ?"
+                    )
+                    rows = self._conn.execute(sql, (limit,)).fetchall()
+            except Exception as e:
+                _log.warning("[episodic] get_recent_turns 失败: %s", e)
+                return []
         result: list[dict[str, Any]] = []
         for r in reversed(rows):
             affect: dict[str, Any] | None = None
@@ -380,14 +556,15 @@ class EpisodicMemory:
 
     def list_recent_narrative(self, limit: int = 10) -> list[dict[str, Any]]:
         """返回最新若干条叙事记录（不解释用户时间词，仅供 recent 预热）。"""
-        try:
-            rows = self._conn.execute(
-                "SELECT task_id, role, content, ts FROM narrative ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
+        with self._db_session():
+            try:
+                rows = self._conn.execute(
+                    "SELECT task_id, role, content, ts FROM narrative ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception:
+                return []
 
     def query_recent_narrative(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
         """时间窗叙事查询：返回最近 hours 小时内的叙事记录（供实体共指消解使用）。
@@ -397,15 +574,16 @@ class EpisodicMemory:
         """
         since_dt = datetime.now(UTC) - timedelta(hours=max(1, hours))
         since_str = since_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        try:
-            rows = self._conn.execute(
-                "SELECT task_id, role, content, ts FROM narrative"
-                " WHERE ts >= ? ORDER BY id DESC LIMIT ?",
-                (since_str, limit),
-            ).fetchall()
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
+        with self._db_session():
+            try:
+                rows = self._conn.execute(
+                    "SELECT task_id, role, content, ts FROM narrative"
+                    " WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+                    (since_str, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception:
+                return []
 
     # ── 结构化事件日志（O(log n) SQLite；JSONL 降级兜底）────────────────────
 
@@ -413,13 +591,14 @@ class EpisodicMemory:
         """追加一条结构化事件（perception / emotion 快照）。"""
         ts = datetime.now(UTC).isoformat()
         try:
-            self._conn.execute(
-                "INSERT INTO events(event_type, ts, data) VALUES (?, ?, ?)",
-                (event_type, ts, json.dumps(data, ensure_ascii=False)),
-            )
-            self._conn.commit()
-            if self._max_events > 0:
-                self._rotate_events_db(event_type)
+            with self._db_session():
+                self._conn.execute(
+                    "INSERT INTO events(event_type, ts, data) VALUES (?, ?, ?)",
+                    (event_type, ts, json.dumps(data, ensure_ascii=False)),
+                )
+                self._conn.commit()
+                if self._max_events > 0:
+                    self._rotate_events_db(event_type)
         except Exception:
             # DB 不可用时降级写 JSONL
             path = self._dir / "events.jsonl"
@@ -445,23 +624,24 @@ class EpisodicMemory:
 
     def list_events(self, event_type: str, limit: int = 10) -> list[dict[str, Any]]:
         """返回最近 limit 条指定类型事件（时间升序）。O(log n) 索引扫描。"""
-        try:
-            rows = self._conn.execute(
-                "SELECT ts, data FROM events WHERE event_type = ? ORDER BY id DESC LIMIT ?",
-                (event_type, limit),
-            ).fetchall()
-            result: list[dict[str, Any]] = []
-            for row in reversed(rows):
-                try:
-                    d_data = json.loads(row["data"])
-                    d_data["t"] = event_type
-                    d_data["ts"] = row["ts"]
-                    result.append(d_data)
-                except Exception:
-                    pass
-            return result
-        except Exception:
-            return self._fallback_list_events(event_type, limit)
+        with self._db_session():
+            try:
+                rows = self._conn.execute(
+                    "SELECT ts, data FROM events WHERE event_type = ? ORDER BY id DESC LIMIT ?",
+                    (event_type, limit),
+                ).fetchall()
+                result: list[dict[str, Any]] = []
+                for row in reversed(rows):
+                    try:
+                        d_data = json.loads(row["data"])
+                        d_data["t"] = event_type
+                        d_data["ts"] = row["ts"]
+                        result.append(d_data)
+                    except Exception:
+                        pass
+                return result
+            except Exception:
+                return self._fallback_list_events(event_type, limit)
 
     def _fallback_list_events(self, event_type: str, limit: int) -> list[dict[str, Any]]:
         """DB 不可用时回退到 JSONL 逆序扫描。"""
@@ -495,51 +675,52 @@ class EpisodicMemory:
         result: dict[str, list[dict[str, Any]]] = {t: [] for t in event_types}
         if not event_types:
             return result
-        try:
-            placeholders = ",".join("?" * len(event_types))
-            rows = self._conn.execute(
-                f"SELECT event_type, ts, data FROM events"
-                f" WHERE event_type IN ({placeholders}) ORDER BY id DESC",
-                event_types,
-            ).fetchall()
-            for row in rows:
-                et = row["event_type"]
-                if et in result and len(result[et]) < limit:
+        with self._db_session():
+            try:
+                placeholders = ",".join("?" * len(event_types))
+                rows = self._conn.execute(
+                    f"SELECT event_type, ts, data FROM events"
+                    f" WHERE event_type IN ({placeholders}) ORDER BY id DESC",
+                    event_types,
+                ).fetchall()
+                for row in rows:
+                    et = row["event_type"]
+                    if et in result and len(result[et]) < limit:
+                        try:
+                            d = json.loads(row["data"])
+                            d["t"] = et
+                            d["ts"] = row["ts"]
+                            result[et].append(d)
+                        except Exception:
+                            pass
+                for v in result.values():
+                    v.reverse()  # 恢复时间升序
+                return result
+            except Exception:
+                # DB 不可用：降级逐类型 JSONL 扫描
+                path = self._dir / "events.jsonl"
+                if not path.exists():
+                    return result
+                try:
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    return result
+                for raw in reversed(lines):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
                     try:
-                        d = json.loads(row["data"])
-                        d["t"] = et
-                        d["ts"] = row["ts"]
-                        result[et].append(d)
+                        d = json.loads(raw)
+                        t = d.get("t")
+                        if t in result and len(result[t]) < limit:
+                            result[t].append(d)
                     except Exception:
                         pass
-            for v in result.values():
-                v.reverse()  # 恢复时间升序
-            return result
-        except Exception:
-            # DB 不可用：降级逐类型 JSONL 扫描
-            path = self._dir / "events.jsonl"
-            if not path.exists():
+                    if all(len(v) >= limit for v in result.values()):
+                        break
+                for v in result.values():
+                    v.reverse()
                 return result
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except Exception:
-                return result
-            for raw in reversed(lines):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    d = json.loads(raw)
-                    t = d.get("t")
-                    if t in result and len(result[t]) < limit:
-                        result[t].append(d)
-                except Exception:
-                    pass
-                if all(len(v) >= limit for v in result.values()):
-                    break
-            for v in result.values():
-                v.reverse()
-            return result
 
     def search(
         self,
@@ -560,34 +741,35 @@ class EpisodicMemory:
         # 条件：query 是 content 的子串，且 content 长度 < query 的 1.3 倍（即 content ≈ query，非扩展内容）
         _q = query.strip()
 
-        # 1. FTS5 narrative 检索
-        safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
-        # ASCII 词 ≥5 字符（过滤 "core" "loop" "task" 等常见路径/词，防止 OR 泛命中）；
-        # 非 ASCII（中文等）词 ≥2 字符。若严格过滤后为空则回退原行为。
-        _strict = [t for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
-        terms = _strict if _strict else [t for t in safe.split() if len(t) > 1]
-        if terms:
-            fts_query = " OR ".join(terms)
-            try:
-                rows = self._conn.execute(
-                    "SELECT task_id, role, content FROM narrative_fts"
-                    " WHERE narrative_fts MATCH ? LIMIT 50",  # 扩大候选集，补偿 Python 层 exclude_task_id 过滤导致的有效命中减少
-                    (fts_query,),
-                ).fetchall()
-                for row in rows:
-                    # 跳过当前任务自身的条目（避免将自己的历史作为跨任务命中）
-                    if exclude_task_id and row['task_id'] == exclude_task_id:
-                        continue
-                    # 跳过 content 本质上就是查询文本本身（旧任务目标被 FTS5 回显）
-                    if _q and row['content'].strip() == _q:
-                        continue
-                    snippet = f"[task={row['task_id'] or 'global'} role={row['role']}] {row['content'][:300]}"
-                    hits.append(snippet)
-                    total += len(snippet)
-                    if total >= max_chars:
-                        return "\n\n---\n\n".join(hits)
-            except Exception:
-                pass  # FTS5 失败降级到文件扫描
+        with self._db_session():
+            # 1. FTS5 narrative 检索
+            safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
+            # ASCII 词 ≥5 字符（过滤 "core" "loop" "task" 等常见路径/词，防止 OR 泛命中）；
+            # 非 ASCII（中文等）词 ≥2 字符。若严格过滤后为空则回退原行为。
+            _strict = [t for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
+            terms = _strict if _strict else [t for t in safe.split() if len(t) > 1]
+            if terms:
+                fts_query = " OR ".join(terms)
+                try:
+                    rows = self._conn.execute(
+                        "SELECT task_id, role, content FROM narrative_fts"
+                        " WHERE narrative_fts MATCH ? LIMIT 50",  # 扩大候选集，补偿 Python 层 exclude_task_id 过滤导致的有效命中减少
+                        (fts_query,),
+                    ).fetchall()
+                    for row in rows:
+                        # 跳过当前任务自身的条目（避免将自己的历史作为跨任务命中）
+                        if exclude_task_id and row['task_id'] == exclude_task_id:
+                            continue
+                        # 跳过 content 本质上就是查询文本本身（旧任务目标被 FTS5 回显）
+                        if _q and row['content'].strip() == _q:
+                            continue
+                        snippet = f"[task={row['task_id'] or 'global'} role={row['role']}] {row['content'][:300]}"
+                        hits.append(snippet)
+                        total += len(snippet)
+                        if total >= max_chars:
+                            return "\n\n---\n\n".join(hits)
+                except Exception:
+                    pass  # FTS5 失败降级到文件扫描
 
         # 2. 降级：.md 文件关键词扫描
         if total < max_chars:

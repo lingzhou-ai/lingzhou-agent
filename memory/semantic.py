@@ -1,7 +1,7 @@
 """memory/semantic.py — 语义记忆（SemanticMemory）。
 
 双层存储设计：
-    1. nodes/{id}.json  — 运行期语义节点源数据（首先写入，可重建）
+  1. nodes/{id}.json  — 运行期语义节点源数据（首先写入，可重建）
   2. semantic.db      — 搜索索引层（由 json 派生，可完全重建，删除后无数据丢失）
 
 恼复路径： semantic.db 损坏 → 启动时自动检测 → 删除并重建 → 从 nodes/*.json 重导入。
@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import math
 import re
@@ -74,6 +75,34 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     tokenize='unicode61'
 );
 """
+
+_STABLE_MEMORY_KINDS = frozenset({
+    "fact",
+    "person",
+    "daily_summary",
+    "task_summary",
+    "learned_insight",
+    "self_model_signal",
+    "consolidated_insight",
+    "control_rule",
+    "learned_skill",
+})
+
+_EPHEMERAL_MEMORY_KINDS = frozenset({
+    "event",
+    "task_progress",
+    "run_result",
+    "sensor_snapshot",
+    "delegated_result",
+})
+
+_STABLE_MEMORY_SOURCES = frozenset({
+    "wm_consolidation",
+    "daily_consolidation",
+    "memory.add_semantic",
+    "manual",
+    "reflection",
+})
 
 
 @dataclass
@@ -148,6 +177,9 @@ class SemanticMemory:
         db_path: Path | None = None,
         embed_fn: Callable[[str], list[float]] | None = None,
         embedding_weight: float = 0.3,
+        source_weight: float = 0.12,
+        temporal_weight: float = 0.08,
+        temporal_window_days: float = 7.0,
     ) -> None:
         self._dir = memory_dir / "nodes"
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -163,12 +195,58 @@ class SemanticMemory:
             _log.info("[semantic] 向量混合检索已启用（实验性，embedding_weight=%.2f）", embedding_weight)
         self._embed_fn = embed_fn
         self._embedding_weight = embedding_weight
-        self._conn = self._open_db()
-        self._migrate()             # 迁移机制：幂等 ALTER TABLE，补齐新列
-        # On startup: sync any json nodes missing from DB (idempotent)
-        self._sync_from_files()
-        # P1-C: 启动时校验索引健康度，不一致则自动重建，保障连续性
-        self._validate_and_repair_index()
+        self._source_weight = max(0.0, float(source_weight))
+        self._temporal_weight = max(0.0, float(temporal_weight))
+        self._temporal_window_days = max(0.1, float(temporal_window_days))
+        self._conn = None
+        self._session_depth = 0
+        with self._db_session():
+            self._migrate()             # 迁移机制：幂等 ALTER TABLE，补齐新列
+            # On startup: sync any json nodes missing from DB (idempotent)
+            self._sync_from_files()
+            # P1-C: 启动时校验索引健康度，不一致则自动重建，保障连续性
+            self._validate_and_repair_index()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self, "_conn_ref", None)
+        if conn is None:
+            raise RuntimeError("semantic db session is not open")
+        return conn
+
+    @_conn.setter
+    def _conn(self, value: sqlite3.Connection | None) -> None:
+        self._conn_ref = value
+
+    @contextmanager
+    def _db_session(self):
+        if self._conn_ref is not None:
+            self._session_depth += 1
+            try:
+                yield self._conn_ref
+            finally:
+                self._session_depth -= 1
+            return
+
+        conn = self._open_db()
+        self._conn = conn
+        self._session_depth = 1
+        try:
+            yield conn
+        finally:
+            self._session_depth -= 1
+            if self._session_depth == 0:
+                self.close()
+
+    def close(self) -> None:
+        conn = getattr(self, "_conn_ref", None)
+        self._conn_ref = None
+        self._session_depth = 0
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # --- DB init & recovery ---------------------------------------------------
 
@@ -273,28 +351,29 @@ class SemanticMemory:
 
     def rebuild_index(self) -> None:
         """从 nodes/*.json 全量重建数据库索引（手动恢复；也可直接删除 semantic.db 触发自动重建）。"""
-        self._conn.execute("DELETE FROM nodes")
-        if self._fts5_ok:
-            try:
-                self._conn.execute("DELETE FROM nodes_fts")
-            except Exception:
-                pass
-        self._conn.commit()
-        for p in self._dir.glob("*.json"):
-            try:
-                d = json.loads(p.read_text(encoding="utf-8"))
-                self._db_upsert(MemoryNode.from_dict(d))
-                # 保留 JSON 中已有的 embedding（避免重建时丢失已计算向量）
-                emb = d.get("embedding")
-                if emb is not None:
-                    emb_json = json.dumps(emb) if not isinstance(emb, str) else emb
-                    self._conn.execute(
-                        "UPDATE nodes SET embedding = ? WHERE id = ?",
-                        (emb_json, d.get("id")),
-                    )
-            except Exception:
-                pass
-        self._conn.commit()
+        with self._db_session():
+            self._conn.execute("DELETE FROM nodes")
+            if self._fts5_ok:
+                try:
+                    self._conn.execute("DELETE FROM nodes_fts")
+                except Exception:
+                    pass
+            self._conn.commit()
+            for p in self._dir.glob("*.json"):
+                try:
+                    d = json.loads(p.read_text(encoding="utf-8"))
+                    self._db_upsert(MemoryNode.from_dict(d))
+                    # 保留 JSON 中已有的 embedding（避免重建时丢失已计算向量）
+                    emb = d.get("embedding")
+                    if emb is not None:
+                        emb_json = json.dumps(emb) if not isinstance(emb, str) else emb
+                        self._conn.execute(
+                            "UPDATE nodes SET embedding = ? WHERE id = ?",
+                            (emb_json, d.get("id")),
+                        )
+                except Exception:
+                    pass
+            self._conn.commit()
 
     def _db_upsert(self, node: MemoryNode) -> None:
         tags_json = json.dumps(node.tags, ensure_ascii=False)
@@ -370,16 +449,20 @@ class SemanticMemory:
     def stats(self) -> dict[str, Any]:
         """Return lightweight health stats for prompt/context diagnostics."""
         total_nodes = 0
-        try:
-            row = self._conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
-            total_nodes = int(row[0] or 0) if row else 0
-        except Exception:
-            total_nodes = 0
+        with self._db_session():
+            try:
+                row = self._conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
+                total_nodes = int(row[0] or 0) if row else 0
+            except Exception:
+                total_nodes = 0
         return {
             "nodes": total_nodes,
             "fts5_ok": bool(self._fts5_ok),
             "decay_lambda": float(self._decay_lambda),
             "embedding_enabled": bool(self._embed_fn is not None),
+            "source_weight": float(self._source_weight),
+            "temporal_weight": float(self._temporal_weight),
+            "temporal_window_days": float(self._temporal_window_days),
             "db_path": str(self._db_path),
             "nodes_dir": str(self._dir),
         }
@@ -389,33 +472,35 @@ class SemanticMemory:
         # 1. Disaster recovery layer: write json first (safe even if DB fails)
         path = self._dir / f"{node.id}.json"
         path.write_text(json.dumps(node.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-        # 2. Search index layer: write to DB first so the row exists before embedding UPDATE
-        try:
-            self._db_upsert(node)
-        except Exception as exc:
-            _log.warning("[semantic] 节点写入 DB 失败，保留 json 作为恢复源: %s", exc)
-        # 3. 可选：计算并存储 embedding（行已存在，UPDATE 必然生效）
-        if self._embed_fn is not None:
+        with self._db_session():
+            # 2. Search index layer: write to DB first so the row exists before embedding UPDATE
             try:
-                vec = self._embed_fn(node.title + " " + node.body)
-                self._conn.execute(
-                    "UPDATE nodes SET embedding = ? WHERE id = ?",
-                    (json.dumps(vec), node.id),
-                )
-                self._conn.commit()
-            except Exception:
-                pass  # embedding 失败不阻断主写入
+                self._db_upsert(node)
+            except Exception as exc:
+                _log.warning("[semantic] 节点写入 DB 失败，保留 json 作为恢复源: %s", exc)
+            # 3. 可选：计算并存储 embedding（行已存在，UPDATE 必然生效）
+            if self._embed_fn is not None:
+                try:
+                    vec = self._embed_fn(node.title + " " + node.body)
+                    self._conn.execute(
+                        "UPDATE nodes SET embedding = ? WHERE id = ?",
+                        (json.dumps(vec), node.id),
+                    )
+                    self._conn.commit()
+                except Exception:
+                    pass  # embedding 失败不阻断主写入
 
     def get(self, node_id: str) -> MemoryNode | None:
         # DB first (O(1) index); fall back to json if DB unavailable
-        try:
-            row = self._conn.execute(
-                "SELECT * FROM nodes WHERE id = ?", (node_id,)
-            ).fetchone()
-            if row:
-                return self._row_to_node(row)
-        except Exception:
-            pass
+        with self._db_session():
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM nodes WHERE id = ?", (node_id,)
+                ).fetchone()
+                if row:
+                    return self._row_to_node(row)
+            except Exception:
+                pass
         path = self._dir / f"{node_id}.json"
         if path.exists():
             return MemoryNode.from_dict(json.loads(path.read_text(encoding="utf-8")))
@@ -425,14 +510,15 @@ class SemanticMemory:
         normalized = (title or "").strip()
         if not normalized:
             return []
-        try:
-            rows = self._conn.execute(
-                "SELECT * FROM nodes WHERE title = ? ORDER BY created_at DESC LIMIT ?",
-                (normalized, limit),
-            ).fetchall()
-            return [self._row_to_node(r) for r in rows]
-        except Exception:
-            pass
+        with self._db_session():
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM nodes WHERE title = ? ORDER BY created_at DESC LIMIT ?",
+                    (normalized, limit),
+                ).fetchall()
+                return [self._row_to_node(r) for r in rows]
+            except Exception:
+                pass
         hits: list[MemoryNode] = []
         for p in self._dir.glob("*.json"):
             try:
@@ -464,30 +550,18 @@ class SemanticMemory:
         FTS5 不可用或无命中时降级为全扫描。
         embed_fn 可用时，计算 query_vec 混合 cosine 相似度评分。
         """
-        query_vec: list[float] | None = None
-        if self._embed_fn is not None:
-            try:
-                query_vec = self._embed_fn(query)
-            except Exception:
-                pass
-        candidate_ids = self._fts_candidates(query, limit=100 if any((kind, tag, task_id, path_prefix, id_prefix)) else 50)
-        nodes = self._load_by_ids(candidate_ids) if candidate_ids else self._load_all()
-        if any((kind, tag, source, task_id, path_prefix, id_prefix)):
-            nodes = [
-                node for node in nodes
-                if self._matches_filters(
-                    node,
-                    kind=kind,
-                    tag=tag,
-                    source=source,
-                    task_id=task_id,
-                    path_prefix=path_prefix,
-                    id_prefix=id_prefix,
-                )
-            ]
-            if candidate_ids and not nodes:
+        with self._db_session():
+            query_vec: list[float] | None = None
+            if self._embed_fn is not None:
+                try:
+                    query_vec = self._embed_fn(query)
+                except Exception:
+                    pass
+            candidate_ids = self._fts_candidates(query, limit=100 if any((kind, tag, task_id, path_prefix, id_prefix)) else 50)
+            nodes = self._load_by_ids(candidate_ids) if candidate_ids else self._load_all()
+            if any((kind, tag, source, task_id, path_prefix, id_prefix)):
                 nodes = [
-                    node for node in self._load_all()
+                    node for node in nodes
                     if self._matches_filters(
                         node,
                         kind=kind,
@@ -498,20 +572,33 @@ class SemanticMemory:
                         id_prefix=id_prefix,
                     )
                 ]
-        if not nodes:
-            return []
-        scored = [(self._score(query, n, query_vec=query_vec), n) for n in nodes]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        retrieved = []
-        for score, node in scored[:top_k]:
-            item = node.to_dict()
-            item["score"] = round(float(score), 4)
-            retrieved.append(item)
+                if candidate_ids and not nodes:
+                    nodes = [
+                        node for node in self._load_all()
+                        if self._matches_filters(
+                            node,
+                            kind=kind,
+                            tag=tag,
+                            source=source,
+                            task_id=task_id,
+                            path_prefix=path_prefix,
+                            id_prefix=id_prefix,
+                        )
+                    ]
+            if not nodes:
+                return []
+            scored = [(self._score(query, n, query_vec=query_vec), n) for n in nodes]
+            scored.sort(key=lambda x: x[0], reverse=True)
+            retrieved = []
+            for score, node in scored[:top_k]:
+                item = node.to_dict()
+                item["score"] = round(float(score), 4)
+                retrieved.append(item)
 
-        if _log.isEnabledFor(_log_sem.DEBUG):
-            qm = evaluate_retrieval_quality(query, retrieved, self._decay_lambda)
-            _log.debug("[semantic.retrieve] quality=%s", qm.get("overall_score", 0))
-        return retrieved
+            if _log.isEnabledFor(_log_sem.DEBUG):
+                qm = evaluate_retrieval_quality(query, retrieved, self._decay_lambda)
+                _log.debug("[semantic.retrieve] quality=%s", qm.get("overall_score", 0))
+            return retrieved
 
     @staticmethod
     def _matches_filters(
@@ -563,62 +650,63 @@ class SemanticMemory:
         合并各锤点的 FTS5 候选集，去重后精排；
         多个镔点命中同一节点 → convergence_bonus 加分（越多镄点命中相关度越高）。
         """
-        valid_anchors = [a for a in anchors if a and a.strip()]
-        if not valid_anchors:
-            return []
-        # 合并各锚点 FTS5 候选（去重）
-        all_ids: list[str] = []
-        seen: set[str] = set()
-        for anchor in valid_anchors:
-            for nid in self._fts_candidates(anchor, limit=30):
-                if nid not in seen:
-                    seen.add(nid)
-                    all_ids.append(nid)
-        nodes = self._load_by_ids(all_ids) if all_ids else self._load_all()
-        if source:
-            nodes = [n for n in nodes if getattr(n, 'source', '') == source]
-        if not nodes:
-            return []
+        with self._db_session():
+            valid_anchors = [a for a in anchors if a and a.strip()]
+            if not valid_anchors:
+                return []
+            # 合并各锚点 FTS5 候选（去重）
+            all_ids: list[str] = []
+            seen: set[str] = set()
+            for anchor in valid_anchors:
+                for nid in self._fts_candidates(anchor, limit=30):
+                    if nid not in seen:
+                        seen.add(nid)
+                        all_ids.append(nid)
+            nodes = self._load_by_ids(all_ids) if all_ids else self._load_all()
+            if source:
+                nodes = [n for n in nodes if getattr(n, 'source', '') == source]
+            if not nodes:
+                return []
 
-        best_score: dict[str, float] = {}
-        hit_count: dict[str, int] = {}
-        for anchor in valid_anchors:
-            # 有 embed_fn 时计算锚点向量，传入 _score 启用混合评分（与 retrieve() 对齐）
-            query_vec: list[float] | None = None
-            if self._embed_fn is not None:
-                try:
-                    query_vec = self._embed_fn(anchor)
-                except Exception:
-                    pass
-            for node in nodes:
-                s = self._score(anchor, node, query_vec=query_vec)
-                if s > 0:
-                    if node.id not in best_score or s > best_score[node.id]:
-                        best_score[node.id] = s
-                    hit_count[node.id] = hit_count.get(node.id, 0) + 1
+            best_score: dict[str, float] = {}
+            hit_count: dict[str, int] = {}
+            for anchor in valid_anchors:
+                # 有 embed_fn 时计算锚点向量，传入 _score 启用混合评分（与 retrieve() 对齐）
+                query_vec: list[float] | None = None
+                if self._embed_fn is not None:
+                    try:
+                        query_vec = self._embed_fn(anchor)
+                    except Exception:
+                        pass
+                for node in nodes:
+                    s = self._score(anchor, node, query_vec=query_vec)
+                    if s > 0:
+                        if node.id not in best_score or s > best_score[node.id]:
+                            best_score[node.id] = s
+                        hit_count[node.id] = hit_count.get(node.id, 0) + 1
 
-        if not best_score:
-            return []
+            if not best_score:
+                return []
 
-        node_map = {n.id: n for n in nodes}
-        final: list[tuple[float, MemoryNode]] = []
-        for nid, base in best_score.items():
-            hits = hit_count.get(nid, 1)
-            score = base * (1.0 + convergence_bonus * (hits - 1))
-            final.append((score, node_map[nid]))
+            node_map = {n.id: n for n in nodes}
+            final: list[tuple[float, MemoryNode]] = []
+            for nid, base in best_score.items():
+                hits = hit_count.get(nid, 1)
+                score = base * (1.0 + convergence_bonus * (hits - 1))
+                final.append((score, node_map[nid]))
 
-        final.sort(key=lambda x: x[0], reverse=True)
-        retrieved = []
-        for score, node in final[:top_k]:
-            item = node.to_dict()
-            item["score"] = round(float(score), 4)
-            retrieved.append(item)
+            final.sort(key=lambda x: x[0], reverse=True)
+            retrieved = []
+            for score, node in final[:top_k]:
+                item = node.to_dict()
+                item["score"] = round(float(score), 4)
+                retrieved.append(item)
 
-        if _log.isEnabledFor(_log_sem.DEBUG):
-            combined_query = " ".join(valid_anchors)
-            qm = evaluate_retrieval_quality(combined_query, retrieved, self._decay_lambda)
-            _log.debug("[semantic.multi_anchor] quality=%s", qm.get("overall_score", 0))
-        return retrieved
+            if _log.isEnabledFor(_log_sem.DEBUG):
+                combined_query = " ".join(valid_anchors)
+                qm = evaluate_retrieval_quality(combined_query, retrieved, self._decay_lambda)
+                _log.debug("[semantic.multi_anchor] quality=%s", qm.get("overall_score", 0))
+            return retrieved
 
     def store_reflection(self, kind: str, insight: str, valence: float = 0.5) -> str:
         """Write a reflection insight as a learned_insight node; return node_id."""
@@ -636,9 +724,10 @@ class SemanticMemory:
 
     def list_reflections(self, limit: int = 10) -> list[MemoryNode]:
         """Return the most recent `limit` learned_insight nodes (newest first)."""
-        nodes = [n for n in self._load_all() if n.kind == "learned_insight"]
-        nodes.sort(key=lambda n: n.created_at, reverse=True)
-        return nodes[:limit]
+        with self._db_session():
+            nodes = [n for n in self._load_all() if n.kind == "learned_insight"]
+            nodes.sort(key=lambda n: n.created_at, reverse=True)
+            return nodes[:limit]
 
     # --- Internal helpers -----------------------------------------------------
 
@@ -724,6 +813,9 @@ class SemanticMemory:
             kw_score = 0.1
         else:
             kw_score = len(q_tokens & n_tokens) / len(q_tokens | n_tokens)
+        source_score = self._source_score(node)
+        temporal_score = self._temporal_score(node)
+        text_score = max(0.0, kw_score * 0.55 + eff_act * 0.25 + source_score + temporal_score)
 
         # 向量混合评分（embed_fn 已配置且节点有 embedding 时生效）
         node_emb_raw = getattr(node, "embedding", None)
@@ -736,12 +828,57 @@ class SemanticMemory:
                 )
                 cos_sim = _cosine(query_vec, node_vec)
                 w = self._embedding_weight
-                text_score = kw_score * 0.7 + eff_act * 0.3
                 return (1 - w) * text_score + w * cos_sim
             except Exception:
                 pass
 
-        return kw_score * 0.7 + eff_act * 0.3
+        return text_score
+
+    def _source_score(self, node: MemoryNode) -> float:
+        score = 0.0
+        stable_kind = node.kind in _STABLE_MEMORY_KINDS
+        if node.kind in _STABLE_MEMORY_KINDS:
+            score += self._source_weight
+        elif node.kind in _EPHEMERAL_MEMORY_KINDS:
+            score -= self._source_weight * 0.4
+
+        node_source = str(getattr(node, "source", "") or "").strip()
+        if node_source in _STABLE_MEMORY_SOURCES:
+            score += self._source_weight * 0.5
+            if stable_kind:
+                score += self._source_weight * 0.25
+
+        tags = set(getattr(node, "tags", []) or [])
+        if "wm_promoted" in tags and node.kind not in _EPHEMERAL_MEMORY_KINDS:
+            score += self._source_weight * 0.25
+        return score
+
+    def _temporal_score(self, node: MemoryNode) -> float:
+        if self._temporal_weight <= 0:
+            return 0.0
+        age_days = self._node_age_days(node)
+        if age_days is None:
+            return 0.0
+
+        normalized = min(age_days / self._temporal_window_days, 1.0)
+        freshness = max(0.0, 1.0 - normalized)
+        if node.kind in _STABLE_MEMORY_KINDS:
+            # 存活更久的稳定记忆，说明已通过多轮经验筛选，给小幅长期加权。
+            return self._temporal_weight * normalized
+        if node.kind in _EPHEMERAL_MEMORY_KINDS:
+            # 临时事件只给轻量新近加分，避免压过长期结构记忆。
+            return self._temporal_weight * 0.35 * freshness
+        return self._temporal_weight * 0.15 * freshness
+
+    @staticmethod
+    def _node_age_days(node: MemoryNode) -> float | None:
+        try:
+            created = datetime.fromisoformat(node.created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            return max(0.0, (datetime.now(UTC) - created).total_seconds() / 86400)
+        except Exception:
+            return None
 
     # ── 向量嵌入工具方法（供 CognitionLoop 批量异步计算）─────────────────────
 
@@ -750,32 +887,34 @@ class SemanticMemory:
 
         text = title + ' ' + body，与 upsert() 中计算 embedding 的输入一致。
         """
-        try:
-            rows = self._conn.execute(
-                "SELECT id, title, body FROM nodes WHERE embedding IS NULL LIMIT ?",
-                (limit,),
-            ).fetchall()
-            return [(r[0], (r[1] or "") + " " + (r[2] or "")) for r in rows]
-        except Exception:
-            return []
+        with self._db_session():
+            try:
+                rows = self._conn.execute(
+                    "SELECT id, title, body FROM nodes WHERE embedding IS NULL LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                return [(r[0], (r[1] or "") + " " + (r[2] or "")) for r in rows]
+            except Exception:
+                return []
 
     def set_embedding(self, node_id: str, vec: list[float]) -> None:
         """将外部计算好的向量写入指定节点的 embedding 列，同时同步 json 文件。"""
-        try:
-            vec_json = json.dumps(vec)
-            self._conn.execute(
-                "UPDATE nodes SET embedding = ? WHERE id = ?",
-                (vec_json, node_id),
-            )
-            self._conn.commit()
-            # 同步 json 文件（灾难恢复层）
-            json_path = self._dir / f"{node_id}.json"
-            if json_path.exists():
-                try:
-                    d = json.loads(json_path.read_text(encoding="utf-8"))
-                    d["embedding"] = vec
-                    json_path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        with self._db_session():
+            try:
+                vec_json = json.dumps(vec)
+                self._conn.execute(
+                    "UPDATE nodes SET embedding = ? WHERE id = ?",
+                    (vec_json, node_id),
+                )
+                self._conn.commit()
+                # 同步 json 文件（灾难恢复层）
+                json_path = self._dir / f"{node_id}.json"
+                if json_path.exists():
+                    try:
+                        d = json.loads(json_path.read_text(encoding="utf-8"))
+                        d["embedding"] = vec
+                        json_path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+            except Exception:
+                pass

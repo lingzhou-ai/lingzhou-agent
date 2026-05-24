@@ -346,6 +346,46 @@ class MemoryConfig(BaseModel):
         default=0.3, ge=0.0, le=1.0,
         description="向量得分权重；(1-weight) 为 FTS5/关键词权重（仅 embedding_model 非 None 时生效）",
     )
+    semantic_source_weight: float = Field(
+        default=0.12, ge=0.0, le=0.5,
+        description="语义检索中稳定长期来源/类型的额外权重；值越高，长期沉淀越不容易被短期事件压过",
+    )
+    semantic_temporal_weight: float = Field(
+        default=0.08, ge=0.0, le=0.5,
+        description="语义检索中的时间权重；长期记忆获得存活加分，短期事件只获得较轻的新近加分",
+    )
+    semantic_temporal_window_days: float = Field(
+        default=7.0, gt=0.0, le=90.0,
+        description="语义检索时间权重的标准时间窗（天）",
+    )
+    daily_recall_days: int = Field(
+        default=2, ge=1, le=14,
+        description="daily 补短检索的最近天数窗口；仅在长期记忆命中不足时使用",
+    )
+    daily_recall_max_chars: int = Field(
+        default=800, ge=100,
+        description="daily 补短片段的最大字符数预算",
+    )
+    daily_recall_semantic_score_threshold: float = Field(
+        default=0.55, ge=0.0, le=1.5,
+        description="长期语义记忆 top score 达到此值时，认为本轮无需再注入 daily 补短",
+    )
+    daily_summary_days: int = Field(
+        default=7, ge=1, le=30,
+        description="weekly daily summary 汇总最近多少天的 daily 轨迹",
+    )
+    daily_summary_max_chars: int = Field(
+        default=1800, ge=200,
+        description="weekly daily summary 写入长期语义层时的最大字符数预算",
+    )
+    daily_summary_activation: float = Field(
+        default=0.78, ge=0.0, le=1.0,
+        description="weekly daily summary 进入语义记忆时的 activation",
+    )
+    daily_summary_importance: float = Field(
+        default=0.82, ge=0.0, le=1.0,
+        description="weekly daily summary 进入语义记忆时的 importance",
+    )
     local_embed_model: str | None = Field(
         default=None,
         description=(
@@ -363,6 +403,52 @@ class MemoryConfig(BaseModel):
     chat_crystallize_every: int = Field(
         default=20, ge=1,
         description="对话轮数结晶间隔：每 N 轮 reflection 蒸馏一次 event 节点写入语义记忆",
+    )
+    promotion_priority_threshold: float = Field(
+        default=0.78, ge=0.0, le=1.0,
+        description="WM 整合时提升到语义记忆的最低优先级；低于此值时仅 allowlist kind 会被长期化",
+    )
+    promotion_max_nodes_per_consolidation: int = Field(
+        default=6, ge=0,
+        description="单次 consolidate 最多写入多少个长期语义节点，避免短期噪声淹没长期层",
+    )
+    promotion_min_chars: int = Field(
+        default=24, ge=1,
+        description="WM 条目正文短于此长度时默认不提升为语义节点，避免长期层充满碎片",
+    )
+    promotion_body_max_chars: int = Field(
+        default=1200, ge=80,
+        description="提升到语义记忆的单节点正文上限（字符）",
+    )
+    promotion_reinforce_delta: float = Field(
+        default=0.05, ge=0.0, le=0.5,
+        description="重复命中同一长期节点时额外增加的 activation，表示再巩固",
+    )
+    promotion_semantic_kinds: list[str] = Field(
+        default_factory=lambda: [
+            "self_awareness",
+            "behavior_sense",
+            "task_reflection",
+            "meta_reflection",
+            "task_replan",
+            "routing_guard",
+            "task_result",
+            "progress_crystal",
+            "execute_result",
+            "run_monitor",
+            "probe_result",
+            "subagent_result",
+            "skill_activation",
+            "skill_evolution",
+            "skill_synthesis",
+            "self_drive",
+            "crash_recovery",
+        ],
+        description="即使优先级不足，也允许直接提升到语义记忆的 WM kind 白名单",
+    )
+    promotion_fact_kinds: list[str] = Field(
+        default_factory=lambda: ["user_message"],
+        description="允许从中抽取 durable facts 的 WM kind 白名单",
     )
     global_md_warn_bytes: int = Field(
         default=80000, ge=1,
@@ -740,6 +826,14 @@ class ThresholdsConfig(BaseModel):
         default=4, ge=0,
         description="global 作用域 facts snapshot 的保留上限",
     )
+    fact_context_priority_prefixes: list[str] = Field(
+        default_factory=lambda: ["user:"],
+        description="构造 facts snapshot 时总是优先尝试保留的 durable fact 前缀",
+    )
+    fact_context_priority_limit: int = Field(
+        default=2, ge=0,
+        description="durable fact 前缀在单次 context snapshot 中最多保留多少条",
+    )
     fact_context_recent_scan_multiplier: int = Field(
         default=3, ge=1,
         description="recent facts 扫描窗口倍数，用于先扩大扫描再截断输出",
@@ -858,6 +952,37 @@ class Config(BaseModel):
 
     # 配置文件所在目录，用于解析相对路径（由 load() 填充）
     _base_dir: Path = Path(".")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_threshold_memory_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        thresholds = data.get("thresholds")
+        if not isinstance(thresholds, dict):
+            return data
+
+        legacy_memory_keys = (
+            "daily_recall_days",
+            "daily_recall_max_chars",
+            "daily_recall_semantic_score_threshold",
+            "daily_summary_days",
+            "daily_summary_max_chars",
+            "daily_summary_activation",
+            "daily_summary_importance",
+        )
+        migrated = {key: thresholds.pop(key) for key in legacy_memory_keys if key in thresholds}
+        if not migrated:
+            return data
+
+        merged = dict(data)
+        memory = dict(merged.get("memory") or {})
+        for key, value in migrated.items():
+            memory.setdefault(key, value)
+        merged["memory"] = memory
+        merged["thresholds"] = thresholds
+        return merged
 
     @classmethod
     def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> "Config":

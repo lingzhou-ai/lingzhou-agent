@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,7 @@ from .context import (
     _fmt_hard_boundaries,
     _fmt_judgment_signals,
     _fmt_memories,
+    _fmt_memory_recall,
     _fmt_memory_system,
     _fmt_perception_replay,
     _fmt_percept,
@@ -70,6 +72,10 @@ from .context import (
 )
 
 _log = logging.getLogger("lingzhou.judgment")
+
+_MEMORY_ASSERTIVE_PHRASE_RE = re.compile(
+    r"(我还?记得|我记着|你之前说过|之前你说过|你之前提过|之前你提过)"
+)
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -1133,6 +1139,7 @@ class JudgmentLayer:
         if output.decision == "act" and not output.chosen_action_id \
                 and not output.parallel_actions and not output.delegate_tasks:
             return JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        output = _apply_memory_honesty_guard(output, context_text=context_text)
         return output
 
     async def _assemble_context(
@@ -1191,6 +1198,349 @@ class JudgmentLayer:
             exclude_prefixes=self._cfg.thresholds.fact_context_exclude_prefixes,
             task_limit=self._cfg.thresholds.fact_context_task_limit,
             global_limit=self._cfg.thresholds.fact_context_global_limit,
+            priority_prefixes=self._cfg.thresholds.fact_context_priority_prefixes,
+            priority_limit=self._cfg.thresholds.fact_context_priority_limit,
+            recent_scan_multiplier=self._cfg.thresholds.fact_context_recent_scan_multiplier,
+            recent_scan_min=self._cfg.thresholds.fact_context_recent_scan_min,
+        ))
+        probes_task = (
+            asyncio.create_task(self._probe_manager.list_probes())
+            if self._probe_manager else None
+        )
+        failures_task = asyncio.create_task(
+            task_store.list_failures_for_task(str(task.id), self._cfg.memory.failure_limit)
+            if task else task_store.list_failures(self._cfg.memory.failure_limit)
+        )
+
+        # 统一收口并发上下文抓取，避免前一路异常时后续任务异常/结果无人消费。
+        parallel_fetches: list[tuple[str, Any]] = [
+            ("episodic_text", episodic_text_future),
+        ]
+        if recent_runs_task is not None:
+            parallel_fetches.append(("recent_runs", recent_runs_task))
+        parallel_fetches.extend([
+            ("waiting_tasks", waiting_tasks_task),
+            ("durable_failure_snapshot", durable_failure_task),
+            ("context_facts", context_facts_task),
+            ("failures", failures_task),
+        ])
+        if probes_task is not None:
+            parallel_fetches.append(("probes", probes_task))
+
+        parallel_results = await asyncio.gather(
+            *(awaitable for _, awaitable in parallel_fetches),
+            return_exceptions=True,
+        )
+        parallel_data: dict[str, Any] = {}
+        parallel_error: BaseException | None = None
+        for (name, _), value in zip(parallel_fetches, parallel_results):
+            if isinstance(value, BaseException):
+                if parallel_error is None:
+                    parallel_error = value
+                continue
+            parallel_data[name] = value
+        if parallel_error is not None:
+            raise parallel_error
+
+        episodic_text = parallel_data["episodic_text"]
+        recent_runs = parallel_data.get("recent_runs", [])
+        waiting_tasks = parallel_data["waiting_tasks"]
+        durable_failure_snapshot = parallel_data["durable_failure_snapshot"]
+        context_facts = parallel_data["context_facts"]
+        probes = parallel_data.get("probes", [])
+        failures = parallel_data["failures"]
+
+        search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
+        episodic_search = (
+            await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
+            if task_id_str and search_query else ""
+        )
+        if episodic_search and episodic_search not in episodic_text:
+            episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
+        _log.info("[context] episodic search=%r cross_task_hit=%s",
+                  (search_query or "")[:50], bool(episodic_search))
+
+        resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
+        entity_section = self._ref_resolver.format_section(resolved_entities)
+
+        # 动态构建检索锚点：结合任务、用户原话与近期失败，提升语义记忆命中率
+        anchors: list[str] = []
+        if task:
+            # 优先级：下一步 > 目标 > 标题
+            primary_anchor = task.next_step or task.goal or task.title
+            if primary_anchor:
+                anchors.append(primary_anchor)
+            # 身份锚：确保跨会话认人
+            task_source = str(getattr(task, "source", "") or "")
+            if task_source and task_source not in anchors:
+                anchors.append(task_source)
+
+        # 用户消息锚：截取关键片段
+        if user_message and user_message not in anchors:
+            anchors.append(user_message[:100])
+
+        # 失败模式锚：若近期有失败，优先检索相关教训
+        if failures:
+            anchors.append(failures[0].kind)
+
+        # 执行语义检索：使用动态锚点集合
+        memories = await _el.run_in_executor(
+            None, semantic.retrieve_multi_anchor, anchors, self._cfg.memory.semantic_top_k
+        )
+        semantic_top_score = max(
+            (
+                float(item.get("score") or 0.0)
+                for item in memories
+                if isinstance(item.get("score"), (int, float))
+            ),
+            default=0.0,
+        )
+        should_use_daily_fallback = bool(search_query) and not episodic_search and (
+            not memories or semantic_top_score < self._cfg.memory.daily_recall_semantic_score_threshold
+        )
+        if should_use_daily_fallback:
+            recent_daily = await _el.run_in_executor(
+                None,
+                episodic.search_recent_daily,
+                search_query,
+                self._cfg.memory.daily_recall_days,
+                self._cfg.memory.daily_recall_max_chars,
+            )
+        else:
+            recent_daily = "（长期记忆或情节命中充分，本轮不额外注入 daily 补短）"
+        _log.info("[context] semantic hits=%d anchors=%r",
+                  len(memories), [a[:40] for a in anchors[:3]])
+        _log.info(
+            "[context] daily fallback=%s semantic_top_score=%.3f episodic_hit=%s",
+            should_use_daily_fallback,
+            semantic_top_score,
+            bool(episodic_search),
+        )
+        recall_mode = "no_relevant_memory"
+        if memories and semantic_top_score >= self._cfg.memory.daily_recall_semantic_score_threshold:
+            recall_mode = "long_term_primary"
+        elif episodic_search:
+            recall_mode = "episodic_cross_task"
+        elif should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily:
+            recall_mode = "daily_gap_fill"
+
+        axioms_fact, ethos_fact = await asyncio.gather(
+            task_store.get_fact("soul:hard_axioms"),
+            task_store.get_fact("soul:ethos_baseline"),
+        )
+        axioms_val, _ = axioms_fact
+        ethos_val, _ = ethos_fact
+        soul_section = _fmt_soul(
+            axioms_val,
+            ethos_val,
+            json.dumps(self._cfg.soul.ethos.baseline, ensure_ascii=False, sort_keys=True),
+            json.dumps(self._cfg.soul.hard_axioms, ensure_ascii=False),
+        )
+
+        _wm_items = wm.get_top(15)
+        all_skills = self._skills.all_skills()
+        skills: list[Skill] = []
+        self._last_selected_skills = []
+        _log.debug("[skill] catalog-only mode: runtime 不预选候选 skill，由模型自行 activation")
+
+        ctx = {
+            "task_section": _fmt_task(task),
+            "task_facts_section": _fmt_context_facts(context_facts),
+            "waiting_tasks_section": _fmt_waiting_tasks(waiting_tasks),
+            "recent_runs_section": _fmt_recent_runs(recent_runs),
+            "emotion_valence": f"{emotion.valence:.2f}",
+            "emotion_arousal": f"{emotion.arousal:.2f}",
+            "emotion_dominant": emotion.dominant or "（未确定）",
+            "emotion_regulation": f"{emotion.regulation.strategy}（{emotion.regulation.reason}）" if emotion.regulation.reason else emotion.regulation.strategy,
+            "wm_section": _fmt_wm(_wm_items, wm_count=len(wm), wm_capacity=wm._capacity,
+                                   wm_tokens=wm.total_tokens, wm_token_budget=wm._token_budget),
+            "failures_section": _fmt_failures(failures),
+            "durable_failure_section": _fmt_durable_failures(durable_failure_snapshot),
+            "episodic_section": episodic_text or "（暂无情节记忆）",
+            "daily_continuity_section": recent_daily or "（近两日无相关 daily 补短）",
+            "entity_section": entity_section,
+            "memories_section": _fmt_memories(memories),
+            "memory_recall_section": _fmt_memory_recall(
+                query=search_query or "",
+                anchors=anchors,
+                memories=memories,
+                semantic_top_score=semantic_top_score,
+                episodic_cross_task_hit=bool(episodic_search),
+                daily_fallback_used=bool(should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily),
+                recall_mode=recall_mode,
+            ),
+            "memory_system_section": _fmt_memory_system(
+                runtime_db=str(self._cfg.db_path),
+                memory_dir=str(self._cfg.memory_dir),
+                workspace_dir=str(self._cfg.workspace_dir),
+                semantic=semantic,
+                max_concurrent_ticks=self._cfg.loop.max_concurrent_ticks,
+                max_tick_queue=self._cfg.loop.max_tick_queue,
+            ),
+            "soul_section": soul_section,
+            "tools_section": _fmt_tools(effective_registry.list_manifests()),
+            "shell_capabilities_section": _fmt_shell_capabilities(),
+            "perception_section": _fmt_percept(percept),
+            "ethos_section": _fmt_ethos(ethos_state),
+            "signals_section": _fmt_judgment_signals(judgment_signals),
+            "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
+            "perception_replay_section": _fmt_perception_replay(perception_replay),
+            "skills_catalog_section": _fmt_skill_catalog(all_skills),
+            "primary_skill_section": _fmt_primary_skill(skills[0] if skills else None),
+            "skills_section": _fmt_skills(skills),
+            "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
+            "probe_sensors_section": _fmt_probe_sensors(probes),
+            "blind_spot_section": _fmt_blind_spots(probes, self.self_model.total_tokens),
+            "self_model_section": fmt_self_model(self.self_model),
+            "team_view": _build_team_view_from_cfg(self._cfg),
+            "model_routing_section": self._build_model_routing_section(
+                phase=phase,
+                user_message=user_message,
+                current_action=current_action,
+                tool_history=tool_history,
+                effective_thinking=effective_thinking or self._cfg.thinking,
+                routing_overrides=routing_overrides,
+                registry=effective_registry,
+            ),
+            "current_time_section": _fmt_current_time(),
+            "config_section": _fmt_config_snapshot(self._cfg),
+            "user_message": user_message or "",
+        }
+        # STM 对话缓冲：源自情节记忆（narrative 表 role=user/assistant_reply）
+        # 不走原始 chat_messages 表，记忆系统本身就是正确的历史源。
+        recent_turns = (
+            await _el.run_in_executor(
+                None,
+                episodic.get_recent_turns,
+                task_id_str,
+                self._cfg.thresholds.chat_history_turn_limit,
+            )
+            if task_id_str else
+            []
+        )
+        ctx["chat_history_section"] = _fmt_chat_history(
+            recent_turns,
+            max_chars=self._cfg.thresholds.chat_history_max_chars,
+        )
+        _validate_context_schema(ctx)
+        ctx = apply_context_budget(
+            ctx,
+            self._cfg.judgment_input_token_budget(),
+            skill_min_tokens=self._cfg.thresholds.skill_min_budget_tokens,
+        )
+        # 注入上下文预算信息到自我模型，供后续判断感知上下文压力
+        budget = self._cfg.judgment_input_token_budget()
+        if budget:
+            used = sum(len(v) for v in ctx.values())
+            self.self_model.context_budget = f"{budget // 1000}K" if budget >= 1000 else str(budget)
+            self.self_model.context_pressure = min(1.0, used / max(budget, 1))
+        return _fill_template(self._judgment_template, ctx)
+
+
+def _extract_memory_recall_mode(context_text: str) -> str:
+    match = re.search(r"recall_mode:\s*([A-Za-z_]+)", context_text or "")
+    return str(match.group(1)).strip() if match else ""
+
+
+def _strip_memory_assertive_phrases(text: str) -> str:
+    stripped = _MEMORY_ASSERTIVE_PHRASE_RE.sub("", text or "")
+    stripped = re.sub(r"^[，,。；;:\s]+", "", stripped)
+    stripped = re.sub(r"\s+", " ", stripped)
+    return stripped.strip()
+
+
+def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) -> JudgmentOutput:
+    reply = (output.reply_to_user or "").strip()
+    if not reply or not _MEMORY_ASSERTIVE_PHRASE_RE.search(reply):
+        return output
+
+    recall_mode = _extract_memory_recall_mode(context_text)
+    if recall_mode == "long_term_primary":
+        return output
+
+    stripped = _strip_memory_assertive_phrases(reply)
+    if recall_mode == "episodic_cross_task":
+        guarded_reply = (
+            f"从跨任务情节记录看，{stripped}"
+            if stripped else
+            "我在跨任务情节里看到过相关线索，但这还不是稳定长期记忆。"
+        )
+    elif recall_mode == "daily_gap_fill":
+        guarded_reply = (
+            f"从近期线索看，{stripped}"
+            if stripped else
+            "我只在近期线索里看到相关片段，还不能把它当成稳定记忆。"
+        )
+    elif recall_mode == "no_relevant_memory":
+        guarded_reply = (
+            f"我现在没有足够稳定记忆证据，只能按当前线索判断：{stripped}"
+            if stripped else
+            "我现在没有足够稳定记忆证据，不能直接说自己记得这件事。"
+        )
+    else:
+        return output
+
+    output.reply_to_user = guarded_reply.strip()
+    return output
+
+    async def _assemble_context(
+        self,
+        frame_or_percept: "CognitionFrame | Percept",
+        wm: "WorkingMemory | None" = None,
+        task_store: "TaskStore | None" = None,
+        episodic: "EpisodicMemory | None" = None,
+        semantic: "SemanticMemory | None" = None,
+        emotion: "EmotionState | None" = None,
+        active_task: Any | None = None,
+        user_message: str = "",
+        ethos_state: "EthosState | None" = None,
+        judgment_signals: "JudgmentSignals | None" = None,
+        hard_boundaries: "list[str] | None" = None,
+        perception_replay: "PerceptionReplaySummary | None" = None,
+        cognitive_signals: "CognitiveSignals | None" = None,
+        phase: str = "initial",
+        current_action: str = "",
+        tool_history: list[dict[str, Any]] | None = None,
+        effective_thinking: str | None = None,
+        routing_overrides: "dict[str, str] | None" = None,
+        registry_override: "Any | None" = None,
+    ) -> str:
+        """将运行时状态填入 judgment 模板。"""
+        percept, wm, task_store, episodic, semantic, emotion = self._coerce_frame_args(
+            frame_or_percept,
+            wm,
+            task_store,
+            episodic,
+            semantic,
+            emotion,
+        )
+        effective_registry = self._effective_registry(registry_override)
+        task = active_task if active_task is not None else await task_store.get_active()
+
+        task_id_str = str(task.id) if task else None
+        _el = asyncio.get_running_loop()
+        # episodic/semantic 使用同步 sqlite3，需经 executor 层驱动，避免阻塞事件循环。
+        # 显式启动独立任务，既保留并行 IO，又避免把立即值混入 gather。
+        episodic_text_future = _el.run_in_executor(
+            None,
+            episodic.load_for_context,
+            task_id_str,
+            self._cfg.memory.episodic_max_chars,
+        )
+        recent_runs_task = (
+            asyncio.create_task(task_store.list_runs(task_id=task.id, limit=6))
+            if task else None
+        )
+        waiting_tasks_task = asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
+        durable_failure_task = asyncio.create_task(_load_durable_failure_snapshot(task_store))
+        context_facts_task = asyncio.create_task(_load_context_facts_snapshot(
+            task_store,
+            task,
+            exclude_prefixes=self._cfg.thresholds.fact_context_exclude_prefixes,
+            task_limit=self._cfg.thresholds.fact_context_task_limit,
+            global_limit=self._cfg.thresholds.fact_context_global_limit,
+            priority_prefixes=self._cfg.thresholds.fact_context_priority_prefixes,
+            priority_limit=self._cfg.thresholds.fact_context_priority_limit,
             recent_scan_multiplier=self._cfg.thresholds.fact_context_recent_scan_multiplier,
             recent_scan_min=self._cfg.thresholds.fact_context_recent_scan_min,
         ))
@@ -1276,8 +1626,42 @@ class JudgmentLayer:
         memories = await _el.run_in_executor(
             None, semantic.retrieve_multi_anchor, anchors, self._cfg.memory.semantic_top_k
         )
+        semantic_top_score = max(
+            (
+                float(item.get("score") or 0.0)
+                for item in memories
+                if isinstance(item.get("score"), (int, float))
+            ),
+            default=0.0,
+        )
+        should_use_daily_fallback = bool(search_query) and not episodic_search and (
+            not memories or semantic_top_score < self._cfg.memory.daily_recall_semantic_score_threshold
+        )
+        if should_use_daily_fallback:
+            recent_daily = await _el.run_in_executor(
+                None,
+                episodic.search_recent_daily,
+                search_query,
+                self._cfg.memory.daily_recall_days,
+                self._cfg.memory.daily_recall_max_chars,
+            )
+        else:
+            recent_daily = "（长期记忆或情节命中充分，本轮不额外注入 daily 补短）"
         _log.info("[context] semantic hits=%d anchors=%r",
                   len(memories), [a[:40] for a in anchors[:3]])
+        _log.info(
+            "[context] daily fallback=%s semantic_top_score=%.3f episodic_hit=%s",
+            should_use_daily_fallback,
+            semantic_top_score,
+            bool(episodic_search),
+        )
+        recall_mode = "no_relevant_memory"
+        if memories and semantic_top_score >= self._cfg.memory.daily_recall_semantic_score_threshold:
+            recall_mode = "long_term_primary"
+        elif episodic_search:
+            recall_mode = "episodic_cross_task"
+        elif should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily:
+            recall_mode = "daily_gap_fill"
 
         axioms_fact, ethos_fact = await asyncio.gather(
             task_store.get_fact("soul:hard_axioms"),
@@ -1312,8 +1696,18 @@ class JudgmentLayer:
             "failures_section": _fmt_failures(failures),
             "durable_failure_section": _fmt_durable_failures(durable_failure_snapshot),
             "episodic_section": episodic_text or "（暂无情节记忆）",
+            "daily_continuity_section": recent_daily or "（近两日无相关 daily 补短）",
             "entity_section": entity_section,
             "memories_section": _fmt_memories(memories),
+            "memory_recall_section": _fmt_memory_recall(
+                query=search_query or "",
+                anchors=anchors,
+                memories=memories,
+                semantic_top_score=semantic_top_score,
+                episodic_cross_task_hit=bool(episodic_search),
+                daily_fallback_used=bool(should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily),
+                recall_mode=recall_mode,
+            ),
             "memory_system_section": _fmt_memory_system(
                 runtime_db=str(self._cfg.db_path),
                 memory_dir=str(self._cfg.memory_dir),
