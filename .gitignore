@@ -5,6 +5,11 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# 根目录隐藏目录（编辑器/本地元数据，不入库）
+/.*/
+
+.vscode/
 dist/
 build/
 *.egg-info/
@@ -41,7 +46,23 @@ memory/nodes/
 
 # 本地运行目录 / 调试产物
 logs/
+test_output.log
+test_web_fetch.py
 generated/
 workspace/
 output.json
 core/loop.py
+
+# 测试 / 类型检查 / coverage 缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# 演化 smoke 失败/暂存产物
+.*.smoke-failed.py
+.*.smoke-failed.log
+_smoke_staging_*.py
