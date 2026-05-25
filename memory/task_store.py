@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 import aiosqlite
 
+from memory.quality_checker import calculate_relevance
 from store.memory import (
     ChatMessageStore,
     FactStore,
@@ -28,6 +29,73 @@ from store.memory import (
 )
 
 logger = logging.getLogger(__name__)
+
+OPEN_TASK_STATUSES = ("pending", "ready", "in_progress", "resumed", "waiting")
+RUNNABLE_TASK_STATUSES = ("pending", "ready", "in_progress", "resumed")
+TASK_DUPLICATE_REUSE_SCORE = 0.66
+TASK_SIMILARITY_CONTEXT_SCORE = 0.45
+_TASK_SIMILARITY_SCAN_LIMIT = 200
+_TASK_STATUS_RANK = {
+    "in_progress": 0,
+    "resumed": 1,
+    "ready": 2,
+    "pending": 3,
+    "waiting": 4,
+}
+_TASK_PRIORITY_RANK = {
+    "critical": 0,
+    "high": 1,
+    "normal": 2,
+    "low": 3,
+}
+
+
+def build_task_similarity_query(*parts: Any) -> str:
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for part in parts:
+        text = " ".join(str(part or "").split())
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+    return " ".join(cleaned)
+
+
+def _normalize_task_text(text: str) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _task_search_text(task: "Task") -> str:
+    return build_task_similarity_query(task.title, task.goal, task.next_step)
+
+
+def _task_similarity_score(query_text: str, task: "Task") -> float:
+    query = _normalize_task_text(query_text)
+    candidate = _normalize_task_text(_task_search_text(task))
+    if not query or not candidate:
+        return 0.0
+    if query == candidate:
+        return 1.0
+
+    title = _normalize_task_text(task.title)
+    goal = _normalize_task_text(task.goal)
+    next_step = _normalize_task_text(task.next_step)
+    score = max(
+        calculate_relevance(query, candidate),
+        calculate_relevance(query, title) if title else 0.0,
+        calculate_relevance(query, goal) if goal else 0.0,
+        calculate_relevance(query, next_step) if next_step else 0.0,
+    )
+
+    if title and len(title) >= 4 and (query in title or title in query):
+        score = max(score, 0.9)
+    if goal and len(goal) >= 6 and (query in goal or goal in query):
+        score = max(score, 0.85)
+    if next_step and len(next_step) >= 6 and (query in next_step or next_step in query):
+        score = max(score, 0.8)
+
+    return min(score, 1.0)
 
 _TASK_CORE_DATA_KEYS = frozenset({
     "goal",
@@ -617,6 +685,87 @@ class TaskStore:
 
     async def list_runnable_tasks(self, limit: int = 20) -> list[Task]:
         return await self._tasks.list_runnable_tasks(limit)
+
+    async def list_open_tasks(
+        self,
+        limit: int = 50,
+        *,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> list[Task]:
+        normalized_statuses = tuple(
+            str(status or "").strip()
+            for status in (statuses or OPEN_TASK_STATUSES)
+            if str(status or "").strip()
+        )
+        if limit <= 0 or not normalized_statuses:
+            return []
+        placeholders = ",".join("?" for _ in normalized_statuses)
+        sql = (
+            "SELECT id, title, status, priority, created_at, data "
+            f"FROM tasks WHERE status IN ({placeholders}) "
+            "ORDER BY "
+            "CASE status "
+            "    WHEN 'in_progress' THEN 0 "
+            "    WHEN 'resumed' THEN 1 "
+            "    WHEN 'ready' THEN 2 "
+            "    WHEN 'pending' THEN 3 "
+            "    WHEN 'waiting' THEN 4 "
+            "    ELSE 5 "
+            "END, "
+            "CASE priority "
+            "    WHEN 'critical' THEN 0 "
+            "    WHEN 'high' THEN 1 "
+            "    WHEN 'normal' THEN 2 "
+            "    ELSE 3 "
+            "END, "
+            "id LIMIT ?"
+        )
+        args: tuple[Any, ...] = (*normalized_statuses, int(limit))
+        async with self._db.execute(sql, args) as cur:
+            rows = await cur.fetchall()
+        return [Task.from_row(row) for row in rows]
+
+    async def find_similar_open_tasks(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        min_score: float = TASK_SIMILARITY_CONTEXT_SCORE,
+        exclude_task_ids: list[int] | tuple[int, ...] | set[int] | None = None,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> list[tuple[Task, float]]:
+        query_text = build_task_similarity_query(query)
+        if limit <= 0 or not query_text:
+            return []
+
+        exclude_ids = {
+            int(task_id)
+            for task_id in (exclude_task_ids or [])
+            if str(task_id).strip()
+        }
+        scan_limit = min(
+            _TASK_SIMILARITY_SCAN_LIMIT,
+            max(int(limit) * 6, 24),
+        )
+        candidates = await self.list_open_tasks(limit=scan_limit, statuses=statuses)
+        scored: list[tuple[Task, float]] = []
+        for task in candidates:
+            if task.id in exclude_ids:
+                continue
+            score = _task_similarity_score(query_text, task)
+            if score < float(min_score):
+                continue
+            scored.append((task, score))
+
+        scored.sort(
+            key=lambda item: (
+                -item[1],
+                _TASK_STATUS_RANK.get(item[0].status, 99),
+                _TASK_PRIORITY_RANK.get(item[0].priority, 99),
+                item[0].id,
+            )
+        )
+        return scored[: int(limit)]
 
     async def get_active(self) -> Optional[Task]:
         return await self._tasks.get_active()

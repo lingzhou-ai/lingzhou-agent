@@ -277,6 +277,54 @@ def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
     return result
 
 
+def _fmt_runnable_tasks(tasks: list["Task"], active_task_id: int | None = None) -> str:
+    cache_key = (
+        f"_fmt_runnable_tasks:{hash(tuple((t.id, t.status) for t in tasks)) if tasks else 'none'}:"
+        f"{active_task_id or 0}"
+    )
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    visible_tasks = [task for task in tasks if active_task_id is None or task.id != active_task_id]
+    if not visible_tasks:
+        result = "（无其他 runnable 任务）"
+        _context_fmt_cache[cache_key] = result
+        return result
+    lines: list[str] = []
+    for task in visible_tasks[:5]:
+        line = f"- task#{task.id} [{task.status}/{task.priority}] {task.title}"
+        if task.next_step:
+            line += f" next={_clip_text(task.next_step, 80)}"
+        elif task.goal:
+            line += f" goal={_clip_text(task.goal, 80)}"
+        lines.append(line)
+    result = "\n".join(lines)
+    _context_fmt_cache[cache_key] = result
+    return result
+
+
+def _fmt_similar_tasks(items: list[tuple["Task", float]]) -> str:
+    cache_key = (
+        f"_fmt_similar_tasks:{hash(tuple((task.id, round(score, 3)) for task, score in items)) if items else 'none'}"
+    )
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    if not items:
+        result = "（未发现相似开放任务）"
+        _context_fmt_cache[cache_key] = result
+        return result
+    lines: list[str] = []
+    for task, score in items[:5]:
+        line = f"- {round(score * 100)}% task#{task.id} [{task.status}] {task.title}"
+        if task.next_step:
+            line += f" next={_clip_text(task.next_step, 80)}"
+        elif task.goal:
+            line += f" goal={_clip_text(task.goal, 80)}"
+        lines.append(line)
+    result = "\n".join(lines)
+    _context_fmt_cache[cache_key] = result
+    return result
+
+
 def _run_summary(run: "Run") -> str:
     if run.error_text:
         return f"error: {run.error_text.strip()}"

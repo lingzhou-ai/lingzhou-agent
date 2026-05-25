@@ -24,7 +24,9 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+from memory.task_store import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
 
 _log = logging.getLogger("lingzhou.task_parallel")
 
@@ -62,6 +64,35 @@ class _ScopedTaskStore:
 
     async def list_tasks(self, *, status: str | None = None, limit: int = 20) -> list[Any]:
         return await self._call("list_tasks", status=status, limit=limit)
+
+    async def list_runnable_tasks(self, limit: int = 20) -> list[Any]:
+        return await self._call("list_runnable_tasks", limit)
+
+    async def list_open_tasks(
+        self,
+        limit: int = 50,
+        *,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> list[Any]:
+        return await self._call("list_open_tasks", limit=limit, statuses=statuses)
+
+    async def find_similar_open_tasks(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        min_score: float = 0.45,
+        exclude_task_ids: list[int] | tuple[int, ...] | set[int] | None = None,
+        statuses: tuple[str, ...] | list[str] | None = None,
+    ) -> list[Any]:
+        return await self._call(
+            "find_similar_open_tasks",
+            query,
+            limit=limit,
+            min_score=min_score,
+            exclude_task_ids=exclude_task_ids,
+            statuses=statuses,
+        )
 
     async def update_status(
         self,
@@ -305,9 +336,38 @@ async def run_tasks_parallel(
 
     _log.info("[task_parallel] 并行启动 %d 个任务: %s", len(valid_specs), [s["id"] for s in valid_specs])
 
+    def _reused_entry(spec: dict[str, Any], task: "Task", score: float) -> dict[str, Any]:
+        spec_id = str(spec.get("id") or task.id)
+        result_text = (
+            f"目标: {spec.get('goal') or task.goal}\n"
+            f"复用已有任务: task#{task.id} [{task.status}] {task.title}\n"
+            f"相似度: {score:.2f}\n"
+            f"下一步: {task.next_step or '（未指定）'}"
+        )
+        return {
+            "tool": f"task.parallel.{spec_id}",
+            "params": {"goal": spec.get("goal") or task.goal, "task_id": task.id},
+            "result": result_text,
+            "summary": f"[{spec_id}/task:{task.id}] reused existing {task.status}: {task.title[:200]}",
+            "error": "",
+            "status": "ok",
+        }
+
     # 先顺序创建所有 Task（写 DB 不适合并发）
-    tasks: list[tuple["Task", dict]] = []
+    scheduled: list[dict[str, Any] | tuple["Task", dict]] = []
+    finder = getattr(loop._task_store, "find_similar_open_tasks", None)
     for spec in valid_specs:
+        if callable(finder):
+            similar_tasks = await cast(Any, finder)(
+                build_task_similarity_query(spec.get("goal")),
+                limit=1,
+                min_score=TASK_DUPLICATE_REUSE_SCORE,
+                exclude_task_ids=[parent_task_id] if parent_task_id else None,
+            )
+            if similar_tasks:
+                existing, score = similar_tasks[0]
+                scheduled.append(_reused_entry(spec, existing, score))
+                continue
         title = f"[并行:{spec['id']}] {spec['goal'][:60]}"
         task_id = await loop._task_store.add_task(
             title,
@@ -319,11 +379,23 @@ async def run_tasks_parallel(
         )
         task = await loop._task_store.get_task_by_id(task_id)
         if task:
-            tasks.append((task, spec))
+            scheduled.append((task, spec))
 
     # 并发执行所有任务
-    results = await asyncio.gather(*[
-        _run_one_task(task, spec, ctx, loop)
-        for task, spec in tasks
-    ])
-    return list(results)
+    entries: list[dict[str, Any] | None] = [None] * len(scheduled)
+    pending_slots: list[int] = []
+    pending_coros: list[Any] = []
+    for index, item in enumerate(scheduled):
+        if isinstance(item, dict):
+            entries[index] = item
+            continue
+        task, spec = item
+        pending_slots.append(index)
+        pending_coros.append(_run_one_task(task, spec, ctx, loop))
+
+    if pending_coros:
+        results = await asyncio.gather(*pending_coros)
+        for slot, result in zip(pending_slots, results):
+            entries[slot] = result
+
+    return [entry for entry in entries if entry is not None]

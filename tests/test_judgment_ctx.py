@@ -508,6 +508,58 @@ def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
     assert "next=拿到源路径后恢复任务并重新验证目录结构" in text
 
 
+def test_runnable_tasks_section_omits_active_task():
+    from core.judgment.context import _fmt_runnable_tasks
+    from memory.task_store import Task
+
+    tasks = [
+        Task(
+            id=10,
+            title="当前活跃任务",
+            status="in_progress",
+            priority="high",
+            created_at="2026-05-15T14:00:00+00:00",
+            goal="正在执行",
+        ),
+        Task(
+            id=11,
+            title="排查远程运行重启循环",
+            status="pending",
+            priority="normal",
+            created_at="2026-05-15T14:00:00+00:00",
+            goal="分析 crash.log",
+            next_step="读取 crash.log 并比对最近一次重启栈",
+        ),
+    ]
+
+    text = _fmt_runnable_tasks(tasks, active_task_id=10)
+    assert "task#10" not in text
+    assert "task#11 [pending/normal] 排查远程运行重启循环" in text
+    assert "next=读取 crash.log 并比对最近一次重启栈" in text
+
+
+def test_similar_tasks_section_exposes_similarity_and_context():
+    from core.judgment.context import _fmt_similar_tasks
+    from memory.task_store import Task
+
+    items = [(
+        Task(
+            id=31,
+            title="排查远程运行重启循环",
+            status="waiting",
+            priority="high",
+            created_at="2026-05-15T14:00:00+00:00",
+            goal="分析 crash.log",
+            next_step="等待新的 crash.log 后继续比对",
+        ),
+        0.81,
+    )]
+
+    text = _fmt_similar_tasks(items)
+    assert "81% task#31 [waiting] 排查远程运行重启循环" in text
+    assert "next=等待新的 crash.log 后继续比对" in text
+
+
 def test_model_routing_section_uses_effective_thinking():
     from core.config import Config
     from core.judgment import JudgmentLayer

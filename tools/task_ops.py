@@ -33,6 +33,7 @@ from tools.registry import (
     CAPS_EXEMPT,
 )
 from memory.semantic import MemoryNode
+from memory.task_store import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
 
 
 def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:
@@ -125,6 +126,37 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     current_step = (params.get("current_step") or "").strip()
     next_step = (params.get("next_step") or "").strip()
     model_tier = (params.get("model_tier") or "").strip()
+    finder = getattr(ctx.task_store, "find_similar_open_tasks", None)
+    if callable(finder):
+        similar_tasks = await finder(
+            build_task_similarity_query(title, goal, next_step),
+            limit=1,
+            min_score=TASK_DUPLICATE_REUSE_SCORE,
+        )
+        if similar_tasks:
+            existing, score = similar_tasks[0]
+            return ToolResult(
+                summary=(
+                    f"发现相似开放任务，复用已有任务: [{existing.id}] {existing.title} "
+                    f"(status={existing.status}, score={score:.2f})"
+                ),
+                evidence=f"task_id={existing.id} similarity={score:.2f}",
+                skipped=True,
+                resource_key=str(existing.id),
+                state_delta={
+                    "task_status": existing.status,
+                    "chain_id": existing.chain_id,
+                    "source": existing.source,
+                },
+                metadata={
+                    "task_id": existing.id,
+                    "chain_id": existing.chain_id,
+                    "parent_task_id": existing.parent_task_id,
+                    "source": existing.source,
+                    "reused_existing_task": True,
+                    "similarity_score": round(score, 3),
+                },
+            )
     task_id = await ctx.task_store.add_task(
         title,
         goal,

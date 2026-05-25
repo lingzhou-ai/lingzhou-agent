@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 from provider.catalog import lookup_model
 from core.execution import action_key_param
 from core.self_model import SelfModel, fmt_self_model
+from memory.task_store import RUNNABLE_TASK_STATUSES, TASK_SIMILARITY_CONTEXT_SCORE
 from tools.registry import tool_has_capability
 from .output import (
     JudgmentOutput,
@@ -55,7 +56,9 @@ from .context import (
     _fmt_probe_sensors,
     _fmt_blind_spots,
     _fmt_recent_runs,
+    _fmt_runnable_tasks,
     _fmt_shell_capabilities,
+    _fmt_similar_tasks,
     _fmt_skill_catalog,
     _fmt_skills,
     _fmt_config_snapshot,
@@ -76,6 +79,36 @@ _log = logging.getLogger("lingzhou.judgment")
 _MEMORY_ASSERTIVE_PHRASE_RE = re.compile(
     r"(我还?记得|我记着|你之前说过|之前你说过|你之前提过|之前你提过)"
 )
+
+
+async def _load_runnable_tasks_snapshot(task_store: Any, *, limit: int = 8) -> list[Any]:
+    list_runnable = getattr(task_store, "list_runnable_tasks", None)
+    if callable(list_runnable):
+        return await cast(Any, list_runnable)(limit=limit)
+    list_tasks = getattr(task_store, "list_tasks", None)
+    if not callable(list_tasks):
+        return []
+    tasks = await cast(Any, list_tasks)(limit=limit)
+    return [task for task in tasks if getattr(task, "status", "") in RUNNABLE_TASK_STATUSES][:limit]
+
+
+async def _load_similar_tasks_snapshot(
+    task_store: Any,
+    query: str,
+    *,
+    active_task: Any = None,
+    limit: int = 5,
+) -> list[tuple[Any, float]]:
+    finder = getattr(task_store, "find_similar_open_tasks", None)
+    if not callable(finder) or not str(query or "").strip():
+        return []
+    exclude_task_ids = [active_task.id] if active_task is not None else None
+    return await cast(Any, finder)(
+        query,
+        limit=limit,
+        min_score=TASK_SIMILARITY_CONTEXT_SCORE,
+        exclude_task_ids=exclude_task_ids,
+    )
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -1190,6 +1223,7 @@ class JudgmentLayer:
             asyncio.create_task(task_store.list_runs(task_id=task.id, limit=6))
             if task else None
         )
+        runnable_tasks_task = asyncio.create_task(_load_runnable_tasks_snapshot(task_store, limit=8))
         waiting_tasks_task = asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
         durable_failure_task = asyncio.create_task(_load_durable_failure_snapshot(task_store))
         context_facts_task = asyncio.create_task(_load_context_facts_snapshot(
@@ -1219,6 +1253,7 @@ class JudgmentLayer:
         if recent_runs_task is not None:
             parallel_fetches.append(("recent_runs", recent_runs_task))
         parallel_fetches.extend([
+            ("runnable_tasks", runnable_tasks_task),
             ("waiting_tasks", waiting_tasks_task),
             ("durable_failure_snapshot", durable_failure_task),
             ("context_facts", context_facts_task),
@@ -1244,6 +1279,7 @@ class JudgmentLayer:
 
         episodic_text = parallel_data["episodic_text"]
         recent_runs = parallel_data.get("recent_runs", [])
+        runnable_tasks = parallel_data["runnable_tasks"]
         waiting_tasks = parallel_data["waiting_tasks"]
         durable_failure_snapshot = parallel_data["durable_failure_snapshot"]
         context_facts = parallel_data["context_facts"]
@@ -1251,6 +1287,7 @@ class JudgmentLayer:
         failures = parallel_data["failures"]
 
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
+        similar_tasks = await _load_similar_tasks_snapshot(task_store, search_query, active_task=task, limit=5)
         episodic_search = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if task_id_str and search_query else ""
@@ -1347,6 +1384,8 @@ class JudgmentLayer:
             "task_section": _fmt_task(task),
             "task_facts_section": _fmt_context_facts(context_facts),
             "waiting_tasks_section": _fmt_waiting_tasks(waiting_tasks),
+            "runnable_tasks_section": _fmt_runnable_tasks(runnable_tasks, active_task_id=task.id if task else None),
+            "similar_tasks_section": _fmt_similar_tasks(similar_tasks),
             "recent_runs_section": _fmt_recent_runs(recent_runs),
             "emotion_valence": f"{emotion.valence:.2f}",
             "emotion_arousal": f"{emotion.arousal:.2f}",
@@ -1531,6 +1570,7 @@ def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) ->
             asyncio.create_task(task_store.list_runs(task_id=task.id, limit=6))
             if task else None
         )
+        runnable_tasks_task = asyncio.create_task(_load_runnable_tasks_snapshot(task_store, limit=8))
         waiting_tasks_task = asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
         durable_failure_task = asyncio.create_task(_load_durable_failure_snapshot(task_store))
         context_facts_task = asyncio.create_task(_load_context_facts_snapshot(
@@ -1556,6 +1596,7 @@ def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) ->
         # 统一收口并发上下文抓取，避免前一路异常时后续任务异常/结果无人消费。
         parallel_fetches: list[tuple[str, Any]] = [
             ("episodic_text", episodic_text_future),
+            ("runnable_tasks", runnable_tasks_task),
             ("waiting_tasks", waiting_tasks_task),
             ("durable_failure_snapshot", durable_failure_task),
             ("context_facts", context_facts_task),
@@ -1583,6 +1624,7 @@ def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) ->
 
         episodic_text = parallel_data["episodic_text"]
         recent_runs = parallel_data.get("recent_runs", [])
+        runnable_tasks = parallel_data["runnable_tasks"]
         waiting_tasks = parallel_data["waiting_tasks"]
         durable_failure_snapshot = parallel_data["durable_failure_snapshot"]
         context_facts = parallel_data["context_facts"]
@@ -1590,6 +1632,7 @@ def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) ->
         failures = parallel_data["failures"]
 
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
+        similar_tasks = await _load_similar_tasks_snapshot(task_store, search_query, active_task=task, limit=5)
         episodic_search = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if search_query else ""
@@ -1686,6 +1729,8 @@ def _apply_memory_honesty_guard(output: JudgmentOutput, *, context_text: str) ->
             "task_section": _fmt_task(task),
             "task_facts_section": _fmt_context_facts(context_facts),
             "waiting_tasks_section": _fmt_waiting_tasks(waiting_tasks),
+            "runnable_tasks_section": _fmt_runnable_tasks(runnable_tasks, active_task_id=task.id if task else None),
+            "similar_tasks_section": _fmt_similar_tasks(similar_tasks),
             "recent_runs_section": _fmt_recent_runs(recent_runs),
             "emotion_valence": f"{emotion.valence:.2f}",
             "emotion_arousal": f"{emotion.arousal:.2f}",

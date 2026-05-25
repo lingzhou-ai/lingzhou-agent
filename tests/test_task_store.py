@@ -118,6 +118,74 @@ def test_task_store_run_lifecycle():
     asyncio.run(_task_store_run_lifecycle())
 
 
+def test_task_store_find_similar_open_tasks():
+    asyncio.run(_task_store_find_similar_open_tasks())
+
+
+async def _task_store_find_similar_open_tasks():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "similar.db")
+        await store.open()
+
+        open_id = await store.add_task(
+            "排查远程运行重启循环",
+            goal="分析 crash.log 并修复远程服务重启问题",
+            source="external",
+        )
+        await store.add_task(
+            "排查远程运行重启循环",
+            goal="历史已完成任务",
+            status="done",
+            source="external",
+        )
+
+        hits = await store.find_similar_open_tasks("解决远程运行重启循环", limit=3)
+
+        assert hits
+        assert hits[0][0].id == open_id
+        assert all(task.status != "done" for task, _ in hits)
+
+        await store.close()
+
+
+def test_task_add_reuses_similar_open_task():
+    asyncio.run(_task_add_reuses_similar_open_task())
+
+
+async def _task_add_reuses_similar_open_task():
+    from memory.task_store import TaskStore
+    from tools.task_ops import task_add
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "task-add-reuse.db")
+        await store.open()
+
+        existing_id = await store.add_task(
+            "排查远程运行重启循环",
+            goal="分析 crash.log 并修复远程运行重启循环",
+            source="external",
+        )
+        ctx = _tool_ctx(task_store=store)
+
+        result = await task_add(
+            {
+                "title": "解决远程运行一直重启",
+                "goal": "分析 crash.log 并修复远程运行重启循环",
+            },
+            ctx,
+        )
+
+        assert result.skipped is True
+        assert result.metadata.get("task_id") == existing_id
+        assert result.metadata.get("reused_existing_task") is True
+        tasks = await store.list_tasks(limit=10)
+        assert len(tasks) == 1
+
+        await store.close()
+
+
 async def _task_store_run_lifecycle():
     from memory.task_store import TaskStore
 

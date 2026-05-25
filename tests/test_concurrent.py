@@ -468,6 +468,54 @@ async def _run_tasks_parallel_each_task_sees_own_active():
         await store.close()
 
 
+def test_run_tasks_parallel_reuses_similar_open_task():
+    asyncio.run(_run_tasks_parallel_reuses_similar_open_task())
+
+
+async def _run_tasks_parallel_reuses_similar_open_task():
+    from memory.task_store import TaskStore
+    from core.loop.task_parallel import run_tasks_parallel
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "parallel-reuse.db")
+        await store.open()
+
+        existing_id = await store.add_task(
+            "排查远程运行重启循环",
+            goal="分析 crash.log 并修复远程运行重启循环",
+            source="internal",
+        )
+
+        class _UnusedJudgment:
+            async def decide_continue(self, **kwargs):
+                raise AssertionError("复用已有任务时不应进入新的子任务 judgment")
+
+        class _UnusedExecution:
+            async def dispatch(self, output, ctx):
+                raise AssertionError("复用已有任务时不应执行新的 dispatch")
+
+        loop = SimpleNamespace(
+            _judgment=_UnusedJudgment(),
+            _execution=_UnusedExecution(),
+            _task_store=store,
+        )
+        ctx = _tool_ctx(task_store=store)
+
+        entries = await run_tasks_parallel(
+            [{"id": "alpha", "goal": "解决远程运行重启循环", "tools": [], "max_rounds": 3}],
+            ctx,
+            cast(Any, loop),
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["params"]["task_id"] == existing_id
+        assert "reused existing" in entries[0]["summary"]
+        tasks = await store.list_tasks(limit=10)
+        assert len(tasks) == 1
+
+        await store.close()
+
+
 # ── 4. aiosqlite 并发写不同行测试 ────────────────────────────────────────────
 
 def test_aiosqlite_concurrent_writes_different_rows():

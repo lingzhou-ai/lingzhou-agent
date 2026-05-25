@@ -347,6 +347,14 @@ def test_judgment_prompt_includes_json_first_runtime_db_hint():
     assert "json_extract(data, '$.goal')" in prompt
 
 
+def test_judgment_prompt_includes_existing_task_dedup_rules():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+
+    assert "### 其他开放任务" in prompt
+    assert "### 相似开放任务" in prompt
+    assert "在调用 `task.add` 或 `delegate_tasks` 前" in prompt
+
+
 def test_chat_read_line_prefers_text_input(monkeypatch):
     from cli.chat import _read_line
 
