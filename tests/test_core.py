@@ -216,6 +216,143 @@ def test_reference_resolver_retrieve_candidates_uses_recent_pool_without_time_pa
 
 
 @pytest.mark.asyncio
+async def test_reference_resolver_resolve_current_speaker_prefers_memory_and_interaction_cues_over_chat_id():
+    from core.reference import ReferenceResolver
+    from memory.semantic import MemoryNode, SemanticMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d), decay_lambda=0.0)
+        semantic.upsert(MemoryNode(
+            id="interlocutor-bat",
+            kind="interlocutor",
+            title="bat",
+            body="偏好线索: 喜欢直接结论\n识别依据: 之前多次自称 bat",
+            tags=["interlocutor_profile", "interlocutor:interlocutor-bat", "alias:bat", "handle:wechat:legacy-bat"],
+            source="interlocutor_profile",
+        ))
+        semantic.upsert(MemoryNode(
+            id="interlocutor-luna",
+            kind="interlocutor",
+            title="luna",
+            body="偏好线索: 喜欢展开分析",
+            tags=["interlocutor_profile", "interlocutor:interlocutor-luna", "alias:luna", "handle:wechat:luna"],
+            source="interlocutor_profile",
+        ))
+
+        resolver = ReferenceResolver()
+        speaker = await resolver.resolve_current_speaker(
+            "以后还是叫我 bat，直接说结论就行。",
+            semantic,
+            chat_id="wechat:new-thread",
+            recent_turns=[
+                {"role": "user", "content": "上次我说过叫我 bat。"},
+                {"role": "assistant", "content": "好的，我会尽量先给结论。"},
+            ],
+            chat_continuity="之前这个人反复强调先说结论，称呼用 bat。",
+        )
+
+        assert speaker is not None
+        assert speaker.node_id == "interlocutor-bat"
+        assert speaker.title == "bat"
+        assert speaker.provisional is False
+
+
+@pytest.mark.asyncio
+async def test_reference_resolver_remember_speaker_persists_person_scoped_profile_and_facts():
+    from core.reference import ReferenceResolver, ResolvedSpeaker
+    from memory.semantic import SemanticMemory
+
+    class FactStoreStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
+            self.calls.append((key, value, scope))
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d), decay_lambda=0.0)
+        facts = FactStoreStub()
+        resolver = ReferenceResolver()
+
+        await resolver.remember_speaker(
+            ResolvedSpeaker(
+                node_id="interlocutor-bat",
+                title="bat",
+                confidence=0.84,
+                snippet="偏好先给结论。",
+                evidence=["当前消息自称 bat", "最近对话反复强调先给结论"],
+                relationship_note="画像与近期交互高度一致",
+                signal_types=["self_name", "recent_turn"],
+                provisional=False,
+                search_anchors=["bat", "先给结论"],
+            ),
+            semantic,
+            cast(Any, facts),
+            message="以后还是叫我 bat，先给结论，记住这一点。",
+            chat_id="wechat:chat-1",
+            task_id="42",
+        )
+
+        stored = semantic.get("interlocutor-bat")
+        assert stored is not None
+        assert stored.title == "bat"
+        assert "偏好线索: 以后还是叫我 bat，先给结论，记住这一点" in stored.body or "偏好线索: 以后还是叫我 bat，先给结论" in stored.body
+        assert "interlocutor_profile" in stored.tags
+        assert "handle:wechat:chat-1" in stored.tags
+        fact_keys = {key for key, _, _ in facts.calls}
+        assert "chat:wechat:chat-1:interlocutor_profile_id" in fact_keys
+        assert "task:42:interlocutor_profile_id" in fact_keys
+        assert "interlocutor:interlocutor-bat:display_name" in fact_keys
+
+
+@pytest.mark.asyncio
+async def test_reference_resolver_remember_speaker_captures_interlocutor_source_traits():
+    from core.reference import ReferenceResolver, ResolvedSpeaker
+    from memory.semantic import SemanticMemory
+
+    class FactStoreStub:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
+            self.calls.append((key, value, scope))
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d), decay_lambda=0.0)
+        facts = FactStoreStub()
+        resolver = ReferenceResolver()
+
+        await resolver.remember_speaker(
+            ResolvedSpeaker(
+                node_id="interlocutor-ops-bot",
+                title="ops-bot",
+                confidence=0.82,
+                snippet="来自 webhook 的 agent，偏好直接同步结果。",
+                evidence=["当前消息自称 agent", "chat 来自 wechat 通道"],
+                relationship_note="来源特征与表达方式一致",
+                signal_types=["self_name", "source_trait"],
+                provisional=False,
+                search_anchors=["ops-bot", "agent"],
+            ),
+            semantic,
+            cast(Any, facts),
+            message="我是 ops-bot，这次作为 agent 直接同步结果。",
+            chat_id="wechat:chat-9",
+            task_id="84",
+            source_hint="gateway:webhook agent",
+        )
+
+        stored = semantic.get("interlocutor-ops-bot")
+        assert stored is not None
+        assert "来源特征: channel=wechat" in stored.body
+        assert "来源特征: route=gateway:webhook agent" in stored.body
+        assert any(tag == "counterparty=agent" for tag in stored.tags)
+        assert any(tag == "channel=wechat" for tag in stored.tags)
+        fact_keys = {key for key, _, _ in facts.calls}
+        assert any(key.startswith("interlocutor:interlocutor-ops-bot:source_trait:") for key in fact_keys)
+
+
+@pytest.mark.asyncio
 async def test_reference_resolver_llm_reason_exposes_candidate_created_at():
     from core.reference import ReferenceResolver
 

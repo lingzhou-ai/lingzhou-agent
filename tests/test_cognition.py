@@ -555,6 +555,7 @@ async def _self_drive_signal_bypasses_idle_judge_aggregation():
                 cycle=1,
                 user_message="",
                 active_task=None,
+                chat_id=None,
                 prep=_TickJudgmentPrep(
                     percept=None,
                     perception_replay=None,
@@ -1060,6 +1061,94 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
             node = semantic.get(f"event-task{task_id}-{ts_label}")
             assert node is not None
             assert node.title == f"[{ts_label}] task#{task_id} 事件任务"
+        finally:
+            await store.close()
+
+
+def test_post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
+    asyncio.run(_post_tick_memory_crystallizes_chat_summary_and_records_chat_turns())
+
+
+async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
+    import hashlib
+
+    from core.loop.tick import _post_tick_memory_impl
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("chat 任务", goal="write chat summary", status="in_progress")
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+
+            episodic = EpisodicMemory(root / "memory")
+            semantic = SemanticMemory(root / "semantic")
+            loop = cast(Any, SimpleNamespace(
+                _task_store=store,
+                _episodic=episodic,
+                _semantic=semantic,
+                _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
+                _wm=SimpleNamespace(add=lambda item: None),
+                _cfg=SimpleNamespace(
+                    thresholds=SimpleNamespace(wm_pri_insight=0.8),
+                    memory=SimpleNamespace(chat_crystallize_every=1),
+                    emotion=SimpleNamespace(),
+                ),
+            ))
+            action = cast(Any, SimpleNamespace(
+                chosen_action_id="",
+                params={},
+                reflection="用户想延续这个 chat 里的远程部署排查。",
+                rationale="先记录 chat 维度记忆。",
+                reply_to_user="好的，我继续沿着这个 chat 的部署问题往下查。",
+            ))
+            result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
+            await store.set_fact("chat:wechat:chat-1:interlocutor_profile_id", "interlocutor-bat", scope="profile")
+
+            await _post_tick_memory_impl(
+                loop,
+                action,
+                result,
+                active_task,
+                cycle=1,
+                user_message="继续排查刚才这个部署问题",
+                chat_id="wechat:chat-1",
+            )
+
+            ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+            digest = hashlib.md5("wechat:chat-1".encode("utf-8")).hexdigest()[:12]
+            node = semantic.get(f"chat-summary-{digest}-{ts_label}")
+            assert node is not None
+            assert node.kind == "chat_summary"
+            assert node.source == "chat_summary"
+            assert "chat:wechat:chat-1" in node.tags
+            assert "继续排查刚才这个部署问题" in node.body
+
+            chat_text = episodic.load_for_chat_context("wechat:chat-1", max_chars=2000)
+            assert "继续排查刚才这个部署问题" in chat_text
+            assert "好的，我继续沿着这个 chat 的部署问题往下查。" in chat_text
+            assert "先记录 chat 维度记忆。" not in chat_text
+
+            interlocutor_text = episodic.load_for_interlocutor_context("interlocutor-bat", max_chars=2000)
+            assert "继续排查刚才这个部署问题" in interlocutor_text
+            assert "好的，我继续沿着这个 chat 的部署问题往下查。" in interlocutor_text
+
+            turns = episodic.get_recent_turns(limit=5, chat_id="wechat:chat-1")
+            assert [turn["content"] for turn in turns] == [
+                "继续排查刚才这个部署问题",
+                "好的，我继续沿着这个 chat 的部署问题往下查。",
+            ]
+
+            interlocutor_turns = episodic.get_recent_turns(limit=5, interlocutor_id="interlocutor-bat")
+            assert [turn["content"] for turn in interlocutor_turns] == [
+                "继续排查刚才这个部署问题",
+                "好的，我继续沿着这个 chat 的部署问题往下查。",
+            ]
         finally:
             await store.close()
 

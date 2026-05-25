@@ -622,8 +622,9 @@ class CognitionLoop:
         active_task: Any,
         cycle: int,
         user_message: str,
+        chat_id: str | None = None,
     ) -> None:
-        await _post_tick_memory_impl(self, action, result, active_task, cycle, user_message)
+        await _post_tick_memory_impl(self, action, result, active_task, cycle, user_message, chat_id)
 
     @property
     def task_store(self) -> TaskStore:

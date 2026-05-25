@@ -78,6 +78,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 
 _STABLE_MEMORY_KINDS = frozenset({
     "fact",
+    "interlocutor",
     "person",
     "daily_summary",
     "task_summary",
@@ -204,8 +205,66 @@ class SemanticMemory:
             self._migrate()             # 迁移机制：幂等 ALTER TABLE，补齐新列
             # On startup: sync any json nodes missing from DB (idempotent)
             self._sync_from_files()
+            self._migrate_interlocutor_profiles()
             # P1-C: 启动时校验索引健康度，不一致则自动重建，保障连续性
             self._validate_and_repair_index()
+
+    @staticmethod
+    def _normalize_interlocutor_tags(tags: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in tags:
+            tag = str(raw or "").strip()
+            if not tag:
+                continue
+            if tag == "person_profile":
+                tag = "interlocutor_profile"
+            elif tag.startswith("person:"):
+                tag = "interlocutor:" + tag.split(":", 1)[1]
+            if tag not in seen:
+                seen.add(tag)
+                normalized.append(tag)
+        return normalized
+
+    @classmethod
+    def _is_legacy_interlocutor_profile(cls, node: MemoryNode) -> bool:
+        tags = {str(tag or "").strip() for tag in (node.tags or [])}
+        return bool(
+            node.kind == "person"
+            and (
+                getattr(node, "source", "") in {"user_profile", "person_profile"}
+                or "person_profile" in tags
+                or any(tag.startswith("person:") for tag in tags)
+                or any(tag.startswith("handle:") for tag in tags)
+            )
+        )
+
+    def _migrate_interlocutor_profiles(self) -> None:
+        migrated = 0
+        for path in self._dir.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                node = MemoryNode.from_dict(payload)
+            except Exception:
+                continue
+            if not self._is_legacy_interlocutor_profile(node):
+                continue
+
+            new_tags = self._normalize_interlocutor_tags(list(node.tags or []))
+            new_source = "interlocutor_profile" if (node.source or "") in {"", "user_profile", "person_profile"} else node.source
+            changed = bool(node.kind != "interlocutor" or new_tags != list(node.tags or []) or new_source != node.source)
+            if not changed:
+                continue
+
+            migrated += 1
+            node.kind = "interlocutor"
+            node.tags = new_tags
+            node.source = new_source
+            path.write_text(json.dumps(node.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            self._db_upsert(node)
+
+        if migrated:
+            _log.info("[semantic] 已迁移 %d 个旧 person_profile 节点到 interlocutor_profile", migrated)
 
     @property
     def _conn(self) -> sqlite3.Connection:

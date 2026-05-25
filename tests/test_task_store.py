@@ -686,4 +686,48 @@ async def _task_store_migration():
         await store.close()
 
 
+def test_task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope():
+    asyncio.run(_task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope())
+
+
+async def _task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        db_path = Path(d) / "legacy-facts.db"
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.executescript("""
+                CREATE TABLE IF NOT EXISTS facts (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT '',
+                    scope TEXT NOT NULL DEFAULT 'general',
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+            """)
+            await db.execute(
+                "INSERT INTO facts (key, value, scope, updated_at) VALUES (?, ?, ?, datetime('now'))",
+                ("chat:wechat:chat-1:person_profile_id", "person-bat", "profile"),
+            )
+            await db.execute(
+                "INSERT INTO facts (key, value, scope, updated_at) VALUES (?, ?, ?, datetime('now'))",
+                ("user:person-bat:display_name", "bat", "profile"),
+            )
+            await db.commit()
+
+        store = TaskStore(db_path)
+        await store.open()
+        try:
+            new_chat_key = await store.get_fact("chat:wechat:chat-1:interlocutor_profile_id")
+            new_display_key = await store.get_fact("interlocutor:person-bat:display_name")
+            old_chat_key = await store.get_fact("chat:wechat:chat-1:person_profile_id")
+            old_display_key = await store.get_fact("user:person-bat:display_name")
+
+            assert new_chat_key == ("person-bat", True)
+            assert new_display_key == ("bat", True)
+            assert old_chat_key == ("", False)
+            assert old_display_key == ("", False)
+        finally:
+            await store.close()
+
+
 # ══════════════════════════════════════════════════════════════════════════════

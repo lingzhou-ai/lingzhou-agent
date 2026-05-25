@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 import logging
 import re
@@ -69,6 +70,8 @@ CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(event_type, id DESC);
 CREATE TABLE IF NOT EXISTS narrative (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id     TEXT,
+    chat_id     TEXT,
+    interlocutor_id TEXT,
     role        TEXT NOT NULL,
     source_type TEXT NOT NULL,
     content     TEXT NOT NULL,
@@ -78,12 +81,16 @@ CREATE TABLE IF NOT EXISTS narrative (
 CREATE VIRTUAL TABLE IF NOT EXISTS narrative_fts USING fts5(
     id UNINDEXED,
     task_id,
+    chat_id,
+    interlocutor_id,
     role,
     content,
     tokenize='unicode61'
 );
 -- 查询索引（幂等，DDL 统一管理）
 CREATE INDEX IF NOT EXISTS idx_narrative_task_id ON narrative(task_id);
+CREATE INDEX IF NOT EXISTS idx_narrative_chat_id ON narrative(chat_id);
+CREATE INDEX IF NOT EXISTS idx_narrative_interlocutor_id ON narrative(interlocutor_id);
 CREATE INDEX IF NOT EXISTS idx_narrative_ts ON narrative(ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
@@ -95,6 +102,10 @@ class EpisodicMemory:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._narrative_dir = self._dir / "episodic"
         self._narrative_dir.mkdir(parents=True, exist_ok=True)
+        self._chat_dir = self._narrative_dir / "chat"
+        self._chat_dir.mkdir(parents=True, exist_ok=True)
+        self._interlocutor_dir = self._narrative_dir / "interlocutor"
+        self._interlocutor_dir.mkdir(parents=True, exist_ok=True)
         self._daily_dir = self._narrative_dir / "daily"
         self._daily_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_narrative_files()
@@ -158,12 +169,14 @@ class EpisodicMemory:
         try:
             conn = self._connect()
             conn.executescript(_DDL)
+            self._ensure_schema_compat(conn)
             conn.commit()
             return conn
         except sqlite3.DatabaseError:
             self._db_path.unlink(missing_ok=True)
             conn = self._connect()
             conn.executescript(_DDL)
+            self._ensure_schema_compat(conn)
             conn.commit()
             return conn
 
@@ -171,6 +184,46 @@ class EpisodicMemory:
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_schema_compat(self, conn: sqlite3.Connection) -> None:
+        narrative_columns = set(self._table_columns(conn, "narrative"))
+        if "chat_id" not in narrative_columns:
+            conn.execute("ALTER TABLE narrative ADD COLUMN chat_id TEXT")
+        if "interlocutor_id" not in narrative_columns:
+            conn.execute("ALTER TABLE narrative ADD COLUMN interlocutor_id TEXT")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_narrative_chat_id ON narrative(chat_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_narrative_interlocutor_id ON narrative(interlocutor_id)")
+
+        fts_columns = set(self._table_columns(conn, "narrative_fts"))
+        if "chat_id" not in fts_columns or "interlocutor_id" not in fts_columns:
+            self._rebuild_narrative_fts(conn)
+
+    @staticmethod
+    def _table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        except Exception:
+            return []
+        return [str(row[1]) for row in rows]
+
+    def _rebuild_narrative_fts(self, conn: sqlite3.Connection) -> None:
+        conn.execute("DROP TABLE IF EXISTS narrative_fts")
+        conn.execute(
+            "CREATE VIRTUAL TABLE narrative_fts USING fts5("
+            " id UNINDEXED,"
+            " task_id,"
+            " chat_id,"
+            " interlocutor_id,"
+            " role,"
+            " content,"
+            " tokenize='unicode61'"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO narrative_fts(id, task_id, chat_id, interlocutor_id, role, content) "
+            "SELECT id, COALESCE(task_id, ''), COALESCE(chat_id, ''), COALESCE(interlocutor_id, ''), role, content FROM narrative"
+        )
 
     def _migrate_from_jsonl(self) -> None:
         """一次性：将历史 events.jsonl 导入 SQLite events 表（幂等，count>0 时跳过）。"""
@@ -206,6 +259,20 @@ class EpisodicMemory:
         return f"task-{task_id}.md" if task_id else "global.md"
 
     @staticmethod
+    def _chat_filename(chat_id: str) -> str:
+        normalized = re.sub(r"[^0-9A-Za-z._-]+", "_", str(chat_id or "")).strip("._-")
+        slug = normalized[:48] or "chat"
+        digest = hashlib.md5(str(chat_id).encode("utf-8")).hexdigest()[:10]
+        return f"chat-{slug}-{digest}.md"
+
+    @staticmethod
+    def _interlocutor_filename(interlocutor_id: str) -> str:
+        normalized = re.sub(r"[^0-9A-Za-z._-]+", "_", str(interlocutor_id or "")).strip("._-")
+        slug = normalized[:48] or "interlocutor"
+        digest = hashlib.md5(str(interlocutor_id).encode("utf-8")).hexdigest()[:10]
+        return f"interlocutor-{slug}-{digest}.md"
+
+    @staticmethod
     def _daily_filename(day_stamp: str) -> str:
         return f"{day_stamp}.md"
 
@@ -218,6 +285,14 @@ class EpisodicMemory:
         return Path(memory_dir) / "episodic" / "daily" / cls._daily_filename(day_stamp)
 
     @classmethod
+    def chat_path_for_dir(cls, memory_dir: Path, chat_id: str) -> Path:
+        return Path(memory_dir) / "episodic" / "chat" / cls._chat_filename(chat_id)
+
+    @classmethod
+    def interlocutor_path_for_dir(cls, memory_dir: Path, interlocutor_id: str) -> Path:
+        return Path(memory_dir) / "episodic" / "interlocutor" / cls._interlocutor_filename(interlocutor_id)
+
+    @classmethod
     def legacy_narrative_path_for_dir(cls, memory_dir: Path, task_id: str | None) -> Path:
         return Path(memory_dir) / cls._narrative_filename(task_id)
 
@@ -226,6 +301,12 @@ class EpisodicMemory:
 
     def _daily_path(self, day_stamp: str) -> Path:
         return self.daily_path_for_dir(self._dir, day_stamp)
+
+    def _chat_path(self, chat_id: str) -> Path:
+        return self.chat_path_for_dir(self._dir, chat_id)
+
+    def _interlocutor_path(self, interlocutor_id: str) -> Path:
+        return self.interlocutor_path_for_dir(self._dir, interlocutor_id)
 
     def _legacy_task_path(self, task_id: str | None) -> Path:
         return self.legacy_narrative_path_for_dir(self._dir, task_id)
@@ -281,6 +362,8 @@ class EpisodicMemory:
         self,
         *,
         task_id: str | None,
+        chat_id: str | None,
+        interlocutor_id: str | None,
         role: str,
         source_type: str,
         content: str,
@@ -288,9 +371,9 @@ class EpisodicMemory:
         ts: str,
     ) -> int:
         cur = self._conn.execute(
-            "INSERT INTO narrative(task_id, role, source_type, content, affect, ts)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, role, source_type, content, affect_json, ts),
+            "INSERT INTO narrative(task_id, chat_id, interlocutor_id, role, source_type, content, affect, ts)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, chat_id, interlocutor_id, role, source_type, content, affect_json, ts),
         )
         self._conn.commit()
         return int(cur.lastrowid or 0)
@@ -300,12 +383,14 @@ class EpisodicMemory:
         *,
         row_id: int,
         task_id: str | None,
+        chat_id: str | None,
+        interlocutor_id: str | None,
         role: str,
         content: str,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO narrative_fts(id, task_id, role, content) VALUES (?, ?, ?, ?)",
-            (row_id, task_id or "", role, content),
+            "INSERT INTO narrative_fts(id, task_id, chat_id, interlocutor_id, role, content) VALUES (?, ?, ?, ?, ?, ?)",
+            (row_id, task_id or "", chat_id or "", interlocutor_id or "", role, content),
         )
         self._conn.commit()
 
@@ -316,12 +401,19 @@ class EpisodicMemory:
         task_id: str | None = None,
         source_type: str = "",
         affect: dict[str, Any] | None = None,
+        *,
+        chat_id: str | None = None,
+        interlocutor_id: str | None = None,
     ) -> None:
         """追加一条情节记录（Tulving 1983 四元素绑定）。"""
         ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         src = source_type or _source_from_role(role)
 
         meta_parts = [f"role={role}", f"src={src}"]
+        if chat_id:
+            meta_parts.append(f"chat={chat_id}")
+        if interlocutor_id:
+            meta_parts.append(f"interlocutor={interlocutor_id}")
         if affect:
             v = affect.get("valence")
             a = affect.get("arousal")
@@ -333,6 +425,10 @@ class EpisodicMemory:
 
         # 1. 写 .md（人类可读叙事，LLM context 注入源）
         self._append_markdown_block(self._task_path(task_id), block)
+        if chat_id and role in {"user", "assistant_reply"}:
+            self._append_markdown_block(self._chat_path(chat_id), block)
+        if interlocutor_id and role in {"user", "assistant_reply"}:
+            self._append_markdown_block(self._interlocutor_path(interlocutor_id), block)
         self._append_markdown_block(self._daily_path(self._day_stamp_from_ts(ts)), block)
 
         affect_json = json.dumps(affect, ensure_ascii=False) if affect else None
@@ -342,6 +438,8 @@ class EpisodicMemory:
             try:
                 row_id = self._insert_narrative_row(
                     task_id=task_id,
+                    chat_id=chat_id,
+                    interlocutor_id=interlocutor_id,
                     role=role,
                     source_type=src,
                     content=content,
@@ -357,11 +455,28 @@ class EpisodicMemory:
                 self._sync_narrative_fts(
                     row_id=row_id,
                     task_id=task_id,
+                    chat_id=chat_id,
+                    interlocutor_id=interlocutor_id,
                     role=role,
                     content=content,
                 )
             except Exception as _fts_err:
                 _log.warning("[episodic] FTS5 写入失败（narrative 已提交，search 将退回 .md 扫描）: %s", _fts_err)
+
+    @staticmethod
+    def _load_markdown_context(path: Path, max_chars: int = 4000) -> str:
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8")
+        if len(text) <= max_chars:
+            return text
+        head_chars = max_chars // 4
+        tail_chars = max_chars - head_chars - 60
+        head = text[:head_chars]
+        tail = text[-tail_chars:]
+        omitted = len(text) - head_chars - tail_chars
+        sep = f"\n\n… （省略约 {omitted} 字符的中间部分）…\n\n"
+        return head + sep + tail
 
     def load_for_context(self, task_id: str | None, max_chars: int = 4000) -> str:
         """读取情节记忆，注入 LLM context。
@@ -373,19 +488,19 @@ class EpisodicMemory:
           head:tail = 1:3，尾部权重更高（近期上下文更重要）。
         比纯末尾截断保留了任务起点信息，避免 LLM 对长任务"失忆"。
         """
-        path = self._resolve_task_path(task_id)
-        if not path.exists():
+        return self._load_markdown_context(self._resolve_task_path(task_id), max_chars)
+
+    def load_for_chat_context(self, chat_id: str | None, max_chars: int = 4000) -> str:
+        """读取 chat 维度的情节连续性，跨 task 保留同一 chat 的完整对话线索。"""
+        if not chat_id:
             return ""
-        text = path.read_text(encoding="utf-8")
-        if len(text) <= max_chars:
-            return text
-        head_chars = max_chars // 4
-        tail_chars = max_chars - head_chars - 60  # 60 for separator
-        head = text[:head_chars]
-        tail = text[-tail_chars:]
-        omitted = len(text) - head_chars - tail_chars
-        sep = f"\n\n… （省略约 {omitted} 字符的中间部分）…\n\n"
-        return head + sep + tail
+        return self._load_markdown_context(self._chat_path(chat_id), max_chars)
+
+    def load_for_interlocutor_context(self, interlocutor_id: str | None, max_chars: int = 4000) -> str:
+        """读取当前交互对象维度的情节连续性，跨 chat 保留同一对象的互动片段。"""
+        if not interlocutor_id:
+            return ""
+        return self._load_markdown_context(self._interlocutor_path(interlocutor_id), max_chars)
 
     def load_for_task_narrative(self, task_id: str | None, max_chars: int = 4000) -> str:
         """任务叙事模式（Ricoeur 1984）：跨 chat 读取该任务的完整情节流。"""
@@ -501,8 +616,11 @@ class EpisodicMemory:
 
     def get_recent_turns(
         self,
-        task_id: str | None,
+        task_id: str | None = None,
         limit: int = 3,
+        *,
+        chat_id: str | None = None,
+        interlocutor_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """从 narrative 表返回最近 limit 条对话轮次（用户消息 + 智能体回复）。
 
@@ -517,7 +635,28 @@ class EpisodicMemory:
         """
         with self._db_session():
             try:
-                if task_id:
+                if chat_id and interlocutor_id:
+                    sql = (
+                        "SELECT role, content, ts, affect FROM narrative "
+                        "WHERE chat_id = ? AND interlocutor_id = ? AND role IN ('user', 'assistant_reply') "
+                        "ORDER BY id DESC LIMIT ?"
+                    )
+                    rows = self._conn.execute(sql, (chat_id, interlocutor_id, limit)).fetchall()
+                elif chat_id:
+                    sql = (
+                        "SELECT role, content, ts, affect FROM narrative "
+                        "WHERE chat_id = ? AND role IN ('user', 'assistant_reply') "
+                        "ORDER BY id DESC LIMIT ?"
+                    )
+                    rows = self._conn.execute(sql, (chat_id, limit)).fetchall()
+                elif interlocutor_id:
+                    sql = (
+                        "SELECT role, content, ts, affect FROM narrative "
+                        "WHERE interlocutor_id = ? AND role IN ('user', 'assistant_reply') "
+                        "ORDER BY id DESC LIMIT ?"
+                    )
+                    rows = self._conn.execute(sql, (interlocutor_id, limit)).fetchall()
+                elif task_id:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE task_id = ? AND role IN ('user', 'assistant_reply') "
@@ -559,7 +698,7 @@ class EpisodicMemory:
         with self._db_session():
             try:
                 rows = self._conn.execute(
-                    "SELECT task_id, role, content, ts FROM narrative ORDER BY id DESC LIMIT ?",
+                    "SELECT task_id, chat_id, role, content, ts FROM narrative ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
                 return [dict(r) for r in rows]
@@ -577,7 +716,7 @@ class EpisodicMemory:
         with self._db_session():
             try:
                 rows = self._conn.execute(
-                    "SELECT task_id, role, content, ts FROM narrative"
+                    "SELECT task_id, chat_id, role, content, ts FROM narrative"
                     " WHERE ts >= ? ORDER BY id DESC LIMIT ?",
                     (since_str, limit),
                 ).fetchall()
@@ -752,7 +891,7 @@ class EpisodicMemory:
                 fts_query = " OR ".join(terms)
                 try:
                     rows = self._conn.execute(
-                        "SELECT task_id, role, content FROM narrative_fts"
+                        "SELECT task_id, chat_id, role, content FROM narrative_fts"
                         " WHERE narrative_fts MATCH ? LIMIT 50",  # 扩大候选集，补偿 Python 层 exclude_task_id 过滤导致的有效命中减少
                         (fts_query,),
                     ).fetchall()
@@ -763,7 +902,10 @@ class EpisodicMemory:
                         # 跳过 content 本质上就是查询文本本身（旧任务目标被 FTS5 回显）
                         if _q and row['content'].strip() == _q:
                             continue
-                        snippet = f"[task={row['task_id'] or 'global'} role={row['role']}] {row['content'][:300]}"
+                        origin = f"task={row['task_id'] or 'global'}"
+                        if row['chat_id']:
+                            origin += f" chat={row['chat_id']}"
+                        snippet = f"[{origin} role={row['role']}] {row['content'][:300]}"
                         hits.append(snippet)
                         total += len(snippet)
                         if total >= max_chars:

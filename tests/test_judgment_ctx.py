@@ -2975,6 +2975,14 @@ def test_assemble_context_skips_daily_when_long_term_memory_is_strong():
     asyncio.run(_assemble_context_skips_daily_when_long_term_memory_is_strong())
 
 
+def test_assemble_context_includes_chat_scoped_memory_layers():
+    asyncio.run(_assemble_context_includes_chat_scoped_memory_layers())
+
+
+def test_assemble_context_includes_current_interlocutor_sections():
+    asyncio.run(_assemble_context_includes_current_interlocutor_sections())
+
+
 async def _assemble_context_includes_recent_daily_continuity():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -3111,6 +3119,177 @@ async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
             assert "daily_fallback_used: no" in text
             assert "本轮不额外注入 daily 补短" in text
             assert "爸爸今天刚发来 bat 文件" not in text
+        finally:
+            await store.close()
+
+
+async def _assemble_context_includes_chat_scoped_memory_layers():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import MemoryNode, SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            episodic = EpisodicMemory(Path(d) / "memory")
+            episodic.record("user", "chat-1 第一轮用户消息", task_id="task-a", chat_id="wechat:chat-1")
+            episodic.record("assistant_reply", "chat-1 第一轮回复", task_id="task-a", chat_id="wechat:chat-1")
+            episodic.record("user", "chat-1 第二个任务继续推进", task_id="task-b", chat_id="wechat:chat-1")
+            episodic.record("assistant_reply", "chat-1 第二个任务回复", task_id="task-b", chat_id="wechat:chat-1")
+            episodic.record("user", "chat-2 无关消息", task_id="task-c", chat_id="wechat:chat-2")
+
+            semantic = SemanticMemory(Path(d) / "memory", decay_lambda=0.0)
+            semantic.upsert(MemoryNode(
+                id="chat-summary-1",
+                kind="chat_summary",
+                title="[2026-05-25] chat[abc123] 上次聊到部署问题",
+                body="用户希望延续远程部署排查，并且别重复建任务。",
+                activation=0.9,
+                importance=0.7,
+                tags=["chat_summary", "chat:wechat:chat-1"],
+                source="chat_summary",
+            ))
+
+            from core.judgment import CognitionFrame
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assemble_context(
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=episodic,
+                    semantic=semantic,
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="继续跟进部署问题",
+                chat_id="wechat:chat-1",
+            )
+
+            assert "### 当前 chat 连续性（跨任务 chat 叙事片段）" in text
+            assert "### 当前 chat 长期结晶" in text
+            assert "chat-1 第二个任务继续推进" in text
+            assert "chat-2 无关消息" not in text
+            assert "上次聊到部署问题" in text
+            assert "chat_scope: wechat:chat-1" in text
+            assert "chat_memory_hits: 1" in text
+            assert "用户: chat-1 第二个任务继续推进" in text or "我: chat-1 第二个任务回复" in text
+        finally:
+            await store.close()
+
+
+async def _assemble_context_includes_current_interlocutor_sections():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import MemoryNode, SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _SpeakerProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            system = messages[0].content
+            if "当前交互对象识别器" in system:
+                return json.dumps({
+                    "node_id": "interlocutor-bat",
+                    "confidence": 0.91,
+                    "display_name": "bat",
+                    "relationship_note": "称呼与偏好都吻合",
+                    "evidence": ["当前消息自称 bat", "历史画像记得他喜欢先给结论"],
+                    "provisional": False,
+                }, ensure_ascii=False)
+            return "[]"
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            episodic = EpisodicMemory(Path(d) / "memory")
+            episodic.record("user", "我上次说过以后叫我 bat。", task_id="task-a", chat_id="wechat:chat-1", interlocutor_id="interlocutor-bat")
+            episodic.record("assistant_reply", "收到，我以后叫你 bat。", task_id="task-a", chat_id="wechat:chat-1", interlocutor_id="interlocutor-bat")
+
+            semantic = SemanticMemory(Path(d) / "memory", decay_lambda=0.0)
+            semantic.upsert(MemoryNode(
+                id="interlocutor-bat",
+                kind="interlocutor",
+                title="bat",
+                body="画像摘要: 喜欢先给结论。\n偏好线索: 喜欢先给结论再展开。",
+                activation=0.92,
+                importance=0.75,
+                tags=["interlocutor_profile", "interlocutor:interlocutor-bat", "handle:wechat:chat-1", "alias:bat"],
+                source="interlocutor_profile",
+            ))
+            await store.set_fact("chat:wechat:chat-1:interlocutor_profile_id", "interlocutor-bat", scope="profile")
+
+            layer = JudgmentLayer(_SpeakerProvider(), ToolRegistry(), cfg)
+            text = await layer._assemble_context(
+                CognitionFrame(
+                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=episodic,
+                    semantic=semantic,
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="以后还是叫我 bat，先给结论。",
+                chat_id="wechat:chat-1",
+            )
+
+            assert "### 当前交互对象画像" in text
+            assert "### 当前交互对象交互连续性" in text
+            assert "当前交互对象候选: bat（confidence:0.91" in text
+            assert "称呼与偏好都吻合" in text
+            assert "历史画像记得他喜欢先给结论" in text
+            assert "我上次说过以后叫我 bat。" in text
         finally:
             await store.close()
 

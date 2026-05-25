@@ -383,6 +383,39 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
     return result
 
 
+def _fmt_chat_continuity(text: str) -> str:
+    cache_key = f"_fmt_chat_continuity:{hash(text) if text else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    normalized = str(text or "").strip()
+    result = normalized if normalized else "（暂无当前 chat 的连续性记忆）"
+    _context_fmt_cache[cache_key] = result
+    return result
+
+
+def _fmt_interlocutor_continuity(text: str) -> str:
+    cache_key = f"_fmt_interlocutor_continuity:{hash(text) if text else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    normalized = str(text or "").strip()
+    result = normalized if normalized else "（暂无当前交互对象的跨 chat 互动连续性记忆）"
+    _context_fmt_cache[cache_key] = result
+    return result
+
+
+def _fmt_chat_memories(memories: list[dict[str, Any]]) -> str:
+    cache_key = f"_fmt_chat_memories:{hash(str(memories)) if memories else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    if not memories:
+        result = "（暂无当前 chat 的长期结晶）"
+        _context_fmt_cache[cache_key] = result
+        return result
+    result = _fmt_memories(memories)
+    _context_fmt_cache[cache_key] = result
+    return result
+
+
 def _fmt_wm(
     items: list[dict[str, Any]],
     wm_count: int = 0,
@@ -492,12 +525,16 @@ def _fmt_memory_recall(
     episodic_cross_task_hit: bool,
     daily_fallback_used: bool,
     recall_mode: str,
+    chat_id: str = "",
+    chat_memory_hits: int = 0,
 ) -> str:
     query_text = (query or "").strip() or "（空）"
     anchor_text = ", ".join(anchor[:40] for anchor in anchors[:4]) if anchors else "（无）"
     lines = [
         f"query: {query_text[:120]}",
         f"anchors: {anchor_text}",
+        f"chat_scope: {chat_id[:80] if chat_id else 'none'}",
+        f"chat_memory_hits: {chat_memory_hits}",
         f"semantic_hits: {len(memories)}",
         f"semantic_top_score: {semantic_top_score:.3f}",
         f"episodic_cross_task_hit: {'yes' if episodic_cross_task_hit else 'no'}",
@@ -814,7 +851,11 @@ def apply_context_budget(
     budgeted = dict(ctx)
     priority = [
         "skills_catalog_section",  # 工具目录（字典性信息）最先耸
+        "current_interlocutor_profile_section",
+        "current_interlocutor_continuity_section",
+        "chat_memory_section",
         "memories_section",
+        "chat_continuity_section",
         "daily_continuity_section",
         "episodic_section",
         "skills_section",          # 技能正文次优先
@@ -824,8 +865,12 @@ def apply_context_budget(
     minimum_keep = {
         "skills_section": skill_min_tokens,
         "skills_catalog_section": max(40, skill_min_tokens // 2),
+        "current_interlocutor_profile_section": 64,
+        "current_interlocutor_continuity_section": 64,
+        "chat_memory_section": 1,
         "memories_section": 1,
         "memory_recall_section": 256,
+        "chat_continuity_section": 1,
         "daily_continuity_section": 1,
         "episodic_section": 2,
         "wm_section": 1,

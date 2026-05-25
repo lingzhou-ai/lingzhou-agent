@@ -94,6 +94,39 @@ def _format_insight_title(reflection: str, node_id: str) -> str:
     return f"{prefix}{suffix}"
 
 
+def _chat_summary_node_id(chat_id: str, day_stamp: str) -> str:
+    digest = hashlib.md5(chat_id.encode("utf-8")).hexdigest()[:12]
+    return f"chat-summary-{digest}-{day_stamp}"
+
+
+def _build_chat_summary_entry(user_message: str, reply: str, reflection: str) -> str:
+    parts: list[str] = []
+    user_text = str(user_message or "").strip()
+    reply_text = str(reply or "").strip()
+    reflection_text = str(reflection or "").strip()
+    if user_text:
+        parts.append(f"用户: {user_text[:_EVENT_APPEND_CHARS]}")
+    if reply_text:
+        parts.append(f"我: {reply_text[:_EVENT_APPEND_CHARS]}")
+    if reflection_text:
+        parts.append(f"洞察: {reflection_text[:_EVENT_APPEND_CHARS]}")
+    return " | ".join(parts)
+
+
+async def _resolve_interlocutor_profile_id(loop: Any, active_task: Any, chat_id: str | None) -> str:
+    keys: list[str] = []
+    if chat_id:
+        keys.append(f"chat:{chat_id}:interlocutor_profile_id")
+    if active_task is not None:
+        keys.append(f"task:{active_task.id}:interlocutor_profile_id")
+    for key in keys:
+        value, exists = await loop._task_store.get_fact(key)
+        normalized = str(value or "").strip()
+        if exists and normalized:
+            return normalized
+    return ""
+
+
 @dataclass(slots=True)
 class _TickJudgmentPrep:
     percept: Any
@@ -436,6 +469,7 @@ async def _decide_initial_action(
     cycle: int,
     user_message: str,
     active_task: Any,
+    chat_id: str | None,
     prep: _TickJudgmentPrep,
 ) -> JudgmentOutput:
     """执行 initial phase 的 skip gate 与 LLM judgment。"""
@@ -480,6 +514,7 @@ async def _decide_initial_action(
         loop._emotion,
         active_task=active_task,
         user_message=user_message,
+        chat_id=chat_id,
         ethos_state=prep.ethos_state,
         judgment_signals=prep.signals,
         hard_boundaries=prep.hard_boundaries,
@@ -718,6 +753,7 @@ async def _persist_tick_user_reply(
         if not user_message:
             _episodic = getattr(loop, '_episodic', None)
             if _episodic is not None:
+                interlocutor_id = await _resolve_interlocutor_profile_id(loop, active_task, outbound_chat_id)
                 _affect = {
                     "valence": getattr(getattr(loop, '_emotion', None), 'valence', 0.0),
                     "arousal": getattr(getattr(loop, '_emotion', None), 'arousal', 0.0),
@@ -727,6 +763,8 @@ async def _persist_tick_user_reply(
                     content=action.reply_to_user,
                     task_id=str(active_task.id) if active_task else None,
                     affect=_affect,
+                    chat_id=outbound_chat_id,
+                    interlocutor_id=interlocutor_id or None,
                 )
 
 
@@ -823,7 +861,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     _inject_plan_alignment_signal(loop, active_task)
 
-    action = await _decide_initial_action(loop, cycle, user_message, active_task, prep)
+    action = await _decide_initial_action(loop, cycle, user_message, active_task, chat_id, prep)
     _log_tick_decision(loop, cycle, action)
 
     action = await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
@@ -1122,7 +1160,7 @@ async def _tick_finalize_impl(
     perception_replay: Any = None,
     ethos_state: Any = None,
 ) -> str:
-    await loop._post_tick_memory(action, result, active_task, cycle, user_message)
+    await loop._post_tick_memory(action, result, active_task, cycle, user_message, chat_id)
     await loop._save_self_model()
 
     await _run_tick_maintenance(loop, active_task, cycle)
@@ -1183,6 +1221,7 @@ async def _post_tick_memory_impl(
     active_task: Any,
     cycle: int,
     user_message: str,
+    chat_id: str | None = None,
 ) -> None:
     if active_task and active_task.status not in ("done", "failed"):
         refreshed = await loop._task_store.get_task_by_id(active_task.id)
@@ -1214,14 +1253,17 @@ async def _post_tick_memory_impl(
             priority=result.priority,
         ))
 
-    if action.reflection and action.reflection.strip():
+    clean_reflection = _strip_memory_context(action.reflection) if action.reflection else ""
+    if clean_reflection:
         loop._wm.add(WMItem(
             kind="synthesis",
-            content=f"[合成] {action.reflection.strip()}",
+            content=f"[合成] {clean_reflection}",
             priority=loop._cfg.thresholds.wm_pri_insight,
         ))
 
     affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}
+    resolved_chat_id = await _resolve_reply_chat_id(loop, active_task, chat_id)
+    resolved_interlocutor_id = await _resolve_interlocutor_profile_id(loop, active_task, resolved_chat_id)
     if action.rationale:
         clean_rationale = _strip_memory_context(action.rationale)
         loop._episodic.record(
@@ -1229,10 +1271,11 @@ async def _post_tick_memory_impl(
             content=f"[cycle={cycle}] {clean_rationale}",
             task_id=str(active_task.id) if active_task else None,
             affect=affect,
+            chat_id=resolved_chat_id,
+            interlocutor_id=resolved_interlocutor_id or None,
         )
 
-    if action.reflection:
-        clean_reflection = _strip_memory_context(action.reflection)
+    if clean_reflection:
         node_id = f"insight_{hashlib.md5(clean_reflection.encode()).hexdigest()[:10]}"
         loop._semantic.upsert(MemoryNode(
             id=node_id,
@@ -1252,7 +1295,7 @@ async def _post_tick_memory_impl(
             )
 
         if active_task:
-            turns_key = f"chat:{active_task.id}:turns"
+            turns_key = f"task:{active_task.id}:reflection_turns"
             turns_val, _ = await loop._task_store.get_fact(turns_key)
             turns = int(turns_val or "0") + 1
             await loop._task_store.set_fact(turns_key, str(turns), scope="system")
@@ -1266,11 +1309,9 @@ async def _post_tick_memory_impl(
                     existing.activation = min(1.0, existing.activation + 0.05)
                     loop._semantic.upsert(existing)
                 else:
-                    source = getattr(active_task, "source", "") or ""
-                    chat_id = source[5:] if source.startswith("chat:") else source
                     tags = ["event", ts_label]
-                    if chat_id:
-                        tags.append(chat_id)
+                    if resolved_chat_id:
+                        tags.append(f"chat:{resolved_chat_id}")
                     loop._semantic.upsert(MemoryNode(
                         id=evt_id,
                         kind="event",
@@ -1281,12 +1322,56 @@ async def _post_tick_memory_impl(
                         tags=tags,
                     ))
 
+    if resolved_chat_id and (user_message or action.reply_to_user or clean_reflection):
+        turns_key = f"chat:{resolved_chat_id}:turns"
+        turns_val, _ = await loop._task_store.get_fact(turns_key)
+        turns = int(turns_val or "0") + 1
+        await loop._task_store.set_fact(turns_key, str(turns), scope="system")
+
+        crystallize_every = loop._cfg.memory.chat_crystallize_every
+        if turns % crystallize_every == 0:
+            ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+            summary_id = _chat_summary_node_id(resolved_chat_id, ts_label)
+            summary_entry = _build_chat_summary_entry(
+                user_message,
+                _strip_memory_context(action.reply_to_user or ""),
+                clean_reflection,
+            )
+            if not summary_entry and active_task is not None:
+                summary_entry = f"任务: {active_task.title[:_EVENT_APPEND_CHARS]}"
+            existing = loop._semantic.get(summary_id)
+            if existing is not None:
+                if summary_entry:
+                    existing.body = (existing.body + f"\n- {summary_entry[:_EVENT_APPEND_CHARS]}")[-_EVENT_BODY_MAX_CHARS:]
+                existing.activation = min(1.0, existing.activation + 0.05)
+                existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
+                loop._semantic.upsert(existing)
+            else:
+                digest = hashlib.md5(resolved_chat_id.encode("utf-8")).hexdigest()[:6]
+                title_seed = active_task.title if active_task is not None else resolved_chat_id
+                tags = ["chat_summary", ts_label, f"chat:{resolved_chat_id}"]
+                if active_task is not None:
+                    tags.append(f"task:{active_task.id}")
+                loop._semantic.upsert(MemoryNode(
+                    id=summary_id,
+                    kind="chat_summary",
+                    title=f"[{ts_label}] chat[{digest}] {title_seed[:_EVENT_TITLE_CHARS]}",
+                    body=(summary_entry or "对话结晶")[:_EVENT_NEW_BODY_CHARS],
+                    activation=0.85,
+                    valence=loop._emotion.valence,
+                    importance=0.5,
+                    tags=tags,
+                    source="chat_summary",
+                ))
+
     if user_message:
         loop._episodic.record(
             role="user",
             content=user_message,
             task_id=str(active_task.id) if active_task else None,
             source_type="human",
+            chat_id=resolved_chat_id,
+            interlocutor_id=resolved_interlocutor_id or None,
         )
         if action.reply_to_user:
             loop._episodic.record(
@@ -1294,4 +1379,6 @@ async def _post_tick_memory_impl(
                 content=_strip_memory_context(action.reply_to_user),
                 task_id=str(active_task.id) if active_task else None,
                 affect=affect,
+                chat_id=resolved_chat_id,
+                interlocutor_id=resolved_interlocutor_id or None,
             )

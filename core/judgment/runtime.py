@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -38,8 +39,11 @@ from .output import (
 )
 from .context import (
     _clear_context_cache,
+    _fmt_chat_continuity,
     _fill_template,
     _fmt_chat_history,
+    _fmt_chat_memories,
+    _fmt_interlocutor_continuity,
     _fmt_cognitive_signals,
     _fmt_context_facts,
     _fmt_current_time,
@@ -79,6 +83,29 @@ _log = logging.getLogger("lingzhou.judgment")
 _MEMORY_ASSERTIVE_PHRASE_RE = re.compile(
     r"(我还?记得|我记着|你之前说过|之前你说过|你之前提过|之前你提过)"
 )
+
+
+def _chat_memory_tag(chat_id: str) -> str:
+    return f"chat:{str(chat_id or '').strip()}"
+
+
+async def _resolve_context_chat_id(task_store: Any, task: Any, explicit_chat_id: str | None) -> str | None:
+    normalized = str(explicit_chat_id or "").strip()
+    if normalized:
+        return normalized
+    if task is None:
+        return None
+    try:
+        value, found = await task_store.get_fact(f"task:{task.id}:chat_id")
+    except Exception:
+        value, found = "", False
+    if found and str(value or "").strip():
+        return str(value).strip()
+    source = str(getattr(task, "source", "") or "").strip()
+    if source.startswith("chat:"):
+        resolved = source[5:].strip()
+        return resolved or None
+    return None
 
 
 async def _load_runnable_tasks_snapshot(task_store: Any, *, limit: int = 8) -> list[Any]:
@@ -910,6 +937,7 @@ class JudgmentLayer:
         emotion: "EmotionState | None" = None,
         active_task: Any | None = None,
         user_message: str = "",
+        chat_id: str | None = None,
         ethos_state: "EthosState | None" = None,
         judgment_signals: "JudgmentSignals | None" = None,
         hard_boundaries: "list[str] | None" = None,
@@ -943,6 +971,7 @@ class JudgmentLayer:
                 percept, wm, task_store, episodic, semantic, emotion,
                 active_task=active_task,
                 user_message=user_message,
+                chat_id=chat_id,
                 ethos_state=ethos_state,
                 judgment_signals=judgment_signals,
                 hard_boundaries=hard_boundaries,
@@ -1185,6 +1214,7 @@ class JudgmentLayer:
         emotion: "EmotionState | None" = None,
         active_task: Any | None = None,
         user_message: str = "",
+        chat_id: str | None = None,
         ethos_state: "EthosState | None" = None,
         judgment_signals: "JudgmentSignals | None" = None,
         hard_boundaries: "list[str] | None" = None,
@@ -1210,6 +1240,8 @@ class JudgmentLayer:
         task = active_task if active_task is not None else await task_store.get_active()
 
         task_id_str = str(task.id) if task else None
+        search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
+        resolved_chat_id = await _resolve_context_chat_id(task_store, task, chat_id)
         _el = asyncio.get_running_loop()
         # episodic/semantic 使用同步 sqlite3，需经 executor 层驱动，避免阻塞事件循环。
         # 显式启动独立任务，既保留并行 IO，又避免把立即值混入 gather。
@@ -1218,6 +1250,44 @@ class JudgmentLayer:
             episodic.load_for_context,
             task_id_str,
             self._cfg.memory.episodic_max_chars,
+        )
+        chat_continuity_future = (
+            _el.run_in_executor(
+                None,
+                episodic.load_for_chat_context,
+                resolved_chat_id,
+                self._cfg.memory.episodic_max_chars,
+            )
+            if resolved_chat_id else None
+        )
+        recent_turns_future = (
+            _el.run_in_executor(
+                None,
+                functools.partial(
+                    episodic.get_recent_turns,
+                    task_id_str,
+                    self._cfg.thresholds.chat_history_turn_limit,
+                    chat_id=resolved_chat_id,
+                ),
+            )
+            if resolved_chat_id or task_id_str else None
+        )
+        chat_memories_future = (
+            _el.run_in_executor(
+                None,
+                functools.partial(
+                    semantic.retrieve,
+                    search_query or resolved_chat_id or "",
+                    min(3, self._cfg.memory.semantic_top_k),
+                    tag=_chat_memory_tag(resolved_chat_id),
+                    source="chat_summary",
+                ),
+            )
+            if resolved_chat_id else None
+        )
+        speaker_hint_task = (
+            asyncio.create_task(task_store.get_fact(f"chat:{resolved_chat_id}:interlocutor_profile_id"))
+            if resolved_chat_id else None
         )
         recent_runs_task = (
             asyncio.create_task(task_store.list_runs(task_id=task.id, limit=6))
@@ -1250,6 +1320,14 @@ class JudgmentLayer:
         parallel_fetches: list[tuple[str, Any]] = [
             ("episodic_text", episodic_text_future),
         ]
+        if chat_continuity_future is not None:
+            parallel_fetches.append(("chat_continuity", chat_continuity_future))
+        if recent_turns_future is not None:
+            parallel_fetches.append(("recent_turns", recent_turns_future))
+        if chat_memories_future is not None:
+            parallel_fetches.append(("chat_memories", chat_memories_future))
+        if speaker_hint_task is not None:
+            parallel_fetches.append(("speaker_hint", speaker_hint_task))
         if recent_runs_task is not None:
             parallel_fetches.append(("recent_runs", recent_runs_task))
         parallel_fetches.extend([
@@ -1278,6 +1356,10 @@ class JudgmentLayer:
             raise parallel_error
 
         episodic_text = parallel_data["episodic_text"]
+        chat_continuity_text = parallel_data.get("chat_continuity", "")
+        recent_turns = parallel_data.get("recent_turns", [])
+        chat_memories = parallel_data.get("chat_memories", [])
+        speaker_hint = parallel_data.get("speaker_hint", ("", False))
         recent_runs = parallel_data.get("recent_runs", [])
         runnable_tasks = parallel_data["runnable_tasks"]
         waiting_tasks = parallel_data["waiting_tasks"]
@@ -1286,7 +1368,8 @@ class JudgmentLayer:
         probes = parallel_data.get("probes", [])
         failures = parallel_data["failures"]
 
-        search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
+        if chat_continuity_text.strip() == episodic_text.strip():
+            chat_continuity_text = ""
         similar_tasks = await _load_similar_tasks_snapshot(task_store, search_query, active_task=task, limit=5)
         episodic_search = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
@@ -1298,7 +1381,50 @@ class JudgmentLayer:
                   (search_query or "")[:50], bool(episodic_search))
 
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
+        cached_speaker_id = ""
+        if isinstance(speaker_hint, tuple) and len(speaker_hint) >= 2 and speaker_hint[1]:
+            cached_speaker_id = str(speaker_hint[0] or "").strip()
+        interlocutor_continuity_text = ""
+        if cached_speaker_id:
+            interlocutor_continuity_text = await _el.run_in_executor(
+                None,
+                episodic.load_for_interlocutor_context,
+                cached_speaker_id,
+                self._cfg.memory.episodic_max_chars,
+            )
+        resolved_speaker = (
+            await self._ref_resolver.resolve_current_speaker(
+                user_message,
+                semantic,
+                chat_id=resolved_chat_id or "",
+                recent_turns=recent_turns,
+                chat_continuity=chat_continuity_text,
+                interlocutor_continuity=interlocutor_continuity_text,
+                cached_profile_id=cached_speaker_id,
+                source_hint=str(getattr(task, "source", "") or "") if task else "",
+            )
+            if user_message else None
+        )
+        if resolved_speaker is not None:
+            await self._ref_resolver.remember_speaker(
+                resolved_speaker,
+                semantic,
+                task_store,
+                message=user_message,
+                chat_id=resolved_chat_id or "",
+                task_id=task.id if task else None,
+                source_hint=str(getattr(task, "source", "") or "") if task else "",
+            )
+            if resolved_speaker.node_id != cached_speaker_id or not interlocutor_continuity_text:
+                interlocutor_continuity_text = await _el.run_in_executor(
+                    None,
+                    episodic.load_for_interlocutor_context,
+                    resolved_speaker.node_id,
+                    self._cfg.memory.episodic_max_chars,
+                )
         entity_section = self._ref_resolver.format_section(resolved_entities)
+        current_interlocutor_profile_section = self._ref_resolver.format_speaker_section(resolved_speaker)
+        current_interlocutor_continuity_section = _fmt_interlocutor_continuity(interlocutor_continuity_text)
 
         # 动态构建检索锚点：结合任务、用户原话与近期失败，提升语义记忆命中率
         anchors: list[str] = []
@@ -1315,6 +1441,17 @@ class JudgmentLayer:
         # 用户消息锚：截取关键片段
         if user_message and user_message not in anchors:
             anchors.append(user_message[:100])
+
+        if resolved_chat_id:
+            chat_anchor = _chat_memory_tag(resolved_chat_id)
+            if chat_anchor not in anchors:
+                anchors.append(chat_anchor)
+
+        if resolved_speaker is not None:
+            for anchor in [resolved_speaker.title, *resolved_speaker.search_anchors, f"interlocutor:{resolved_speaker.node_id}"]:
+                normalized_anchor = str(anchor or "").strip()
+                if normalized_anchor and normalized_anchor not in anchors:
+                    anchors.append(normalized_anchor)
 
         # 失败模式锚：若近期有失败，优先检索相关教训
         if failures:
@@ -1396,12 +1533,18 @@ class JudgmentLayer:
             "failures_section": _fmt_failures(failures),
             "durable_failure_section": _fmt_durable_failures(durable_failure_snapshot),
             "episodic_section": episodic_text or "（暂无情节记忆）",
+            "chat_continuity_section": _fmt_chat_continuity(chat_continuity_text),
+            "current_interlocutor_profile_section": current_interlocutor_profile_section,
+            "current_interlocutor_continuity_section": current_interlocutor_continuity_section,
             "daily_continuity_section": recent_daily or "（近两日无相关 daily 补短）",
             "entity_section": entity_section,
+            "chat_memory_section": _fmt_chat_memories(chat_memories),
             "memories_section": _fmt_memories(memories),
             "memory_recall_section": _fmt_memory_recall(
                 query=search_query or "",
                 anchors=anchors,
+                chat_id=resolved_chat_id or "",
+                chat_memory_hits=len(chat_memories),
                 memories=memories,
                 semantic_top_score=semantic_top_score,
                 episodic_cross_task_hit=bool(episodic_search),
@@ -1445,18 +1588,6 @@ class JudgmentLayer:
             "config_section": _fmt_config_snapshot(self._cfg),
             "user_message": user_message or "",
         }
-        # STM 对话缓冲：源自情节记忆（narrative 表 role=user/assistant_reply）
-        # 不走原始 chat_messages 表，记忆系统本身就是正确的历史源。
-        recent_turns = (
-            await _el.run_in_executor(
-                None,
-                episodic.get_recent_turns,
-                task_id_str,
-                self._cfg.thresholds.chat_history_turn_limit,
-            )
-            if task_id_str else
-            []
-        )
         ctx["chat_history_section"] = _fmt_chat_history(
             recent_turns,
             max_chars=self._cfg.thresholds.chat_history_max_chars,

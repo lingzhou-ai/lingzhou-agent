@@ -534,6 +534,7 @@ class TaskStore:
             "UPDATE chat_messages SET status='pending' WHERE role='user' AND status='processing'"
         )
         await self._db.commit()
+        await self._migrate_interlocutor_facts()
 
     async def close(self) -> None:
         if self._db_opt:
@@ -636,6 +637,55 @@ class TaskStore:
 
         await db.commit()
         logger.info("[task_store] 迁移完成：%d 任务, %d 失败记录", len(old_tasks), len(old_failures))
+
+    async def _migrate_interlocutor_facts(self) -> None:
+        db = self._db_opt
+        assert db is not None
+
+        async with db.execute(
+            "SELECT key, value, scope, updated_at FROM facts ORDER BY updated_at ASC"
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            return
+
+        profile_ids = {
+            str(value or "").strip()
+            for key, value, _, _ in rows
+            if str(key or "").endswith(":person_profile_id") and str(value or "").strip()
+        }
+
+        migrations: list[tuple[str, str, str, str, str]] = []
+        for key, value, scope, updated_at in rows:
+            normalized_key = str(key or "").strip()
+            new_key = ""
+            if normalized_key.endswith(":person_profile_id"):
+                new_key = normalized_key[: -len(":person_profile_id")] + ":interlocutor_profile_id"
+            elif normalized_key.startswith("user:"):
+                parts = normalized_key.split(":")
+                if len(parts) >= 3 and parts[1] in profile_ids:
+                    new_key = "interlocutor:" + ":".join(parts[1:])
+            if new_key and new_key != normalized_key:
+                migrations.append((normalized_key, new_key, str(value or ""), str(scope or "general"), str(updated_at or "")))
+
+        if not migrations:
+            return
+
+        for old_key, new_key, value, scope, updated_at in migrations:
+            await db.execute(
+                """
+                INSERT INTO facts (key, value, scope, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = CASE WHEN excluded.updated_at >= facts.updated_at THEN excluded.value ELSE facts.value END,
+                    scope = CASE WHEN excluded.updated_at >= facts.updated_at THEN excluded.scope ELSE facts.scope END,
+                    updated_at = CASE WHEN excluded.updated_at >= facts.updated_at THEN excluded.updated_at ELSE facts.updated_at END
+                """,
+                (new_key, value, scope or "general", updated_at or ""),
+            )
+            await db.execute("DELETE FROM facts WHERE key=?", (old_key,))
+        await db.commit()
+        logger.info("[task_store] 已迁移 %d 条旧 person_profile facts 到 interlocutor", len(migrations))
 
     # ── 任务操作 ─────────────────────────────────────────────────────────
 

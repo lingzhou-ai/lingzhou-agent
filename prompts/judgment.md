@@ -65,11 +65,23 @@
 ### 情节记忆（当前任务叙事片段）
 {{episodic_section}}
 
+### 当前 chat 连续性（跨任务 chat 叙事片段）
+{{chat_continuity_section}}
+
+### 当前交互对象画像
+{{current_interlocutor_profile_section}}
+
+### 当前交互对象交互连续性
+{{current_interlocutor_continuity_section}}
+
 ### 近两日连续性（跨任务 daily 片段）
 {{daily_continuity_section}}
 
 ### 跨 chat 实体线索（共指消解）
 {{entity_section}}
+
+### 当前 chat 长期结晶
+{{chat_memory_section}}
 
 ### 相关长期记忆
 {{memories_section}}
@@ -78,6 +90,10 @@
 {{memory_recall_section}}
 
 > 记忆使用规则：
+> - `当前 chat 连续性`：优先把它当成同一聊天线程的延续线索；它比“当前任务叙事”更适合回答“我们之前这个 chat 说到哪了”。
+> - `当前交互对象画像`：这是基于交互对象画像记忆 + 最近互动线索 + 本轮消息得到的当前对象判断；把它当成高价值线索，不是绝对身份证明。
+> - `当前交互对象交互连续性`：这是同一交互对象跨 chat 的互动片段，可用于识别它是谁、它过去如何表达与回应，但仍要结合当前消息核实。
+> - `当前 chat 长期结晶`：这是同一 chat 的压缩长期线索，可用于续接关系、偏好、未竟话题，但仍要结合当前消息核实。
 > - `recall_mode=long_term_primary`：优先依赖长期记忆，但仍要看 `score` 是否足够高。
 > - `recall_mode=episodic_cross_task`：说明跨任务情节命中，可用于连续性判断，但不要把它当稳定事实。
 > - `recall_mode=daily_gap_fill`：说明长期层不够强，这里只是短期补短线索，不等于长期结论。
@@ -91,7 +107,7 @@
 > - `workspace_dir` 下的 SOUL/IDENTITY/BOOTSTRAP/USER/TOOLS/HEARTBEAT/MEMORY 是身份与可读镜像层，不等于全部记忆。
 > - 当 `semantic_nodes` 很少或 `semantic_fts5_ok=no` 时，先补记忆再下结论：优先 `memory.search` + `memory.set_fact` / `memory.add_semantic`。
 > - 使用记忆命中时优先参考 `score` 和检索质量；低分命中不能直接当硬证据。
-> - **用户身份记忆**：当用户在对话中透露姓名、身份、职业、偏好等个人信息时，立即调用 `memory.add_semantic` 记录，`kind=person`，`title=用户名/昵称`，`body=已知信息`，`tags` 中包含来源 ID（如 `wechat:wxid_xxx`）；以便下次对话通过 `task.source` 锚自动命中，实现跨会话认人。
+> - **交互对象身份记忆**：当对话对象在交流中透露名称、身份、职业、偏好等信息时，立即调用 `memory.add_semantic` 记录，`kind=interlocutor`，`title=对象名称/昵称`，`body=已知信息`，`tags` 中包含来源 ID（如 `wechat:wxid_xxx`）；以便下次对话通过 `task.source` 锚自动命中，实现跨会话识别同一对象。
 
 ---
 
@@ -154,7 +170,7 @@
 ### 用户消息（如有）
 {{user_message}}
 
-### 近期对话历史（最近 3 条即时缓冲；更长历史见上方情节记忆）
+### 近期对话历史（最近 3 条即时缓冲；更长同 chat 历史见上方 chat 连续性）
 {{chat_history_section}}
 
 ---

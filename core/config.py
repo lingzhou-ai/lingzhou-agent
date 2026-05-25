@@ -402,7 +402,7 @@ class MemoryConfig(BaseModel):
     )
     chat_crystallize_every: int = Field(
         default=20, ge=1,
-        description="对话轮数结晶间隔：每 N 轮 reflection 蒸馏一次 event 节点写入语义记忆",
+        description="chat 结晶间隔：每 N 个同 chat 轮次蒸馏一次 chat_summary 节点写入语义记忆；任务 event 仍独立保留",
     )
     promotion_priority_threshold: float = Field(
         default=0.78, ge=0.0, le=1.0,
@@ -827,7 +827,7 @@ class ThresholdsConfig(BaseModel):
         description="global 作用域 facts snapshot 的保留上限",
     )
     fact_context_priority_prefixes: list[str] = Field(
-        default_factory=lambda: ["user:"],
+        default_factory=lambda: ["interlocutor:", "user:"],
         description="构造 facts snapshot 时总是优先尝试保留的 durable fact 前缀",
     )
     fact_context_priority_limit: int = Field(

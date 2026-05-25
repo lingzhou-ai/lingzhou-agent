@@ -157,6 +157,38 @@ def test_semantic_retrieve_prefers_stable_long_term_memory_over_recent_event_ech
         assert results[0]["id"] == "stable-fact"
 
 
+def test_semantic_migrates_legacy_person_profile_nodes_to_interlocutor_profile():
+    from memory.semantic import SemanticMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        nodes_dir = root / "nodes"
+        nodes_dir.mkdir(parents=True, exist_ok=True)
+        legacy = {
+            "id": "person-bat",
+            "kind": "person",
+            "title": "bat",
+            "body": "偏好线索: 先给结论。",
+            "activation": 0.8,
+            "valence": 0.5,
+            "importance": 0.7,
+            "tags": ["person_profile", "person:person-bat", "handle:wechat:chat-1", "alias:bat"],
+            "source": "user_profile",
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        (nodes_dir / "person-bat.json").write_text(json.dumps(legacy, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        semantic = SemanticMemory(root, decay_lambda=0.0)
+        migrated = semantic.get("person-bat")
+
+        assert migrated is not None
+        assert migrated.kind == "interlocutor"
+        assert migrated.source == "interlocutor_profile"
+        assert "interlocutor_profile" in migrated.tags
+        assert "interlocutor:person-bat" in migrated.tags
+        assert "person_profile" not in migrated.tags
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — events.jsonl 轮转
 # ══════════════════════════════════════════════════════════════════════════════
@@ -400,6 +432,82 @@ def test_episodic_record_writes_daily_memory_file():
         recent_daily = ep.load_recent_daily_context(days=2, max_chars=800)
         assert stamp in recent_daily
         assert "继续处理" in recent_daily
+
+
+def test_episodic_load_for_chat_context_keeps_same_chat_cross_task_history():
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        memory_dir = Path(d)
+        ep = EpisodicMemory(memory_dir, max_events=0)
+
+        ep.record("user", "chat-1 第一轮用户消息", task_id="task-1", chat_id="wechat:chat-1")
+        ep.record("assistant_reply", "chat-1 第一轮回复", task_id="task-1", chat_id="wechat:chat-1")
+        ep.record("assistant", "内部推理不应进入 chat continuity", task_id="task-1", chat_id="wechat:chat-1")
+        ep.record("user", "chat-1 第二个任务里的续聊", task_id="task-2", chat_id="wechat:chat-1")
+        ep.record("assistant_reply", "chat-1 第二个任务回复", task_id="task-2", chat_id="wechat:chat-1")
+        ep.record("user", "chat-2 的无关消息", task_id="task-3", chat_id="wechat:chat-2")
+
+        text = ep.load_for_chat_context("wechat:chat-1", max_chars=2000)
+
+        assert "chat-1 第一轮用户消息" in text
+        assert "chat-1 第二个任务里的续聊" in text
+        assert "chat-2 的无关消息" not in text
+        assert "内部推理不应进入 chat continuity" not in text
+
+
+def test_episodic_get_recent_turns_supports_chat_scope():
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+
+        ep.record("user", "chat-a 用户", task_id="task-1", chat_id="chat-a")
+        ep.record("assistant_reply", "chat-a 回复", task_id="task-1", chat_id="chat-a")
+        ep.record("assistant", "chat-a 内部记录", task_id="task-1", chat_id="chat-a")
+        ep.record("user", "chat-b 用户", task_id="task-1", chat_id="chat-b")
+        ep.record("assistant_reply", "chat-b 回复", task_id="task-1", chat_id="chat-b")
+
+        turns = ep.get_recent_turns("task-1", limit=5, chat_id="chat-a")
+
+        assert [turn["content"] for turn in turns] == ["chat-a 用户", "chat-a 回复"]
+
+
+def test_episodic_load_for_interlocutor_context_keeps_cross_chat_history():
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+
+        ep.record("user", "chat-a 里 bat 继续追问部署", task_id="task-1", chat_id="chat-a", interlocutor_id="interlocutor-bat")
+        ep.record("assistant_reply", "我在 chat-a 回答 bat", task_id="task-1", chat_id="chat-a", interlocutor_id="interlocutor-bat")
+        ep.record("user", "chat-b 里同一个对象继续追问", task_id="task-2", chat_id="chat-b", interlocutor_id="interlocutor-bat")
+        ep.record("assistant_reply", "我在 chat-b 继续回应", task_id="task-2", chat_id="chat-b", interlocutor_id="interlocutor-bat")
+        ep.record("assistant", "内部推理不应进入 interlocutor continuity", task_id="task-2", chat_id="chat-b", interlocutor_id="interlocutor-bat")
+        ep.record("user", "另一个对象的无关消息", task_id="task-3", chat_id="chat-c", interlocutor_id="interlocutor-luna")
+
+        text = ep.load_for_interlocutor_context("interlocutor-bat", max_chars=2000)
+
+        assert "chat-a 里 bat 继续追问部署" in text
+        assert "chat-b 里同一个对象继续追问" in text
+        assert "另一个对象的无关消息" not in text
+        assert "内部推理不应进入 interlocutor continuity" not in text
+
+
+def test_episodic_get_recent_turns_supports_interlocutor_scope():
+    from memory.episodic import EpisodicMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        ep = EpisodicMemory(Path(d), max_events=0)
+
+        ep.record("user", "bat 在 chat-a 发言", task_id="task-1", chat_id="chat-a", interlocutor_id="interlocutor-bat")
+        ep.record("assistant_reply", "我在 chat-a 回复 bat", task_id="task-1", chat_id="chat-a", interlocutor_id="interlocutor-bat")
+        ep.record("user", "luna 在 chat-b 发言", task_id="task-1", chat_id="chat-b", interlocutor_id="interlocutor-luna")
+        ep.record("assistant_reply", "我在 chat-b 回复 luna", task_id="task-1", chat_id="chat-b", interlocutor_id="interlocutor-luna")
+
+        turns = ep.get_recent_turns(limit=5, interlocutor_id="interlocutor-bat")
+
+        assert [turn["content"] for turn in turns] == ["bat 在 chat-a 发言", "我在 chat-a 回复 bat"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
