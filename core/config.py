@@ -321,13 +321,13 @@ class MemoryConfig(BaseModel):
         ),
     )
     wm_item_max_tokens: int = Field(
-        default=300, ge=0,
+        default=0, ge=0,
         description=(
             "工作记忆单条 content token 上限（粗估）；超出时自动截断并追加省略提示。"
             "0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。"
         ),
     )
-    episodic_max_chars: int = Field(default=80000, ge=100, description="注入 context 的情节记忆字符上限；资源充裕模型可适当增大以保留更多任务历史证据")
+    episodic_max_chars: int = Field(default=0, ge=0, description="注入 context 的情节记忆字符上限；0 = 不限制；资源充裕模型可适当增大以保留更多任务历史证据")
     semantic_top_k: int = Field(default=5, ge=1, description="语义检索返回条目数")
     failure_limit: int = Field(default=10, ge=1, description="注入 bundle 的失败记录数")
     consolidate_threshold: float = Field(default=0.90, ge=0.0, le=1.0, description="WM 压力超过此値触发整合；提高阈値可减少快照频率，让更多证据在 WM 中存活更长")
@@ -363,8 +363,8 @@ class MemoryConfig(BaseModel):
         description="daily 补短检索的最近天数窗口；仅在长期记忆命中不足时使用",
     )
     daily_recall_max_chars: int = Field(
-        default=800, ge=100,
-        description="daily 补短片段的最大字符数预算",
+        default=0, ge=0,
+        description="daily 补短片段的最大字符数预算；0 = 不限制",
     )
     daily_recall_semantic_score_threshold: float = Field(
         default=0.55, ge=0.0, le=1.5,
@@ -375,8 +375,8 @@ class MemoryConfig(BaseModel):
         description="weekly daily summary 汇总最近多少天的 daily 轨迹",
     )
     daily_summary_max_chars: int = Field(
-        default=1800, ge=200,
-        description="weekly daily summary 写入长期语义层时的最大字符数预算",
+        default=0, ge=0,
+        description="weekly daily summary 写入长期语义层时的最大字符数预算；0 = 不限制",
     )
     daily_summary_activation: float = Field(
         default=0.78, ge=0.0, le=1.0,
@@ -417,8 +417,8 @@ class MemoryConfig(BaseModel):
         description="WM 条目正文短于此长度时默认不提升为语义节点，避免长期层充满碎片",
     )
     promotion_body_max_chars: int = Field(
-        default=1200, ge=80,
-        description="提升到语义记忆的单节点正文上限（字符）",
+        default=0, ge=0,
+        description="提升到语义记忆的单节点正文上限（字符）；0 = 不限制",
     )
     promotion_reinforce_delta: float = Field(
         default=0.05, ge=0.0, le=0.5,
@@ -843,12 +843,12 @@ class ThresholdsConfig(BaseModel):
         description="recent facts 扫描窗口的最小条数",
     )
     chat_history_turn_limit: int = Field(
-        default=3, ge=0,
-        description="judgment 上下文中保留的最近对话轮数",
+        default=0, ge=0,
+        description="judgment 上下文中保留的最近对话轮数；0 = 不限制",
     )
     chat_history_max_chars: int = Field(
-        default=300, ge=0,
-        description="chat history 格式化后的最大字符预算",
+        default=0, ge=0,
+        description="chat history 格式化后的最大字符预算；0 = 不限制",
     )
     # 工作记忆（WM）优先级基准（微调注入顺序，不影响功能语义）
     wm_pri_signal: float = Field(default=0.90, ge=0.0, le=1.0, description="调度信号、执行成功结果的 WM 优先级")

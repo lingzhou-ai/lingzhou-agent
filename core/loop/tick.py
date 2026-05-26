@@ -35,9 +35,6 @@ from tools.registry import ToolResult
 
 from .chat import _bind_chat_id, _resolve_reply_chat_id
 from .common import (
-    _EVENT_APPEND_CHARS,
-    _EVENT_BODY_MAX_CHARS,
-    _EVENT_NEW_BODY_CHARS,
     _EVENT_TITLE_CHARS,
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
@@ -105,11 +102,11 @@ def _build_chat_summary_entry(user_message: str, reply: str, reflection: str) ->
     reply_text = str(reply or "").strip()
     reflection_text = str(reflection or "").strip()
     if user_text:
-        parts.append(f"用户: {user_text[:_EVENT_APPEND_CHARS]}")
+        parts.append(f"用户: {user_text}")
     if reply_text:
-        parts.append(f"我: {reply_text[:_EVENT_APPEND_CHARS]}")
+        parts.append(f"我: {reply_text}")
     if reflection_text:
-        parts.append(f"洞察: {reflection_text[:_EVENT_APPEND_CHARS]}")
+        parts.append(f"洞察: {reflection_text}")
     return " | ".join(parts)
 
 
@@ -1229,7 +1226,7 @@ async def _post_tick_memory_impl(
             marker = f"crystallized:{refreshed.id}"
             _, already = await loop._task_store.get_fact(marker)
             if not already:
-                narrative = loop._episodic.load_for_context(str(refreshed.id), max_chars=40000)
+                narrative = loop._episodic.load_for_context(str(refreshed.id))
                 if narrative.strip():
                     node_id = f"task_summary_{refreshed.id}"
                     loop._semantic.upsert(MemoryNode(
@@ -1305,7 +1302,7 @@ async def _post_tick_memory_impl(
                 evt_id = f"event-task{active_task.id}-{ts_label}"
                 existing = loop._semantic.get(evt_id)
                 if existing:
-                    existing.body = (existing.body + f"\n- {clean_reflection[:_EVENT_APPEND_CHARS]}")[-_EVENT_BODY_MAX_CHARS:]
+                    existing.body = existing.body + f"\n- {clean_reflection}"
                     existing.activation = min(1.0, existing.activation + 0.05)
                     loop._semantic.upsert(existing)
                 else:
@@ -1316,7 +1313,7 @@ async def _post_tick_memory_impl(
                         id=evt_id,
                         kind="event",
                         title=f"[{ts_label}] task#{active_task.id} {active_task.title[:_EVENT_TITLE_CHARS]}",
-                        body=clean_reflection[:_EVENT_NEW_BODY_CHARS],
+                        body=clean_reflection,
                         activation=0.85,
                         valence=loop._emotion.valence,
                         tags=tags,
@@ -1338,11 +1335,11 @@ async def _post_tick_memory_impl(
                 clean_reflection,
             )
             if not summary_entry and active_task is not None:
-                summary_entry = f"任务: {active_task.title[:_EVENT_APPEND_CHARS]}"
+                summary_entry = f"任务: {active_task.title}"
             existing = loop._semantic.get(summary_id)
             if existing is not None:
                 if summary_entry:
-                    existing.body = (existing.body + f"\n- {summary_entry[:_EVENT_APPEND_CHARS]}")[-_EVENT_BODY_MAX_CHARS:]
+                    existing.body = existing.body + f"\n- {summary_entry}"
                 existing.activation = min(1.0, existing.activation + 0.05)
                 existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
                 loop._semantic.upsert(existing)
@@ -1356,7 +1353,7 @@ async def _post_tick_memory_impl(
                     id=summary_id,
                     kind="chat_summary",
                     title=f"[{ts_label}] chat[{digest}] {title_seed[:_EVENT_TITLE_CHARS]}",
-                    body=(summary_entry or "对话结晶")[:_EVENT_NEW_BODY_CHARS],
+                    body=summary_entry or "对话结晶",
                     activation=0.85,
                     valence=loop._emotion.valence,
                     importance=0.5,

@@ -468,6 +468,8 @@ class EpisodicMemory:
         if not path.exists():
             return ""
         text = path.read_text(encoding="utf-8")
+        if max_chars <= 0:
+            return text
         if len(text) <= max_chars:
             return text
         head_chars = max_chars // 4
@@ -510,7 +512,7 @@ class EpisodicMemory:
         """读取最近若干天的 daily 叙事，用于跨任务的短程连续性。"""
         days = max(1, days)
         if max_chars <= 0:
-            return ""
+            max_chars = 999_999_999  # 0 = unlimited
 
         stamps = [
             (datetime.now(UTC) - timedelta(days=offset)).strftime("%Y-%m-%d")
@@ -558,7 +560,7 @@ class EpisodicMemory:
             return ""
         days = max(1, days)
         if max_chars <= 0:
-            return ""
+            max_chars = 999_999_999  # 0 = unlimited
 
         safe = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
         strict = [t.lower() for t in safe.split() if len(t) >= 2 and not (t.isascii() and len(t) < 5)]
@@ -635,41 +637,42 @@ class EpisodicMemory:
         """
         with self._db_session():
             try:
+                _limit = limit if limit > 0 else 999_999_999  # 0 = unlimited
                 if chat_id and interlocutor_id:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE chat_id = ? AND interlocutor_id = ? AND role IN ('user', 'assistant_reply') "
                         "ORDER BY id DESC LIMIT ?"
                     )
-                    rows = self._conn.execute(sql, (chat_id, interlocutor_id, limit)).fetchall()
+                    rows = self._conn.execute(sql, (chat_id, interlocutor_id, _limit)).fetchall()
                 elif chat_id:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE chat_id = ? AND role IN ('user', 'assistant_reply') "
                         "ORDER BY id DESC LIMIT ?"
                     )
-                    rows = self._conn.execute(sql, (chat_id, limit)).fetchall()
+                    rows = self._conn.execute(sql, (chat_id, _limit)).fetchall()
                 elif interlocutor_id:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE interlocutor_id = ? AND role IN ('user', 'assistant_reply') "
                         "ORDER BY id DESC LIMIT ?"
                     )
-                    rows = self._conn.execute(sql, (interlocutor_id, limit)).fetchall()
+                    rows = self._conn.execute(sql, (interlocutor_id, _limit)).fetchall()
                 elif task_id:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE task_id = ? AND role IN ('user', 'assistant_reply') "
                         "ORDER BY id DESC LIMIT ?"
                     )
-                    rows = self._conn.execute(sql, (task_id, limit)).fetchall()
+                    rows = self._conn.execute(sql, (task_id, _limit)).fetchall()
                 else:
                     sql = (
                         "SELECT role, content, ts, affect FROM narrative "
                         "WHERE role IN ('user', 'assistant_reply') "
                         "ORDER BY id DESC LIMIT ?"
                     )
-                    rows = self._conn.execute(sql, (limit,)).fetchall()
+                    rows = self._conn.execute(sql, (_limit,)).fetchall()
             except Exception as e:
                 _log.warning("[episodic] get_recent_turns 失败: %s", e)
                 return []

@@ -820,7 +820,7 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
     assert "consolidate_low_pressure_skip_threshold: 0.81" in text
     assert "promotion_priority_threshold: 0.78" in text
     assert "promotion_max_nodes_per_consolidation: 6" in text
-    assert "promotion_body_max_chars: 1200" in text
+    assert "promotion_body_max_chars: 0" in text
     assert "promotion_reinforce_delta: 0.05" in text
     assert "daily_recall_days: 3" in text
     assert "daily_recall_max_chars: 640" in text

@@ -376,7 +376,7 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
         if not content:
             continue
         label = "用户" if role == "user" else "我"
-        snippet = content[:max_chars] + ("…" if len(content) > max_chars else "")
+        snippet = content if max_chars <= 0 else (content[:max_chars] + ("…" if len(content) > max_chars else ""))
         lines.append(f"{label}: {snippet}")
     result = "\n".join(lines) if lines else "（暂无对话历史）"
     _context_fmt_cache[cache_key] = result

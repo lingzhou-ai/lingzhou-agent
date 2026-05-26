@@ -162,13 +162,13 @@ def merge_promoted_node(existing: MemoryNode | None, incoming: MemoryNode, *, me
     if existing is None:
         return incoming
 
-    body_max_chars = max(120, int(getattr(memory_cfg, "promotion_body_max_chars", 1200)))
+    body_max_chars = int(getattr(memory_cfg, "promotion_body_max_chars", 0))
     reinforce_delta = float(getattr(memory_cfg, "promotion_reinforce_delta", 0.05))
     merged_body = existing.body or ""
     incoming_body = (incoming.body or "").strip()
     if incoming_body and incoming_body not in merged_body:
         merged_body = f"{merged_body.rstrip()}\n\n---\n\n{incoming_body}".strip()
-    if len(merged_body) > body_max_chars:
+    if body_max_chars > 0 and len(merged_body) > body_max_chars:
         merged_body = merged_body[-body_max_chars:]
 
     return MemoryNode(
@@ -243,8 +243,8 @@ def _build_semantic_node(
     importance_bonus = _KIND_IMPORTANCE_BONUS.get(memory_kind, 0.0)
     importance = min(0.98, max(priority, 0.45) + importance_bonus)
     activation = min(0.96, 0.42 + priority * 0.45 + min(importance_bonus, 0.12))
-    body_max_chars = max(120, int(getattr(memory_cfg, "promotion_body_max_chars", 1200)))
-    body = cleaned[:body_max_chars]
+    body_max_chars = int(getattr(memory_cfg, "promotion_body_max_chars", 0))
+    body = cleaned if body_max_chars <= 0 else cleaned[:body_max_chars]
     digest = hashlib.sha1(f"{memory_kind}|{kind}|{cleaned}".encode("utf-8")).hexdigest()[:16]
     prefix = _TITLE_PREFIX.get(memory_kind, "trace")
     scope_label = f"task#{task_id}" if task_id else "free"
