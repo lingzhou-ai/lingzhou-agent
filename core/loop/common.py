@@ -109,7 +109,7 @@ def _preferred_continue_tier(
     registry: Any | None = None,
 ) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    if next_tier in VALID_MODEL_TIERS:
+    if next_tier in {"reasoner", "repair"}:  # reader 不能当判断 tier
         return next_tier
     return None
 
@@ -123,7 +123,7 @@ def _task_model_tier(task: Task | None) -> str | None:
 
 def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    return next_tier if next_tier in VALID_MODEL_TIERS else None
+    return next_tier if next_tier in {"reasoner", "repair"} else None  # reader 不能当判断 tier
 
 
 def _prefer_tier_for_task(
@@ -134,7 +134,7 @@ def _prefer_tier_for_task(
 ) -> str | None:
     if has_user_message:
         return "reasoner"
-    if pending_tier in VALID_MODEL_TIERS:
+    if pending_tier in {"reasoner", "repair"}:  # reader 不能当判断 tier
         return pending_tier
     task_tier = _task_model_tier(task)
     return task_tier if task_tier in {"reasoner", "repair"} else None

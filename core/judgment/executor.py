@@ -255,20 +255,25 @@ class JudgmentExecutor:
         thinking_override: str | None = None,
         routing_overrides: dict[str, str] | None = None,
     ) -> tuple[Provider, ModelSelection]:
+        # 判断 phase 不允许使用 reader（人不能没有大脑）
+        # prefer_tier="reader" 在判断 phase 同样无效，自动清除
+        _effective_prefer_tier = (
+            None if phase in self._REASONER_ONLY_PHASES and prefer_tier == "reader"
+            else prefer_tier
+        )
         tier = self._select_tier(
             phase=phase,
             user_message=user_message,
             current_action=current_action,
             tool_history=tool_history,
-            prefer_tier=prefer_tier,
+            prefer_tier=_effective_prefer_tier,
         )
         chosen_tier = tier
         chosen_model = self._cfg.model
         provider: Provider = self._provider
         selected = False
 
-        # 判断 phase 不允许降级到 reader（人不能没有大脑）
-        exclude_reader = phase in self._REASONER_ONLY_PHASES and prefer_tier is None
+        exclude_reader = phase in self._REASONER_ONLY_PHASES and _effective_prefer_tier is None
 
         # 先试当前 tier，再按 tier fallback 试其他 tier。
         # 每个 tier 内按：override -> routing 主模型 -> model_fallbacks -> 顶层 model。
