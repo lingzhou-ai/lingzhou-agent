@@ -13,6 +13,9 @@ from core.task_runtime import VALID_MODEL_TIERS
 from store.task import Task
 from tools.registry import ToolResult
 
+# 判断层允许的 tier：reader 只负责工具执行，不参与判断路由
+_JUDGMENT_TIERS: frozenset[str] = frozenset({"reasoner", "repair"})
+
 # 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)
 _LOG_RATIONALE_CHARS = 120
 _SEM_TITLE_CHARS = 60
@@ -109,21 +112,19 @@ def _preferred_continue_tier(
     registry: Any | None = None,
 ) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    if next_tier in {"reasoner", "repair"}:  # reader 不能当判断 tier
-        return next_tier
-    return None
+    return next_tier if next_tier in _JUDGMENT_TIERS else None
 
 
 def _task_model_tier(task: Task | None) -> str | None:
     if not task:
         return None
     tier = (task.model_tier or "").strip()
-    return tier if tier in VALID_MODEL_TIERS else None
+    return tier if tier in _JUDGMENT_TIERS else None
 
 
 def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    return next_tier if next_tier in {"reasoner", "repair"} else None  # reader 不能当判断 tier
+    return next_tier if next_tier in _JUDGMENT_TIERS else None
 
 
 def _prefer_tier_for_task(
@@ -134,10 +135,9 @@ def _prefer_tier_for_task(
 ) -> str | None:
     if has_user_message:
         return "reasoner"
-    if pending_tier in {"reasoner", "repair"}:  # reader 不能当判断 tier
+    if pending_tier in _JUDGMENT_TIERS:
         return pending_tier
-    task_tier = _task_model_tier(task)
-    return task_tier if task_tier in {"reasoner", "repair"} else None
+    return _task_model_tier(task)
 
 
 def _perception_replay_fallback() -> PerceptionReplaySummary:
