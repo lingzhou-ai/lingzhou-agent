@@ -841,6 +841,92 @@ async def _maybe_run_tick_continue_phase(
     )
 
 
+# ── Tick 阶段编排器（Phase 5：感知 / 判断 / 执行 / 记忆 四器官边界）───────────
+
+class _TickPerceptionPhase:
+    """感知阶段编排器：刷新运行状态 → 准备活跃任务 → 注入侧路信号 → 构造判断准备状态。"""
+
+    @staticmethod
+    async def run(
+        loop: Any,
+        user_message: str,
+        chat_id: str | None,
+    ) -> tuple[_TickJudgmentPrep, Any]:
+        running_updates = await refresh_running_runs(
+            loop._task_store,
+            episodic=loop._episodic,
+            semantic=loop._semantic,
+            metabolic=_loop_metabolic(loop),
+        )
+        active_task = await _prepare_active_task_for_tick(loop, user_message, chat_id)
+        await _inject_tick_side_signals(loop, running_updates)
+        prep = await _prepare_tick_judgment_state(loop, active_task)
+        return prep, active_task
+
+
+class _TickJudgmentPhase:
+    """判断阶段编排器：curiosity 探索 → 计划对齐信号 → 主判断 → 委派审查。"""
+
+    @staticmethod
+    async def run(
+        loop: Any,
+        ctx: Any,
+        cycle: int,
+        user_message: str,
+        active_task: Any,
+        chat_id: str | None,
+        prep: _TickJudgmentPrep,
+    ) -> JudgmentOutput:
+        if active_task is None:
+            await loop._maybe_curiosity_task(prep.ethos_state)
+        _inject_plan_alignment_signal(loop, active_task)
+        action = await _decide_initial_action(loop, cycle, user_message, active_task, chat_id, prep)
+        _log_tick_decision(loop, cycle, action)
+        return await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
+
+
+class _TickExecutionPhase:
+    """执行阶段编排器：工具执行 → in-session bootstrap 检测 → continue phase。"""
+
+    @staticmethod
+    async def run(
+        loop: Any,
+        ctx: Any,
+        user_message: str,
+        active_task: Any,
+        cognitive_signals: Any,
+        action: JudgmentOutput,
+    ) -> tuple[JudgmentOutput, ToolResult, list[dict[str, Any]]]:
+        result, tool_history = await _execute_tick_action(loop, ctx, active_task, action)
+        await _maybe_reconcile_bootstrap(loop)
+        action, result = await _maybe_run_tick_continue_phase(
+            loop, ctx, user_message, active_task, cognitive_signals, action, result, tool_history,
+        )
+        return action, result, tool_history
+
+
+class _TickMemoryPhase:
+    """记忆阶段编排器：用户回复最终化 → tick 状态写入与 WM 持久化。"""
+
+    @staticmethod
+    async def run(
+        loop: Any,
+        cycle: int,
+        user_message: str,
+        chat_id: str | None,
+        active_task: Any,
+        action: JudgmentOutput,
+        result: ToolResult,
+        tool_history: list[dict[str, Any]],
+        perception_replay: Any,
+        ethos_state: Any,
+    ) -> str:
+        await _finalize_tick_user_reply(loop, action, result, tool_history, user_message, active_task, chat_id)
+        return await _tick_finalize_impl(
+            loop, action, result, active_task, cycle, user_message, chat_id, perception_replay, ethos_state,
+        )
+
+
 async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str | None = None) -> str:
     """执行一轮完整认知 tick,返回 reply_to_user(interact 模式时非空)。"""
     cfg = loop._cfg
@@ -852,63 +938,21 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             content=f"[用户消息] {user_message[:200]}",
             priority=cfg.thresholds.wm_pri_user_msg,
         ))
-
     loop._maybe_inject_budget_warning()
 
-    running_updates = await refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic, metabolic=_loop_metabolic(loop))
-    active_task = await _prepare_active_task_for_tick(loop, user_message, chat_id)
-    await _inject_tick_side_signals(loop, running_updates)
-    prep = await _prepare_tick_judgment_state(loop, active_task)
-    perception_replay = prep.perception_replay
-    cognitive_signals = prep.cognitive_signals
-    ethos_state = prep.ethos_state
+    prep, active_task = await _TickPerceptionPhase.run(loop, user_message, chat_id)
 
-    if active_task is None:
-        await loop._maybe_curiosity_task(ethos_state)
-
-    _inject_plan_alignment_signal(loop, active_task)
-
-    action = await _decide_initial_action(loop, cycle, user_message, active_task, chat_id, prep)
-    _log_tick_decision(loop, cycle, action)
-
-    action = await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
-
-    result, tool_history = await _execute_tick_action(loop, ctx, active_task, action)
-
-    # ① in-session bootstrap 完成检测（主工具执行后）
-    await _maybe_reconcile_bootstrap(loop)
-
-    action, result = await _maybe_run_tick_continue_phase(
-        loop,
-        ctx,
-        user_message,
-        active_task,
-        cognitive_signals,
-        action,
-        result,
-        tool_history,
+    action = await _TickJudgmentPhase.run(
+        loop, ctx, cycle, user_message, active_task, chat_id, prep
     )
 
-    await _finalize_tick_user_reply(
-        loop,
-        action,
-        result,
-        tool_history,
-        user_message,
-        active_task,
-        chat_id,
+    action, result, tool_history = await _TickExecutionPhase.run(
+        loop, ctx, user_message, active_task, prep.cognitive_signals, action
     )
 
-    return await _tick_finalize_impl(
-        loop,
-        action,
-        result,
-        active_task,
-        cycle,
-        user_message,
-        chat_id,
-        perception_replay,
-        ethos_state,
+    return await _TickMemoryPhase.run(
+        loop, cycle, user_message, chat_id, active_task,
+        action, result, tool_history, prep.perception_replay, prep.ethos_state,
     )
 
 
