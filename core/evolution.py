@@ -8,18 +8,18 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import importlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
-import os
 import sys
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC
 from pathlib import Path
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from core.perception.ethos import ETHOS_DIMENSIONS
 from core.skill import ensure_workspace_skill_file, _split_frontmatter, workspace_skill_file
@@ -98,10 +98,8 @@ def _clean_old_backups(tool_path: Path, keep: int = 3) -> None:
         key=lambda p: p.stat().st_mtime if p.exists() else 0,
     )
     for old in backups[:-keep] if len(backups) > keep else []:
-        try:
+        with contextlib.suppress(Exception):
             old.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _smoke_failure_artifact_paths(module_path: Path) -> tuple[Path, Path]:
@@ -115,10 +113,8 @@ def _smoke_failure_artifact_paths(module_path: Path) -> tuple[Path, Path]:
 
 def _clear_smoke_failure_artifacts(module_path: Path) -> None:
     for artifact in _smoke_failure_artifact_paths(module_path):
-        try:
+        with contextlib.suppress(Exception):
             artifact.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _persist_smoke_failure_artifacts(
@@ -186,7 +182,7 @@ class EvolutionEngine:
     - backup=True 时进化前保留 .bak 备份
     """
 
-    def __init__(self, cfg: "Config", provider: "Provider", registry: "ToolRegistry") -> None:
+    def __init__(self, cfg: Config, provider: Provider, registry: ToolRegistry) -> None:
         self._cfg = cfg
         self._provider = provider
         self._registry = registry
@@ -369,7 +365,7 @@ print("SMOKE_OK")
 
     async def _capture_validation_metrics(
         self,
-        ctx: "ToolContext",
+        ctx: ToolContext,
         *,
         target: str,
         since: datetime | None = None,
@@ -404,7 +400,7 @@ print("SMOKE_OK")
 
     async def _record_pending_verification(
         self,
-        ctx: "ToolContext",
+        ctx: ToolContext,
         *,
         target: str,
         tool_path: Path,
@@ -425,7 +421,7 @@ print("SMOKE_OK")
             scope="system", source="evolution/verify_setup",
         ))
 
-    async def _maybe_evaluate_verifications(self, ctx: "ToolContext") -> list[EvolutionResult]:
+    async def _maybe_evaluate_verifications(self, ctx: ToolContext) -> list[EvolutionResult]:
         facts = await ctx.task_store.list_facts(prefix="evolution:verify:", limit=50)
         results: list[EvolutionResult] = []
         for key, raw in facts:
@@ -470,7 +466,7 @@ print("SMOKE_OK")
             )
         return results
 
-    async def run(self, ctx: "ToolContext") -> list[EvolutionResult]:
+    async def run(self, ctx: ToolContext) -> list[EvolutionResult]:
         """主入口：分析近期失败，决定是否进化某个工具。
 
         触发条件从"最近 N 条记录中失败次数 >= 3"改为"时间窗内失败密度 >= 阈值"：
@@ -487,17 +483,17 @@ print("SMOKE_OK")
             return results
 
         # ── 时间窗过滤：只看最近 trigger_window_minutes 内的失败 ────────────────
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
         from collections import Counter
         _window = timedelta(minutes=self._cfg.evolution.trigger_window_minutes)
-        _now = datetime.now(timezone.utc)
+        _now = datetime.now(UTC)
         _cutoff = _now - _window
 
-        def _in_window(f: "Failure") -> bool:
+        def _in_window(f: Failure) -> bool:
             try:
                 ts = datetime.fromisoformat(f.created_at.replace("Z", "+00:00"))
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
                 return ts >= _cutoff
             except Exception:
                 return True  # 无法解析则保守包含
@@ -567,7 +563,7 @@ print("SMOKE_OK")
 
         return results
 
-    async def evolve_model(self, new_model: str, reason: str, ctx: "ToolContext") -> EvolutionResult:
+    async def evolve_model(self, new_model: str, reason: str, ctx: ToolContext) -> EvolutionResult:
         """升级协议：主脑模型切换的三器官联合确认（公理 A2 Phase 3）。
 
         步骤：
@@ -625,7 +621,7 @@ print("SMOKE_OK")
             reason=f"三器官联合确认通过，候选模型 {new_model!r} 已记录至 soul:proposed_model，重启后生效",
         )
 
-    async def evolve_ethos(self, ctx: "ToolContext") -> EvolutionResult:
+    async def evolve_ethos(self, ctx: ToolContext) -> EvolutionResult:
         """根据近期经历主动调整 ethos_baseline（价值观基线）。
 
         触发时机：每次 evolution.run() 末尾自动调用，也可由 LLM 通过 tool 主动调用。
@@ -936,7 +932,7 @@ print("SMOKE_OK")
             _log.info("[evolution] 新 skill %r 已合成写入: %s", skill_name, skill_path)
             await self._update_dreams(f"合成新技能：{skill_name}——{description[:60]}", ctx=ctx)
             return EvolutionResult(success=True, target=f"skill:{skill_name}", new_code=new_src)
-        except Exception as exc:
+        except Exception:
             return EvolutionResult(
                 success=False, target=f"skill:{skill_name}",
                 reason=traceback.format_exc(limit=3)
@@ -1067,13 +1063,11 @@ print("SMOKE_OK")
                 if attempt < self._cfg.evolution.max_attempts - 1:
                     messages.append(Message(role="assistant", content=new_src))
                     messages.append(Message(role="user", content=f"代码有语法错误，请修复：{reason}"))
-            except Exception as exc:
+            except Exception:
                 if tool_path.exists() and current_src:
                     self._restore_text(tool_path, current_src)
-                    try:
+                    with contextlib.suppress(Exception):
                         self._reload_module_from_path(f"tools.{tool_path.stem}", tool_path)
-                    except Exception:
-                        pass
                 reason = traceback.format_exc(limit=3)
                 await self._record_evolution_history(tool_name, success=False, reason=reason[:300], ctx=ctx)
                 return EvolutionResult(success=False, target=tool_name, reason=reason)
@@ -1127,10 +1121,8 @@ print("SMOKE_OK")
                     self._restore_text(tool_path, previous_src)
                     self._reload_module_from_path(module_name, tool_path)
                 else:
-                    try:
+                    with contextlib.suppress(Exception):
                         tool_path.unlink()
-                    except Exception:
-                        pass
                 raise
 
             _log.info("[evolution] 新工具 %r 已合成并加载", tool_name)
@@ -1275,10 +1267,8 @@ print("SMOKE_OK")
                 raise RuntimeError(f"热重载后未注册目标工具: {tool_name}")
         except Exception:
             self._restore_text(tool_path, current_src)
-            try:
+            with contextlib.suppress(Exception):
                 self._reload_module_from_path(module_name, tool_path)
-            except Exception:
-                pass
             raise
 
         _log.info("[competitive_evolve] 候选 %d (score=%d) 晋升为生产版本: %r",
@@ -1291,7 +1281,7 @@ print("SMOKE_OK")
             reason=f"competitive_evolve: candidate={candidate_idx} score={score}",
         )
 
-    async def _update_dreams(self, trigger_desc: str, ctx: "ToolContext | None" = None) -> None:
+    async def _update_dreams(self, trigger_desc: str, ctx: ToolContext | None = None) -> None:
         """进化成功后，追加一条真实的志向到 DREAMS.md，并写入持久历史 fact。
 
         LLM 根据刚刚发生的进化事件，用第一人称写一句新的长期志向（≤40字）。
@@ -1299,7 +1289,7 @@ print("SMOKE_OK")
         同时在 DB 写一条 evolution:history:{ts} fact，保证身份叙事可追溯。
         """
         from provider.base import Message
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         dreams_path = self._cfg.workspace_dir / "DREAMS.md"
         if not dreams_path.exists():
@@ -1322,7 +1312,7 @@ print("SMOKE_OK")
             aspiration = (await self._provider.chat(messages)).strip()
             if not aspiration or len(aspiration) > 120:
                 return  # 超长或空则跳过，不污染文件
-            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            ts = datetime.now(UTC).strftime("%Y-%m-%d")
             entry = f"\n- [{ts}] {aspiration}"
             with dreams_path.open("a", encoding="utf-8") as f:
                 f.write(entry)
@@ -1330,12 +1320,12 @@ print("SMOKE_OK")
             # ── 持久化结构化历史 fact（幂等，按毫秒时间戳去重） ──
             if ctx is not None:
                 try:
-                    _fact_ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:17]
+                    _fact_ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")[:17]
                     _fact_key = f"evolution:history:{_fact_ts}"
                     _fact_val = json.dumps({
                         "desc": trigger_desc[:200],
                         "aspiration": aspiration[:120],
-                        "at": datetime.now(timezone.utc).isoformat(),
+                        "at": datetime.now(UTC).isoformat(),
                     }, ensure_ascii=False)
                     await ctx.metabolic.submit(StateProposal(
                         op="set_fact", key=_fact_key, value=_fact_val,
@@ -1353,20 +1343,19 @@ print("SMOKE_OK")
         *,
         success: bool,
         reason: str,
-        ctx: "ToolContext | None",
+        ctx: ToolContext | None,
     ) -> None:
         """生命史账本：每次进化结果（成功/失败均记录）写入持久 fact（公理 A9）。"""
         if ctx is None:
             return
-        from datetime import timezone as _tz
         try:
-            _ts = datetime.now(_tz.utc).strftime("%Y%m%d%H%M%S%f")[:17]
+            _ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")[:17]
             _key = f"evolution:history:{_ts}"
             _val = json.dumps({
                 "tool": tool_name,
                 "success": success,
                 "reason": reason[:300] if reason else "",
-                "at": datetime.now(_tz.utc).isoformat(),
+                "at": datetime.now(UTC).isoformat(),
             }, ensure_ascii=False)
             await ctx.metabolic.submit(StateProposal(
                 op="set_fact", key=_key, value=_val,
@@ -1393,7 +1382,7 @@ def _score_candidate(code: str) -> int:
     n = len(lines)
 
     # 错误处理
-    except_count = sum(1 for l in lines if l.strip().startswith("except"))
+    except_count = sum(1 for ln in lines if ln.strip().startswith("except"))
     score += min(except_count * 10, 50)  # 最多 +50
 
     # 日志可观测性
@@ -1407,7 +1396,7 @@ def _score_candidate(code: str) -> int:
         score -= 10
 
     # 惩罚 print 语句
-    print_count = sum(1 for l in lines if l.strip().startswith("print("))
+    print_count = sum(1 for ln in lines if ln.strip().startswith("print("))
     score -= print_count * 5
 
     return score

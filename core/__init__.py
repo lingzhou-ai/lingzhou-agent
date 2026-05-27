@@ -42,11 +42,14 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_EXPORTS))
 
 __all__ = [
-    "Config",
     "CognitionLoop",
-    "PerceptionLayer", "EmotionState", "Percept",
-    "JudgmentLayer", "JudgmentOutput",
-    "ExecutionLayer",
+    "Config",
+    "EmotionState",
     "EvolutionEngine",
+    "ExecutionLayer",
+    "JudgmentLayer",
+    "JudgmentOutput",
+    "Percept",
+    "PerceptionLayer",
     "SkillRegistry",
 ]

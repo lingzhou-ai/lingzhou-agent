@@ -33,15 +33,15 @@ class Percept:
 
 
 class PerceptionLayer:
-    def __init__(self, cfg: "Config") -> None:
+    def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
         self._last_fingerprint: str = ""
         self._last_wm_size: int = 0
 
     async def sense(
         self,
-        wm: "WorkingMemory",
-        active_task: "Task | None" = None,
+        wm: WorkingMemory,
+        active_task: Task | None = None,
         *,
         last_next_step: str = "",
         last_decision: str = "wait",
@@ -70,14 +70,14 @@ class PerceptionLayer:
     def derive_cognitive_signals(
         self,
         percept: Percept,
-        wm: "WorkingMemory",
-        emotion: "EmotionState",
-        cfg: "Config",
+        wm: WorkingMemory,
+        emotion: EmotionState,
+        cfg: Config,
         *,
         has_active_task: bool = False,
         idle_cycles: int = 0,
         next_step_fulfilled: bool | None = None,
-    ) -> "CognitiveSignals":
+    ) -> CognitiveSignals:
         """将感知信号转化为认知状态报告，注入 LLM 判断上下文。
 
         设计原则：此方法只计算信号强度，不产生任何决策或任务文字。
@@ -113,7 +113,7 @@ class PerceptionLayer:
 
     def _compute_prediction_error(
         self,
-        wm: "WorkingMemory",
+        wm: WorkingMemory,
         workspace_dirty: bool,
         *,
         last_next_step: str = "",

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import copy
 import logging
@@ -34,9 +35,7 @@ from core.execution import (
 )
 from core.evolution import EvolutionEngine
 from .tick import (
-    _maybe_record_success_stall_reflection_impl,
     _post_tick_memory_impl,
-    _tick_finalize_impl,
     _tick_impl,
 )
 from memory.working import WorkingMemory, WMItem
@@ -46,19 +45,17 @@ from store.semantic import SemanticMemory
 from store.task import TaskStore, Task
 from provider import create_provider
 from provider.base import EmbeddingProvider
-from tools.registry import ToolRegistry, ToolContext, ToolResult
+from tools.registry import ToolRegistry, ToolContext
 from core.behavior_tracker import BehaviorTracker
 from core.soul import SoulManager
 from core.probe import ProbeManager
 from .dispatcher import ConcurrentTickDispatcher, TickJob
-from .driver import _run_cycle_impl, _wait_after_cycle_impl, _wait_for_event_impl
+from .driver import _run_cycle_impl, _wait_after_cycle_impl
 from .chat import _process_pending_chat_turn, _tick_interact_impl
 from .reload import _maybe_hot_reload_provider_impl
 from .startup import (
     _open_runtime_impl,
     _prepare_runtime_run_impl,
-    _restore_self_model_impl,
-    _restore_state_from_db_impl,
 )
 
 console = Console()
@@ -73,7 +70,6 @@ class ChainState:
     """
     _last_next_step: str = ""
     _last_decision: str = "wait"
-    _last_act_error: bool = False
     _last_act_progressful: bool = False
     _last_act_progress_reason: str = ""
     _last_action_tool: str = ""
@@ -147,9 +143,10 @@ class CognitionLoop:
                 if cfg.memory.local_embed_cache_dir:
                     _st_kwargs["cache_folder"] = cfg.memory.local_embed_cache_dir
                 _st_module = importlib.import_module("sentence_transformers")
-                _ST = getattr(_st_module, "SentenceTransformer")
+                _ST = _st_module.SentenceTransformer
                 _local_st = _ST(cfg.memory.local_embed_model, **_st_kwargs)
-                _embed_fn = lambda texts: _local_st.encode(texts, normalize_embeddings=True).tolist()
+                def _embed_fn(texts):
+                    return _local_st.encode(texts, normalize_embeddings=True).tolist()
             except Exception as _e:
                 import logging as _lg
                 _lg.getLogger("lingzhou.loop").warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", _e)
@@ -191,7 +188,6 @@ class CognitionLoop:
         # tick 间连续性追踪(预测误差 + 认知信号计算用)
         self._last_next_step: str = ""
         self._last_decision: str = "wait"
-        self._last_act_error: bool = False   # 兼容旧信号:上轮 act 是否以工具错误结束
         self._last_act_progressful: bool = False
         self._last_act_progress_reason: str = ""  # LLM 可见的进展判断原因
         self._last_action_tool: str = ""
@@ -340,10 +336,6 @@ class CognitionLoop:
             except Exception:
                 pass
 
-    async def _wait_for_event(self, max_wait: float, before_task) -> None:
-        """事件驱动等待:chat 消息、task 状态变化、超时三类事件任一发生即唤醒。"""
-        await _wait_for_event_impl(self, max_wait, before_task)
-
     async def _process_pending_chat_turn(self, cycle: int) -> tuple[int, bool]:
         return await _process_pending_chat_turn(self, cycle)
 
@@ -380,10 +372,8 @@ class CognitionLoop:
         # 否则每个新 chain 都会独立重试已达到 cooldown 的模型
         chain_judgment._model_health = self._judgment._model_health
         chain_judgment._provider_errors = self._judgment._provider_errors
-        try:
+        with contextlib.suppress(Exception):
             chain_judgment.self_model = copy.deepcopy(self._judgment.self_model)
-        except Exception:
-            pass
 
         state: dict[str, Any] = {
             "_wm": WorkingMemory(
@@ -434,21 +424,21 @@ class CognitionLoop:
             setattr(self, f.name, state[f.name])
 
     async def _run_dispatched_tick(self, job: TickJob) -> None:
-        async with self._dispatch_state_lock:
-            state = self._chain_runtime_state.get(job.chain_key)
-            if state is None:
-                state = self._new_chain_runtime_state()
-                self._chain_runtime_state[job.chain_key] = state
-
-        view = copy.copy(self)
-        self._mount_chain_view(view, state)
-        # provider 热切换后，链内 judgment 始终跟随当前 provider
-        view._judgment._provider = self._provider
-        if self._routing_providers:
-            view._judgment.set_routing_providers(dict(self._routing_providers))
-        view._judgment._probe_manager = self._probe_manager
-
         try:
+            async with self._dispatch_state_lock:
+                state = self._chain_runtime_state.get(job.chain_key)
+                if state is None:
+                    state = self._new_chain_runtime_state()
+                    self._chain_runtime_state[job.chain_key] = state
+
+            view = copy.copy(self)
+            self._mount_chain_view(view, state)
+            # provider 热切换后，链内 judgment 始终跟随当前 provider
+            view._judgment._provider = self._provider
+            if self._routing_providers:
+                view._judgment.set_routing_providers(dict(self._routing_providers))
+            view._judgment._probe_manager = self._probe_manager
+
             await view._tick(job.cycle, user_message=job.user_message, chat_id=job.chat_id)
         except Exception:
             if job.chat_message_ids:
@@ -468,45 +458,6 @@ class CognitionLoop:
         chat_id: str | None = None,
     ) -> str:
         return await _tick_impl(self, cycle, user_message=user_message, chat_id=chat_id)
-
-    async def _tick_finalize(
-        self,
-        action: JudgmentOutput,
-        result: ToolResult | Any,
-        active_task: Task | None,
-        cycle: int,
-        user_message: str,
-        chat_id: str | None = None,
-        perception_replay: Any = None,
-        ethos_state: Any = None,
-    ) -> str:
-        return await _tick_finalize_impl(
-            self,
-            action,
-            result,
-            active_task,
-            cycle,
-            user_message,
-            chat_id,
-            perception_replay,
-            ethos_state,
-        )
-
-    async def _maybe_record_success_stall_reflection(
-        self,
-        active_task: Task | None,
-        action: JudgmentOutput,
-        result: ToolResult,
-        cycle: int,
-    ) -> None:
-        await _maybe_record_success_stall_reflection_impl(self, active_task, action, result, cycle)
-
-    async def _restore_state_from_db(self) -> None:
-        await _restore_state_from_db_impl(self)
-
-
-    async def _restore_self_model(self) -> None:
-        await _restore_self_model_impl(self)
 
     async def _save_self_model(self) -> None:
         """持久化自我模型到 DB(每 tick 调用)。"""

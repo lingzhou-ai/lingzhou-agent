@@ -84,14 +84,14 @@ class ProviderDefinition(BaseModel):
                 pass
 
         if self.mode == "copilot":
-            raise EnvironmentError(
+            raise OSError(
                 f"未找到 {self.api_key_env!r} 的 GitHub token。\n"
                 "请执行以下任一操作：\n"
                 "  lingzhou auth login-copilot\n"
                 f"  export {self.api_key_env}=your_token"
             )
 
-        raise EnvironmentError(
+        raise OSError(
             f"未找到 {self.api_key_env!r}（环境变量/credentials/auth-profile 均为空）。\n"
             f"请执行以下任一操作：\n"
             f"  export {self.api_key_env}=your_token\n"
@@ -190,7 +190,7 @@ class LoopConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _validate_bounds(self) -> "LoopConfig":
+    def _validate_bounds(self) -> LoopConfig:
         for name in ("idle_with_task_bounds", "idle_no_task_bounds"):
             val = getattr(self, name)
             if len(val) != 2:
@@ -912,6 +912,14 @@ class ThresholdsConfig(BaseModel):
         default=0, ge=0,
         description="chat history 格式化后的最大字符预算；0 = 不限制",
     )
+    task_duplicate_reuse_score: float = Field(
+        default=0.66, ge=0.0, le=1.0,
+        description="任务相似度去重阈值：新建/并行任务时若找到 score≥此值的开放任务则直接复用",
+    )
+    task_similarity_context_score: float = Field(
+        default=0.45, ge=0.0, le=1.0,
+        description="任务相似度上下文快照阈值：judgment assembler 加载相似任务列表的最低分",
+    )
     # 工作记忆（WM）优先级基准（微调注入顺序，不影响功能语义）
     wm_pri_signal: float = Field(default=0.90, ge=0.0, le=1.0, description="调度信号、执行成功结果的 WM 优先级")
     wm_pri_history: float = Field(default=0.88, ge=0.0, le=1.0, description="近期对话历史的 WM 优先级")
@@ -1055,7 +1063,7 @@ class Config(BaseModel):
         return merged
 
     @classmethod
-    def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> "Config":
+    def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> Config:
         path = Path(path).expanduser().resolve()
         try:
             with open(path, encoding="utf-8") as f:

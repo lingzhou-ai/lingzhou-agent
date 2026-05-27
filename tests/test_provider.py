@@ -1,30 +1,14 @@
 """Auth / Copilot provider 测试"""
 import asyncio
-import builtins
-import io
 import json
-import logging
-import math
 import os
-import tempfile
 import time
-from functools import lru_cache
-from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 
-from conftest import (
-    _proj_root,
-    _test_config,
-    _tool_ctx,
-    _execution_layer,
-    _tool_registry,
-    _judgment_output,
-)
 def test_auth_store_profile_roundtrip(tmp_path):
     from store.auth import load_auth_profiles, set_token_profile
 
@@ -201,7 +185,7 @@ async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
     self_model = _ReloadSelfModel()
     _semantic_ns = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             _cfg=old_cfg,
             _cfg_file=cfg_path,
@@ -255,7 +239,7 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
     self_model = _ReloadSelfModel()
     _semantic_ns2 = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             _cfg=old_cfg,
             _cfg_file=cfg_path,
@@ -323,7 +307,7 @@ async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, t
     self_model = _ReloadSelfModel()
     _semantic_ns3 = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             _cfg=old_cfg,
             _cfg_file=cfg_path,
@@ -531,7 +515,7 @@ def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
     provider._temperature = 0.7
     provider._thinking_level = "high"
     provider._extra_body = {}
-    provider._client = cast(Any, fake_client)
+    provider._client = cast("Any", fake_client)
     provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:
@@ -600,7 +584,7 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     provider._temperature = 0.7
     provider._thinking_level = "high"
     provider._extra_body = {}
-    provider._client = cast(Any, fake_client)
+    provider._client = cast("Any", fake_client)
     provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:
@@ -680,7 +664,7 @@ def test_copilot_gpt5_responses_400_surfaces_error_body():
     provider._temperature = 0.7
     provider._thinking_level = "high"
     provider._extra_body = {}
-    provider._client = cast(Any, fake_client)
+    provider._client = cast("Any", fake_client)
     provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:

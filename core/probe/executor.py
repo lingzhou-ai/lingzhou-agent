@@ -9,7 +9,6 @@ import asyncio
 import io
 import logging
 import subprocess
-import sys
 from contextlib import redirect_stdout
 from typing import TYPE_CHECKING
 
@@ -22,20 +21,19 @@ _log = logging.getLogger("lingzhou.probe")
 DEFAULT_TIMEOUT_SEC = 30
 
 
-async def execute_probe(cfg: "ProbeConfig", timeout: int = DEFAULT_TIMEOUT_SEC) -> tuple[str, str | None]:
+async def execute_probe(cfg: ProbeConfig, timeout: int = DEFAULT_TIMEOUT_SEC) -> tuple[str, str | None]:
     """执行探针，返回 (output, error)。output 为空字符串表示无输出。"""
     try:
         if cfg.kind == "shell":
             return await _run_shell(cfg.spec, timeout)
-        elif cfg.kind == "http":
+        if cfg.kind == "http":
             return await _run_http(cfg.spec, timeout)
-        elif cfg.kind == "python":
+        if cfg.kind == "python":
             return await _run_python(cfg.spec, timeout)
-        elif cfg.kind == "builtin":
+        if cfg.kind == "builtin":
             return await _run_builtin(cfg.spec)
-        else:
-            return "", f"未知探针类型: {cfg.kind}"
-    except asyncio.TimeoutError:
+        return "", f"未知探针类型: {cfg.kind}"
+    except TimeoutError:
         return "", f"超时（>{timeout}s）"
     except Exception as exc:
         return "", str(exc)
@@ -55,7 +53,7 @@ async def _run_shell(cmd: str, timeout: int) -> tuple[str, str | None]:
             error = (result.stderr or "").strip() if result.returncode != 0 else None
             return output, error
         except subprocess.TimeoutExpired:
-            raise asyncio.TimeoutError()
+            raise TimeoutError() from None
         except Exception as exc:
             return "", str(exc)
 
@@ -144,7 +142,7 @@ async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:
         buf = io.StringIO()
         try:
             with redirect_stdout(buf):
-                exec(compile(code, "<probe>", "exec"), safe_globals)  # noqa: S102
+                exec(compile(code, "<probe>", "exec"), safe_globals)
             return buf.getvalue().strip(), None
         except Exception as exc:
             return buf.getvalue().strip(), str(exc)

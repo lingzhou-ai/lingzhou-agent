@@ -26,7 +26,6 @@ from .output import (
     tool_tier_mapping,
 )
 from .context import (
-    _clear_context_cache,
     _fmt_chat_continuity,
     _fill_template,
     _fmt_chat_history,
@@ -67,7 +66,7 @@ from .context import (
 )
 
 from core.execution import action_key_param
-from store.task import RUNNABLE_TASK_STATUSES, TASK_SIMILARITY_CONTEXT_SCORE
+from store.task import RUNNABLE_TASK_STATUSES
 from tools.registry import tool_has_capability
 
 _log = logging.getLogger("lingzhou.judgment")
@@ -113,6 +112,7 @@ async def _load_similar_tasks_snapshot(
     *,
     active_task: Any = None,
     limit: int = 5,
+    min_score: float = 0.45,
 ) -> list[tuple[Any, float]]:
     finder = getattr(task_store, "find_similar_open_tasks", None)
     if not callable(finder) or not str(query or "").strip():
@@ -121,7 +121,7 @@ async def _load_similar_tasks_snapshot(
     return await finder(
         query,
         limit=limit,
-        min_score=TASK_SIMILARITY_CONTEXT_SCORE,
+        min_score=min_score,
         exclude_task_ids=exclude_task_ids,
     )
 
@@ -147,10 +147,10 @@ class JudgmentContextAssembler:
 
     def __init__(
         self,
-        provider: "Provider",
-        registry: "ToolRegistry",
-        cfg: "Config",
-        executor: "JudgmentExecutor",
+        provider: Provider,
+        registry: ToolRegistry,
+        cfg: Config,
+        executor: JudgmentExecutor,
     ) -> None:
         from core.skill import SkillRegistry
         from core.reference import ReferenceResolver
@@ -173,7 +173,7 @@ class JudgmentContextAssembler:
         self._context_cache: dict[str, str] = {}
         # 探针系统引用：由 CognitionLoop.__init__ 在创建 ProbeManager 后注入
         self._probe_manager: Any = None
-        self._last_selected_skills: list["Skill"] = []
+        self._last_selected_skills: list[Skill] = []
         # 上轮 LLM 实际应用的技能名（用于下轮 match_for_context 优先注入）
         self._last_applied_skill_names: list[str] = []
 
@@ -186,19 +186,19 @@ class JudgmentContextAssembler:
 
     def _coerce_frame_args(
         self,
-        frame_or_percept: "CognitionFrame | Percept",
-        wm: "WorkingMemory | None",
-        task_store: "TaskStore | None",
-        episodic: "EpisodicMemory | None",
-        semantic: "SemanticMemory | None",
-        emotion: "EmotionState | None",
+        frame_or_percept: CognitionFrame | Percept,
+        wm: WorkingMemory | None,
+        task_store: TaskStore | None,
+        episodic: EpisodicMemory | None,
+        semantic: SemanticMemory | None,
+        emotion: EmotionState | None,
     ) -> tuple[
-        "Percept",
-        "WorkingMemory",
-        "TaskStore",
-        "EpisodicMemory",
-        "SemanticMemory",
-        "EmotionState",
+        Percept,
+        WorkingMemory,
+        TaskStore,
+        EpisodicMemory,
+        SemanticMemory,
+        EmotionState,
     ]:
         from .runtime import CognitionFrame as _CognitionFrame  # lazy import avoids circular
         if isinstance(frame_or_percept, _CognitionFrame):
@@ -234,7 +234,7 @@ class JudgmentContextAssembler:
             self._system_prompt = self._cfg.load_prompt("system")
 
     @staticmethod
-    def _skills_for_log(skills: list["Skill"]) -> str:
+    def _skills_for_log(skills: list[Skill]) -> str:
         if not skills:
             return "none"
         return ",".join(skill.name for skill in skills[:3])
@@ -245,10 +245,10 @@ class JudgmentContextAssembler:
             self._last_applied_skill_names = list(output.applied_skills)
         return applied
 
-    def _effective_registry(self, registry: "Any | None" = None) -> Any:
+    def _effective_registry(self, registry: Any | None = None) -> Any:
         return registry or self._registry
 
-    def _counts_as_exploration_budget(self, tool_name: str, registry: "Any | None" = None) -> bool:
+    def _counts_as_exploration_budget(self, tool_name: str, registry: Any | None = None) -> bool:
         effective_registry = self._effective_registry(registry)
         return any(
             tool_has_capability(effective_registry, tool_name, capability)
@@ -322,7 +322,7 @@ class JudgmentContextAssembler:
         tool_history: list[dict[str, Any]] | None,
         effective_thinking: str,
         routing_overrides: dict[str, str] | None = None,
-        registry: "Any | None" = None,
+        registry: Any | None = None,
     ) -> str:
         effective_registry = self._effective_registry(registry)
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
@@ -405,8 +405,6 @@ class JudgmentContextAssembler:
                 else "conserve"
             )
         )
-        implicit_next_phase_default = None
-
         def _fmt_duration_ms(value: float) -> str:
             ms = float(value)
             if ms >= 1000:
@@ -435,13 +433,12 @@ class JudgmentContextAssembler:
             for cap in manifest.capabilities:
                 capability_mapping.setdefault(cap, []).append(manifest.name)
             if manifest.name == current_action:
-                current_action_caps = sorted(list(manifest.capabilities))
+                current_action_caps = sorted(manifest.capabilities)
         payload = {
             "active_overrides": routing_overrides or {},
             "tool_tier_mapping": tool_tier_mapping(effective_registry),
             "tool_capability_mapping": {k: sorted(v) for k, v in capability_mapping.items()},
             "current_action_capabilities": current_action_caps,
-            "implicit_next_phase_default": implicit_next_phase_default,
             "continue_phase_policy": {
                 "task_plan_calls_this_tick": task_plan_calls_this_tick,
                 "task_plan_max_per_tick": continue_task_plan_max,
@@ -466,8 +463,6 @@ class JudgmentContextAssembler:
                 "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
                 "• tool_capability_mapping：runtime 注入的工具能力真相（如 ask_evidence / plan_bootstrap_exempt / completion_verify）。"
                 "优先按能力标签推理，不要仅凭工具名字猜类别。\n"
-                "• implicit_next_phase_default：兼容字段。当前 runtime 不再根据上个工具自动套用下轮 tier；"
-                "若你希望下轮走 reader / repair，必须由你显式设置 next_phase_tier。该字段通常为 null。\n"
                 "• continue_phase_policy：runtime 暴露的 tick 内计划限制真相。若 task_plan_blocked_next=true，"
                 "本 tick 再输出 task.plan 会被强制打断；应直接执行计划内工具。"
                 "若 tool_history_will_compact_next=true，下一轮会把早期工具记录折叠成 [compacted] 摘要，应尽量在压缩前完成总结或切换到执行。\n"
@@ -504,15 +499,16 @@ class JudgmentContextAssembler:
         }
         # 全量 catalog 模型列表（所有 provider 所有模型），让 LLM 能看到可用选项
         from provider import catalog as _cat
-        catalog_entries: list[dict[str, Any]] = []
-        for _pname in _cat.list_providers():
-            for _m in _cat.list_provider_models(_pname):
-                catalog_entries.append({
-                    "model": f"{_pname}/{_m.get('id', '')}",
-                    "provider": _pname,
-                    "reasoning": bool(_m.get("reasoning")),
-                    "context_window": _m.get("context_window"),
-                })
+        catalog_entries: list[dict[str, Any]] = [
+            {
+                "model": f"{_pname}/{_m.get('id', '')}",
+                "provider": _pname,
+                "reasoning": bool(_m.get("reasoning")),
+                "context_window": _m.get("context_window"),
+            }
+            for _pname in _cat.list_providers()
+            for _m in _cat.list_provider_models(_pname)
+        ]
         payload["catalog_models"] = catalog_entries
         # 主 provider 信息
         payload["primary_provider"] = {"model": self._cfg.model}
@@ -529,26 +525,26 @@ class JudgmentContextAssembler:
 
     async def _assemble_context(
         self,
-        frame_or_percept: "CognitionFrame | Percept",
-        wm: "WorkingMemory | None" = None,
-        task_store: "TaskStore | None" = None,
-        episodic: "EpisodicMemory | None" = None,
-        semantic: "SemanticMemory | None" = None,
-        emotion: "EmotionState | None" = None,
+        frame_or_percept: CognitionFrame | Percept,
+        wm: WorkingMemory | None = None,
+        task_store: TaskStore | None = None,
+        episodic: EpisodicMemory | None = None,
+        semantic: SemanticMemory | None = None,
+        emotion: EmotionState | None = None,
         active_task: Any | None = None,
         user_message: str = "",
         chat_id: str | None = None,
-        ethos_state: "EthosState | None" = None,
-        judgment_signals: "JudgmentSignals | None" = None,
-        hard_boundaries: "list[str] | None" = None,
-        perception_replay: "PerceptionReplaySummary | None" = None,
-        cognitive_signals: "CognitiveSignals | None" = None,
+        ethos_state: EthosState | None = None,
+        judgment_signals: JudgmentSignals | None = None,
+        hard_boundaries: list[str] | None = None,
+        perception_replay: PerceptionReplaySummary | None = None,
+        cognitive_signals: CognitiveSignals | None = None,
         phase: str = "initial",
         current_action: str = "",
         tool_history: list[dict[str, Any]] | None = None,
         effective_thinking: str | None = None,
-        routing_overrides: "dict[str, str] | None" = None,
-        registry_override: "Any | None" = None,
+        routing_overrides: dict[str, str] | None = None,
+        registry_override: Any | None = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
         percept, wm, task_store, episodic, semantic, emotion = self._coerce_frame_args(
@@ -669,7 +665,7 @@ class JudgmentContextAssembler:
         )
         parallel_data: dict[str, Any] = {}
         parallel_error: BaseException | None = None
-        for (name, _), value in zip(parallel_fetches, parallel_results):
+        for (name, _), value in zip(parallel_fetches, parallel_results, strict=False):
             if isinstance(value, BaseException):
                 if parallel_error is None:
                     parallel_error = value
@@ -693,7 +689,10 @@ class JudgmentContextAssembler:
 
         if chat_continuity_text.strip() == episodic_text.strip():
             chat_continuity_text = ""
-        similar_tasks = await _load_similar_tasks_snapshot(task_store, search_query, active_task=task, limit=5)
+        similar_tasks = await _load_similar_tasks_snapshot(
+            task_store, search_query, active_task=task, limit=5,
+            min_score=self._cfg.thresholds.task_similarity_context_score,
+        )
         episodic_search = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if task_id_str and search_query else ""
@@ -895,7 +894,7 @@ class JudgmentContextAssembler:
             "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
-            "blind_spot_section": _fmt_blind_spots(probes, self._executor.self_model.total_tokens),
+            "blind_spot_section": _fmt_blind_spots(probes),
             "self_model_section": fmt_self_model(self._executor.self_model),
             "team_view": _build_team_view_from_cfg(self._cfg),
             "model_routing_section": self._build_model_routing_section(

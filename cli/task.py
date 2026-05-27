@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -41,7 +41,7 @@ def task_add(
 
 @task_app.command("list")
 def task_list(
-    status: Annotated[Optional[str], typer.Option("--status", "-s", help="状态过滤（pending / running / done / failed）")] = None,
+    status: Annotated[str | None, typer.Option("--status", "-s", help="状态过滤（pending / running / done / failed）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """列出任务。"""

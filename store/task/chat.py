@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Optional
+from typing import Any
 
-import aiosqlite
 
 from ._base import BaseAsyncStore
 
@@ -71,7 +70,7 @@ class ChatMessageStore(BaseAsyncStore):
         ) as cur:
             return await cur.fetchone() is not None
 
-    async def pop_pending_message(self) -> Optional[dict[str, Any]]:
+    async def pop_pending_message(self) -> dict[str, Any] | None:
         async with self._db.execute(
             "SELECT id, content, session_id FROM chat_messages "
             "WHERE role='user' AND status='pending' ORDER BY id LIMIT 1"

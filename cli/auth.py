@@ -13,7 +13,6 @@ from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from store.auth import (
     AUTH_PROFILES_PATH,
     COPILOT_PROFILE_ID,
-    GITHUB_DEVICE_AUTH_PATH,
     LEGACY_CREDENTIALS_PATH,
     get_auth_profile,
     load_github_device_client_id,

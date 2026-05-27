@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -130,12 +131,6 @@ def _patch_config_classes(
     return to_inject
 
 
-def _patch_config_class(config_py: Path, class_name: str, patches: dict[str, str]) -> list[str]:
-    """单 class 兼容包装，内部复用 _patch_config_classes。"""
-    result = _patch_config_classes(config_py, {class_name: patches})
-    return result.get(class_name, [])
-
-
 def _startup_health_check(cfg: Config, project_root: Path) -> None:
     """运行时启动自检（非阻塞，仅 warn 级日志）：
 
@@ -187,17 +182,16 @@ def _build_routing_providers(cfg: Config) -> dict[str, Any]:
         if not model_ref or model_ref == cfg.model:
             continue
         # 启动期校验：若 model_id 不在指定 provider 的目录中，但存在于其他 provider，提前告警
-        if "/" in model_ref:
-            if lookup_model_ref(model_ref, catalog_path=catalog_path) is None:
-                model_id = model_ref.split("/", 1)[1]
-                provider_name = model_ref.split("/", 1)[0]
-                alt = lookup_model(model_id, catalog_path=catalog_path)
-                if alt is not None:
-                    _log.warning(
-                        "[routing] tier=%s model=%s: 模型 %r 未在 provider %r 的内置目录中注册，"
-                        "但在其他 provider 中存在。请检查 routing 配置是否正确（provider 名写错）。",
-                        tier, model_ref, model_id, provider_name,
-                    )
+        if "/" in model_ref and lookup_model_ref(model_ref, catalog_path=catalog_path) is None:
+            model_id = model_ref.split("/", 1)[1]
+            provider_name = model_ref.split("/", 1)[0]
+            alt = lookup_model(model_id, catalog_path=catalog_path)
+            if alt is not None:
+                _log.warning(
+                    "[routing] tier=%s model=%s: 模型 %r 未在 provider %r 的内置目录中注册，"
+                    "但在其他 provider 中存在。请检查 routing 配置是否正确（provider 名写错）。",
+                    tier, model_ref, model_id, provider_name,
+                )
         try:
             providers[tier] = create_provider_with_model(cfg, model_ref)
             _log.info("[routing] tier=%s model=%s", tier, model_ref)
@@ -300,10 +294,8 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
     import time as _time
     born_json, born_found = await loop._task_store.get_fact("soul:born_at")
     if born_found and born_json:
-        try:
+        with contextlib.suppress(Exception):
             loop._judgment.self_model.born_at = float(born_json)
-        except Exception:
-            pass
     else:
         _born_ts = _time.time()
         await loop._metabolic.submit(StateProposal(

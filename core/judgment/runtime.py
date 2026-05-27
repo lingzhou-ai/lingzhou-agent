@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -25,11 +24,7 @@ from .parser import (
 )
 from .output import (
     JudgmentOutput,
-    ModelHealth,
     ModelSelection,
-    _rewrite_task_ask_to_evidence,
-    _rewrite_complex_act_to_task_plan,
-    tool_tier,
 )
 from .context import _clear_context_cache
 
@@ -42,7 +37,6 @@ if TYPE_CHECKING:
         Percept, EmotionState, EthosState, JudgmentSignals, PerceptionReplaySummary,
         CognitiveSignals,
     )
-    from core.skill import Skill
     from memory.working import WorkingMemory
     from store.task import TaskStore
     from store.episodic import EpisodicMemory
@@ -57,12 +51,12 @@ if TYPE_CHECKING:
 class CognitionFrame:
     """6 个认知基底字段的轻量容器，兼容旧调用点。"""
 
-    percept: "Percept"
-    wm: "WorkingMemory"
-    task_store: "TaskStore"
-    episodic: "EpisodicMemory"
-    semantic: "SemanticMemory"
-    emotion: "EmotionState"
+    percept: Percept
+    wm: WorkingMemory
+    task_store: TaskStore
+    episodic: EpisodicMemory
+    semantic: SemanticMemory
+    emotion: EmotionState
 
 
 # ── 判断层 ─────────────────────────────────────────────────────────────────────
@@ -70,9 +64,9 @@ class CognitionFrame:
 class JudgmentLayer:
     def __init__(
         self,
-        provider: "Provider",
-        registry: "ToolRegistry",
-        cfg: "Config",
+        provider: Provider,
+        registry: ToolRegistry,
+        cfg: Config,
     ) -> None:
         self._cfg = cfg
         self._executor = JudgmentExecutor(provider, cfg)
@@ -94,7 +88,7 @@ class JudgmentLayer:
     @_probe_manager.setter
     def _probe_manager(self, v: Any) -> None:
         self._assembler._probe_manager = v
-    def set_routing_providers(self, providers: dict[str, "Provider"]) -> None:
+    def set_routing_providers(self, providers: dict[str, Provider]) -> None:
         """注入分层路由 providers（由 CognitionLoop.open() 调用）。"""
         self._executor.set_routing_providers(providers)
 
@@ -151,28 +145,28 @@ class JudgmentLayer:
 
     async def decide(
         self,
-        frame_or_percept: "CognitionFrame | Percept",
-        wm: "WorkingMemory | None" = None,
-        task_store: "TaskStore | None" = None,
-        episodic: "EpisodicMemory | None" = None,
-        semantic: "SemanticMemory | None" = None,
-        emotion: "EmotionState | None" = None,
+        frame_or_percept: CognitionFrame | Percept,
+        wm: WorkingMemory | None = None,
+        task_store: TaskStore | None = None,
+        episodic: EpisodicMemory | None = None,
+        semantic: SemanticMemory | None = None,
+        emotion: EmotionState | None = None,
         active_task: Any | None = None,
         user_message: str = "",
         chat_id: str | None = None,
-        ethos_state: "EthosState | None" = None,
-        judgment_signals: "JudgmentSignals | None" = None,
-        hard_boundaries: "list[str] | None" = None,
-        perception_replay: "PerceptionReplaySummary | None" = None,
-        cognitive_signals: "CognitiveSignals | None" = None,
-        thinking_override: "str | None" = None,
-        prefer_tier: "str | None" = None,
-        routing_overrides: "dict[str, str] | None" = None,
+        ethos_state: EthosState | None = None,
+        judgment_signals: JudgmentSignals | None = None,
+        hard_boundaries: list[str] | None = None,
+        perception_replay: PerceptionReplaySummary | None = None,
+        cognitive_signals: CognitiveSignals | None = None,
+        thinking_override: str | None = None,
+        prefer_tier: str | None = None,
+        routing_overrides: dict[str, str] | None = None,
         phase: str = "initial",
-        registry_override: "Any | None" = None,
+        registry_override: Any | None = None,
     ) -> JudgmentOutput:
         """组装上下文，调用 LLM，返回决策。
-        
+
         thinking_override: 覆盖 cfg.thinking（如 chat 模式用 "low" 加速首轮判断）。
         routing_overrides: 临时覆盖 tier→model 映射（由 loop.py 从 model_strategy 读取）。
         registry_override: 临时覆盖本轮可见工具集（如子灵受限工具视图）。
@@ -274,9 +268,9 @@ class JudgmentLayer:
         active_task: Any | None = None,
         prefer_tier: str | None = None,
         thinking_override: str | None = None,
-        routing_overrides: "dict[str, str] | None" = None,
+        routing_overrides: dict[str, str] | None = None,
         reply_only: bool = False,
-        wm_delta: "list[dict[str, Any]] | None" = None,
+        wm_delta: list[dict[str, Any]] | None = None,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
 
@@ -367,6 +361,5 @@ class JudgmentLayer:
         if output.decision == "act" and not output.chosen_action_id \
                 and not output.parallel_actions and not output.delegate_tasks:
             return JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
-        output = _apply_memory_honesty_guard(output, context_text=context_text)
-        return output
+        return _apply_memory_honesty_guard(output, context_text=context_text)
 

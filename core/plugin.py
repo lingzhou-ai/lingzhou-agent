@@ -20,7 +20,8 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
+from collections.abc import Callable
 
 _log = logging.getLogger("lingzhou.plugin")
 
@@ -220,7 +221,7 @@ class PluginManager:
             for p in self._plugins.values()
         ]
 
-    def get(self, plugin_id: str) -> Optional[PluginInstance]:
+    def get(self, plugin_id: str) -> PluginInstance | None:
         return self._plugins.get(plugin_id)
 
 

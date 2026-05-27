@@ -405,17 +405,16 @@ def _probe_model(cfg: Any) -> _CheckResult:
         _ok, _ms, _err = _asyncio.run(_ping_and_close())
         if _ok:
             return _CheckResult(ok=True, message=f"  {_OK} 模型探针: {_model_id} 响应 {_ms}ms")
-        elif _err and any(x in _err for x in ("认证", "401", "403")):
+        if _err and any(x in _err for x in ("认证", "401", "403")):
             return _CheckResult(
                 ok=False,
                 message=f"  {_FAIL} 模型探针: {_model_id} {_err}",
                 issue=f"API key 认证失败: {_err}",
             )
-        else:
-            return _CheckResult(
-                ok=False,
-                message=f"  {_WARN} 模型探针: {_model_id} {_err or 'unknown'} ({_ms}ms)",
-            )
+        return _CheckResult(
+            ok=False,
+            message=f"  {_WARN} 模型探针: {_model_id} {_err or 'unknown'} ({_ms}ms)",
+        )
     except Exception as _e:
         return _CheckResult(ok=False, message=f"  {_WARN} 模型探针: 跳过 ({_e})")
 
@@ -486,7 +485,7 @@ def doctor(
     # ── 汇总 ────────────────────────────────────────────────────────────
     console.print("")
     if not issues:
-        console.print(f"[bold green]所有检查通过。[/bold green] 可以运行 [bold]lingzhou run[/bold]")
+        console.print("[bold green]所有检查通过。[/bold green] 可以运行 [bold]lingzhou run[/bold]")
     else:
         console.print(f"[bold red]发现 {len(issues)} 个问题：[/bold red]")
         for i, issue in enumerate(issues, 1):

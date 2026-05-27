@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -74,7 +75,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
 
 
 async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> None:
-    """事件驱动等待: chat 消息、task 状态变化、超时任一发生即唤醒。"""
+    """事件驱动等待: chat 消息、task 状态变化、探针告警、超时任一发生即唤醒。"""
     cfg = loop._cfg
     poll = max(cfg.loop.wake_poll_interval / 1000.0, 0.05)  # 最小 50ms，防止 wake_poll_interval=0 导致紧密轮询
     before_sig = (
@@ -83,11 +84,23 @@ async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> 
     )
     event_loop = asyncio.get_running_loop()
     deadline = event_loop.time() + max_wait
+    # 获取探针告警事件（ProbeManager 在 attach 时创建）
+    _pm = getattr(loop, "_probe_manager", None)
+    alert_event = getattr(_pm, "alert_event", None) if _pm is not None else None
     while True:
         remaining = deadline - event_loop.time()
         if remaining <= 0:
             break
-        await asyncio.sleep(min(poll, remaining))
+        sleep_secs = min(poll, remaining)
+        if alert_event is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(alert_event.wait(), timeout=sleep_secs)
+        else:
+            await asyncio.sleep(sleep_secs)
+        if alert_event is not None and alert_event.is_set():
+            alert_event.clear()
+            _log.info("[wake] 探针告警触发，提前唤醒")
+            break
         if await loop._task_store.has_pending_chat_message():
             dispatcher = getattr(loop, "_tick_dispatcher", None)
             can_accept = getattr(dispatcher, "can_accept", None) if dispatcher is not None else None

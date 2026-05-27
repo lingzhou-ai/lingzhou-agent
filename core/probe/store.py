@@ -45,6 +45,8 @@ def _to_dict(cfg: ProbeConfig) -> dict[str, Any]:
         "last_confidence": cfg.last_confidence,
         "last_confidence_reason": cfg.last_confidence_reason,
         "last_suspect": cfg.last_suspect,
+        "last_alerted": cfg.last_alerted,
+        "last_alert_detail": cfg.last_alert_detail,
     }
 
 
@@ -75,6 +77,8 @@ def _from_dict(d: dict[str, Any]) -> ProbeConfig:
         last_confidence=_as_optional_float(d.get("last_confidence")),
         last_confidence_reason=d.get("last_confidence_reason") or None,
         last_suspect=bool(d.get("last_suspect", False)),
+        last_alerted=bool(d.get("last_alerted", False)),
+        last_alert_detail=d.get("last_alert_detail") or None,
     )
 
 
@@ -116,9 +120,6 @@ class ProbeStore:
         except Exception as exc:
             _log.warning("[probe] 写入 %s 失败: %s", self._file, exc)
 
-    async def migrate(self) -> None:
-        """兼容旧接口调用，无操作。"""
-
     async def upsert(self, cfg: ProbeConfig) -> int:
         existing = self._probes.get(cfg.name)
         now = datetime.now(UTC).isoformat(timespec="seconds")
@@ -141,6 +142,8 @@ class ProbeStore:
             last_confidence=existing.last_confidence if existing else None,
             last_confidence_reason=existing.last_confidence_reason if existing else None,
             last_suspect=existing.last_suspect if existing else False,
+            last_alerted=existing.last_alerted if existing else False,
+            last_alert_detail=existing.last_alert_detail if existing else None,
         )
         if not existing:
             self._next_id += 1
@@ -173,6 +176,8 @@ class ProbeStore:
         last_confidence: float | None = None,
         last_confidence_reason: str | None = None,
         last_suspect: bool = False,
+        last_alerted: bool = False,
+        last_alert_detail: str | None = None,
     ) -> None:
         cfg = self._probes.get(name)
         if cfg is None:
@@ -196,6 +201,8 @@ class ProbeStore:
             last_confidence=last_confidence,
             last_confidence_reason=last_confidence_reason,
             last_suspect=last_suspect,
+            last_alerted=last_alerted,
+            last_alert_detail=last_alert_detail,
         )
         self._save()
 
@@ -222,6 +229,8 @@ class ProbeStore:
             last_confidence=cfg.last_confidence,
             last_confidence_reason=cfg.last_confidence_reason,
             last_suspect=cfg.last_suspect,
+            last_alerted=cfg.last_alerted,
+            last_alert_detail=cfg.last_alert_detail,
         )
         self._save()
         return True

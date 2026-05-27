@@ -153,8 +153,8 @@ def _setup_impl(
 
     # ── 2. API Key env var ────────────────────────────────────────────
     console.print("\n[bold]步骤 2 / 5 — API Key 环境变量[/bold]")
-    console.print(f"  [dim]填写存放 API key 的 [bold]环境变量名[/bold]（如 DASHSCOPE_API_KEY），")
-    console.print(f"  [dim]也可直接粘贴 API key，将安全存储到配置文件。[/dim]")
+    console.print("  [dim]填写存放 API key 的 [bold]环境变量名[/bold]（如 DASHSCOPE_API_KEY），")
+    console.print("  [dim]也可直接粘贴 API key，将安全存储到配置文件。[/dim]")
     api_key_env = typer.prompt("  环境变量名或 API key", default=default_api_key_env)
     # 如果用户输入了实际的 key（不符合 ENV_VAR 命名规则），保留原值；setup 向导就当 literal key 处理
     if api_key_env and not _is_env_var_name(api_key_env):
@@ -313,7 +313,7 @@ def _run_init(
     console.print(f"  DB        → {cfg.db_path}")
     console.print(f"  Workspace → {cfg.workspace_dir}")
     if show_next_steps:
-        console.print(f"  启动      → lingzhou")
+        console.print("  启动      → lingzhou")
     return seeded
 
 
@@ -342,8 +342,7 @@ def onboard(
             except Exception:
                 console.print(f"[red]{reason}[/red]")
                 console.print("[yellow]现有配置不可用，请使用 --force 重新生成。[/yellow]")
-                raise typer.Exit(1)
-            console.print(f"[cyan]使用现有配置[/cyan]  {resolved}")
+                raise typer.Exit(1) from None
         else:
             _run_setup(output=resolved, force=force, show_next_steps=False)
         _run_init(config=resolved, force=force, show_next_steps=False)

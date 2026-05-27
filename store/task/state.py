@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Optional
+from typing import Any
 
-import aiosqlite
 
 from ._base import BaseAsyncStore
 from .models import Task
@@ -171,7 +170,7 @@ class TaskStateStore(BaseAsyncStore):
         await self._db.commit()
         return task_id
 
-    async def get_task_by_id(self, task_id: int) -> Optional[Task]:
+    async def get_task_by_id(self, task_id: int) -> Task | None:
         async with self._db.execute(
             "SELECT id, title, status, priority, created_at, data FROM tasks WHERE id=?",
             (task_id,),
@@ -201,13 +200,13 @@ class TaskStateStore(BaseAsyncStore):
             rows = await cur.fetchall()
         return [Task.from_row(row) for row in rows]
 
-    async def get_active(self) -> Optional[Task]:
+    async def get_active(self) -> Task | None:
         runnable = await self.list_runnable_tasks(limit=1)
         return runnable[0] if runnable else None
 
     async def list_tasks(
         self,
-        status: Optional[str] = None,
+        status: str | None = None,
         limit: int = 50,
     ) -> list[Task]:
         if status:
@@ -292,7 +291,7 @@ class TaskStateStore(BaseAsyncStore):
 
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
         protected_keys = {"goal", "source", "next_step", "result_json"}
-        ignored = [key for key in extra_dict.keys() if key in protected_keys]
+        ignored = [key for key in extra_dict if key in protected_keys]
         if ignored:
             logger.debug("update_task_data ignored protected task fields: %s", ",".join(sorted(ignored)))
 

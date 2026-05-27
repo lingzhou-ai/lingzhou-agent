@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.table import Table
@@ -40,7 +40,7 @@ def plugin_list() -> None:
 @plugin_app.command("install")
 def plugin_install(
     name: Annotated[str, typer.Argument(help="插件标识（用于目录名）")],
-    source: Annotated[Optional[str], typer.Option("--source", "-s", help="插件源码路径")] = None,
+    source: Annotated[str | None, typer.Option("--source", "-s", help="插件源码路径")] = None,
 ) -> None:
     """安装插件。创建插件目录骨架或从 source 复制。"""
     plugin_dir = PLUGINS_DIR / name

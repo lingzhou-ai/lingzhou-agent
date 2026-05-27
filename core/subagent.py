@@ -14,34 +14,24 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 _log = logging.getLogger("lingzhou.subagent")
 
 if TYPE_CHECKING:
-    from core.config import Config
     from core.judgment import JudgmentLayer
     from core.execution import ExecutionLayer
-    from memory.working import WorkingMemory
-    from store.episodic import EpisodicMemory
-    from store.semantic import SemanticMemory
     from store.task import TaskStore
     from tools.registry import ToolRegistry, ToolContext
-    from core.perception import EmotionState, Percept
 
 # ── 免疫器官：工具阻断策略（已迁移到 core/immune/policy.py）──────────────────────────
 from core.immune.policy import (
     _DEFAULT_BLOCKED_TOOLS,
-    _READONLY_BLOCKED_TOOL_NAMES,
-    _READONLY_ALLOWED_TASK_TOOLS,
-    _READONLY_ALLOWED_LOCAL_MEMORY_TOOLS,
     is_readonly_blocked_tool as _is_readonly_blocked_tool,
 )
 from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
@@ -80,10 +70,7 @@ def _build_subagent_active_task(sub_id: str, goal: str) -> Any:
     from store.task import Task
 
     title = (goal or "").strip()[:60]
-    if title:
-        title = f"子灵任务: {title}"
-    else:
-        title = f"子灵任务: {sub_id}"
+    title = f"子灵任务: {title}" if title else f"子灵任务: {sub_id}"
     return Task(
         id=-1,
         title=title,
@@ -619,8 +606,7 @@ class SubagentResult:
             parts.append(f"错误: {self.error}")
         if self.observations:
             parts.append("关键观察:")
-            for obs in self.observations[-5:]:  # 最近 5 条
-                parts.append(f"  · {obs}")
+            parts.extend(f"  · {obs}" for obs in self.observations[-5:])  # 最近 5 条
         if self.last_summary:
             parts.append(f"最终结果: {self.last_summary}")
         if self.absorbed_memories:
@@ -635,7 +621,7 @@ class _FilteredRegistry:
 
     def __init__(
         self,
-        real: "ToolRegistry",
+        real: ToolRegistry,
         allowed: set[str] | None,
         blocked: set[str],
         local_mutation_allow: set[str] | None = None,
@@ -654,9 +640,7 @@ class _FilteredRegistry:
             return True
         entry = self._real.get(name)
         manifest = entry.manifest if entry is not None else None
-        if _is_readonly_blocked_tool(name, manifest):
-            return False
-        return True
+        return not _is_readonly_blocked_tool(name, manifest)
 
     def get(self, name: str):
         if not self._is_visible(name):
@@ -679,7 +663,7 @@ class _FilteredRegistry:
 
 # ── 辅助：读取父灵 Ethos 基线 ────────────────────────────────────────────────────
 
-async def _load_parent_ethos(task_store: "TaskStore") -> dict[str, float]:
+async def _load_parent_ethos(task_store: TaskStore) -> dict[str, float]:
     """从父灵 TaskStore 读取 soul:ethos_baseline，解析失败返回空 dict，由调用方决定 fallback。"""
     try:
         ethos_json, found = await task_store.get_fact("soul:ethos_baseline")
@@ -706,10 +690,10 @@ class SubagentRunner:
         self,
         sub_cfg: SubagentConfig,
         *,
-        judgment: "JudgmentLayer",
-        execution: "ExecutionLayer",
-        parent_ctx: "ToolContext",
-        registry: "ToolRegistry",
+        judgment: JudgmentLayer,
+        execution: ExecutionLayer,
+        parent_ctx: ToolContext,
+        registry: ToolRegistry,
     ) -> None:
         self._sub_cfg = sub_cfg
         self._judgment = judgment
@@ -722,7 +706,7 @@ class SubagentRunner:
     async def run(self) -> SubagentResult:
         """执行子灵 tick 循环，返回 SubagentResult。"""
         from memory.working import WorkingMemory, WMItem
-        from core.perception import EmotionState, Percept, derive_ethos_state, EthosValues
+        from core.perception import EmotionState, Percept, derive_ethos_state
         from tools.registry import ToolContext
 
         cfg = self._sub_cfg
@@ -918,10 +902,10 @@ class SubagentRunner:
 
 def make_subagent_runner(
     sub_cfg: SubagentConfig,
-    parent_ctx: "ToolContext",
-    judgment: "JudgmentLayer",
-    execution: "ExecutionLayer",
-    registry: "ToolRegistry",
+    parent_ctx: ToolContext,
+    judgment: JudgmentLayer,
+    execution: ExecutionLayer,
+    registry: ToolRegistry,
 ) -> SubagentRunner:
     """根据父灵上下文构造子灵 Runner，供 tools/subagent_ops.py 调用。"""
     return SubagentRunner(

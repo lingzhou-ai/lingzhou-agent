@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re as _re_mod
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -194,7 +194,6 @@ class _ModeAdapter:
 
 class _OpenAIMode(_ModeAdapter):
     """标准 OpenAI 兼容模式：百炼、DeepSeek 等。"""
-    pass
 
 
 class _CopilotMode(_ModeAdapter):
@@ -352,7 +351,7 @@ def _build_mode_adapter(
     if mode == "copilot":
         resolved = resolve_copilot_token(api_key_env)
         if not resolved:
-            raise EnvironmentError(
+            raise OSError(
                 "未找到 Copilot 的 GitHub token。\n"
                 "Lingzhou 使用：GitHub token → Copilot token exchange → Copilot API\n"
                 "请执行以下任一操作：\n"
@@ -381,7 +380,7 @@ class OpenAICompatProvider:
     - mode=copilot: GitHub Copilot，token exchange + IDE headers + responses API
     """
 
-    def __init__(self, cfg: "Config") -> None:
+    def __init__(self, cfg: Config) -> None:
         provider = cfg.active_provider
         self.model_ref = cfg.model
         self._model = cfg.active_model_id
@@ -412,7 +411,7 @@ class OpenAICompatProvider:
         # Fallback for test injection: _copilot_url overridden as instance attr
         _cu = self.__dict__.get("_copilot_url")
         if callable(_cu):
-            return str(cast(Callable[[str], object], _cu)(path))
+            return str(cast("Callable[[str], object]", _cu)(path))
         base = self._copilot_api_base_url or self.__dict__.get("_base_url", "")
         return f"{str(base).rstrip('/')}{path}"
 
@@ -424,15 +423,9 @@ class OpenAICompatProvider:
         _ensure_token = self.__dict__.get("_ensure_copilot_token")
         _request_headers = self.__dict__.get("_copilot_request_headers")
         if callable(_ensure_token) and callable(_request_headers):
-            token = await cast(Callable[..., Awaitable[str]], _ensure_token)()
-            return cast(Callable[[str], dict[str, str]], _request_headers)(token)
+            token = await cast("Callable[..., Awaitable[str]]", _ensure_token)()
+            return cast("Callable[[str], dict[str, str]]", _request_headers)(token)
         return {}
-
-    async def _handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
-        _m = self.__dict__.get("_mode")
-        if _m is not None:
-            return await _m.handle_auth_error(resp)
-        return None
 
     async def _copilot_refreshed_headers(self) -> dict[str, str]:
         """Force-refresh Copilot token and return new request headers."""
@@ -443,8 +436,8 @@ class OpenAICompatProvider:
         _ensure_token = self.__dict__.get("_ensure_copilot_token")
         _request_headers = self.__dict__.get("_copilot_request_headers")
         if callable(_ensure_token) and callable(_request_headers):
-            token = await cast(Callable[..., Awaitable[str]], _ensure_token)(force_refresh=True)
-            return cast(Callable[[str], dict[str, str]], _request_headers)(token)
+            token = await cast("Callable[..., Awaitable[str]]", _ensure_token)(force_refresh=True)
+            return cast("Callable[[str], dict[str, str]]", _request_headers)(token)
         return await self._request_headers()
 
     # ── 向后兼容：copilot 方法透传（测试用）───────────────────────────
@@ -653,7 +646,7 @@ class OpenAICompatProvider:
         if not choices:
             finish = (data.get("choices") or [{}])[0].get("finish_reason") if data.get("choices") else None
             raise RuntimeError(
-                f"API 返回空 choices（可能触发内容过滤或限流）"
+                "API 返回空 choices（可能触发内容过滤或限流）"
                 + (f"，finish_reason={finish}" if finish else "")
             )
         msg = choices[0]["message"]
@@ -661,8 +654,7 @@ class OpenAICompatProvider:
         if msg.get("reasoning_content"):
             return content
         import re as _re
-        content = _re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
-        return content
+        return _re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -697,10 +689,9 @@ class OpenAICompatProvider:
             _ms = int((_time.monotonic() - _t0) * 1000)
             if resp.status_code in (200, 201):
                 return True, _ms, None
-            elif resp.status_code in (401, 403):
+            if resp.status_code in (401, 403):
                 return False, _ms, f"认证失败 (HTTP {resp.status_code})"
-            else:
-                return False, _ms, f"HTTP {resp.status_code}"
+            return False, _ms, f"HTTP {resp.status_code}"
         except Exception as _e:
             _ms = int((_time.monotonic() - _t0) * 1000)
             return False, _ms, str(_e)

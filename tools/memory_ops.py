@@ -348,8 +348,7 @@ async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         "",
         "工作记忆前 5 条:",
     ]
-    for item in wm_items[:5]:
-        lines.append(f"  [{item['kind']}] {item['content'][:80]}")
+    lines.extend(f"  [{item['kind']}] {item['content'][:80]}" for item in wm_items[:5])
 
     snapshot_text = "\n".join(lines)
     ctx.episodic.record(

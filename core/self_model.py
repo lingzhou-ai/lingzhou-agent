@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ class SelfModel:
         days, rem = divmod(secs, 86400)
         return f"{days}天{rem // 3600}h"
 
-    def set_routing(self, cfg: "Config") -> None:
+    def set_routing(self, cfg: Config) -> None:
         self.primary_model = cfg.model
         routing = getattr(cfg, "routing", {}) or {}
         self.reader_model = routing.get("reader", cfg.model)
@@ -149,7 +149,7 @@ class SelfModel:
         }, ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str, *, name: str = "lingzhou") -> "SelfModel":
+    def from_json(cls, raw: str, *, name: str = "lingzhou") -> SelfModel:
         import json as _json
         try:
             data = _json.loads(raw)

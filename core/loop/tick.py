@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
-import re
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -673,7 +673,6 @@ async def _finalize_tick_user_reply(
     chat_id: str | None,
 ) -> None:
     """处理 reply_only、fallback reply 与聊天回复落库。"""
-    cfg = loop._cfg
     reply_only = await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task)
 
     if user_message and not action.reply_to_user and _should_use_fallback_user_reply(result, reply_only):
@@ -694,7 +693,7 @@ def _should_use_fallback_user_reply(
     if reply_only is None:
         return False
     rationale = str(reply_only.rationale or "")
-    return rationale.startswith("[reply-only]") or rationale.startswith("[inner-loop]")
+    return rationale.startswith(("[reply-only]", "[inner-loop]"))
 
 
 async def _maybe_fill_tick_user_reply(
@@ -962,7 +961,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     )
 
 
-def _write_survival_snapshot(loop: Any, action: "JudgmentOutput", active_task: "Task | None", cycle: int) -> None:
+def _write_survival_snapshot(loop: Any, action: JudgmentOutput, active_task: Task | None, cycle: int) -> None:
     """每 tick 覆写 survival.json，记录最近一次运行状态。
 
     exit_type 始终写为 "crash"；干净退出时由 runtime.run() 的 finally 覆写为 "clean"。
@@ -974,7 +973,7 @@ def _write_survival_snapshot(loop: Any, action: "JudgmentOutput", active_task: "
         state_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "tick": cycle,
-            "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ts": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "active_task_id": str(active_task.id) if active_task else None,
             "active_task_title": active_task.title if active_task else None,
             "active_task_goal": (active_task.goal or "")[:200] if active_task else None,
@@ -1011,7 +1010,6 @@ async def _sync_tick_action_state(
 
     loop._last_next_step = action.next_step or ""
     loop._last_decision = action.decision
-    loop._last_act_error = bool(action.decision == "act" and result.error)
     loop._last_act_progressful, loop._last_act_progress_reason = _action_made_progress(
         action,
         result,
@@ -1193,10 +1191,8 @@ async def _run_tick_maintenance(loop: Any, active_task: Task | None, cycle: int)
 
     await loop._soul.sync_md()
     # 定期 WAL checkpoint 防止 DB 膨胀
-    try:
+    with contextlib.suppress(Exception):
         await loop._task_store.wal_checkpoint()
-    except Exception:
-        pass
 
 
 async def _maybe_run_tick_evolution(loop: Any, cycle: int, perception_replay: Any) -> None:

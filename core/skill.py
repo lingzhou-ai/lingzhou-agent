@@ -109,12 +109,8 @@ def ensure_workspace_skill_file(workspace_dir: Path, skill_name: str) -> Path:
 
 
 def _iter_skill_files(skills_dir: Path) -> list[Path]:
-    files: list[Path] = []
-    for md in sorted(skills_dir.glob("*.md")):
-        if md.name != "SKILL.md":
-            files.append(md)
-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-        files.append(skill_md)
+    files = [md for md in sorted(skills_dir.glob("*.md")) if md.name != "SKILL.md"]
+    files.extend(sorted(skills_dir.glob("*/SKILL.md")))
     return files
 
 
@@ -458,7 +454,7 @@ def _extract_trigger_text(description: str, meta: dict[str, str]) -> list[str]:
     m = re.search(r"(?:Triggers?|触发(?:词|器|条件)?)[：:]\s*(.+)$", description, flags=re.IGNORECASE | re.DOTALL)
     if m:
         triggers.extend(_parse_listish(m.group(1)))
-    return [t for t in dict.fromkeys(t.strip() for t in triggers if t.strip())]
+    return list(dict.fromkeys(t.strip() for t in triggers if t.strip()))
 
 
 def _extract_match_terms(meta: dict[str, str]) -> list[str]:
@@ -466,7 +462,7 @@ def _extract_match_terms(meta: dict[str, str]) -> list[str]:
     for key in ("match_terms", "matchers", "anchors", "context_terms"):
         if key in meta:
             terms.extend(_parse_listish(meta[key]))
-    return [t for t in dict.fromkeys(t.strip() for t in terms if t.strip())]
+    return list(dict.fromkeys(t.strip() for t in terms if t.strip()))
 
 
 _MATCH_RULE_RE = re.compile(
@@ -649,8 +645,7 @@ def _skill_activation_text(skill: Skill, *, include_frontmatter: bool = False, g
         lines.append(f"Allowed tools: {' '.join(skill.allowed_tools)}")
     if resources:
         lines.append("<skill_resources>")
-        for rel in resources:
-            lines.append(f"- {rel}")
+        lines.extend(f"- {rel}" for rel in resources)
         lines.append("</skill_resources>")
     lines.append("</skill_content>")
     return "\n".join(lines)

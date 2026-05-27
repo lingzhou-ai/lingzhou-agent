@@ -171,7 +171,7 @@ class ReferenceResolver:
 
     def __init__(
         self,
-        provider: "Provider | None" = None,
+        provider: Provider | None = None,
         *,
         thresholds: ThresholdsConfig | None = None,
         reason_temperature: float | None = None,
@@ -225,8 +225,8 @@ class ReferenceResolver:
         self,
         message: str,
         sigs: ExtractedSignals,
-        semantic: "SemanticMemory",
-        episodic: "EpisodicMemory",
+        semantic: SemanticMemory,
+        episodic: EpisodicMemory,
         source: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """返回 {node_id: node_dict}，最多 reference_candidate_cap 个候选节点。"""
@@ -274,9 +274,7 @@ class ReferenceResolver:
 
         lowered_source = f" {source_hint.lower()} " if source_hint else ""
         for kind, tokens in _INTERLOCUTOR_TYPE_HINTS.items():
-            if any(token.isascii() and f" {token} " in lowered_source for token in tokens if token.isascii()):
-                _add(f"source_kind={kind}")
-            elif any((not token.isascii()) and token in source_hint for token in tokens):
+            if any(token.isascii() and f" {token} " in lowered_source for token in tokens if token.isascii()) or any((not token.isascii()) and token in source_hint for token in tokens):
                 _add(f"source_kind={kind}")
         if source_hint.strip():
             compact_source = re.sub(r"\s+", " ", source_hint.strip())[:48]
@@ -309,12 +307,10 @@ class ReferenceResolver:
         preferences: list[str] = []
         explicit: list[str] = []
         for sentence in _split_sentences(text):
-            if any(token in sentence for token in ("我喜欢", "我偏好", "我更喜欢", "请用", "以后用", "先给结论", "直接说结论")):
-                if sentence not in preferences:
-                    preferences.append(sentence)
-            if any(token in sentence for token in ("记住", "别忘了", "请记得")):
-                if sentence not in explicit:
-                    explicit.append(sentence)
+            if any(token in sentence for token in ("我喜欢", "我偏好", "我更喜欢", "请用", "以后用", "先给结论", "直接说结论")) and sentence not in preferences:
+                preferences.append(sentence)
+            if any(token in sentence for token in ("记住", "别忘了", "请记得")) and sentence not in explicit:
+                explicit.append(sentence)
 
         return {
             "names": names[:2],
@@ -326,7 +322,7 @@ class ReferenceResolver:
     def _retrieve_speaker_candidates(
         self,
         message: str,
-        semantic: "SemanticMemory",
+        semantic: SemanticMemory,
         *,
         chat_id: str = "",
         recent_turns: list[dict[str, Any]] | None = None,
@@ -628,7 +624,7 @@ class ReferenceResolver:
     async def resolve_current_speaker(
         self,
         message: str,
-        semantic: "SemanticMemory",
+        semantic: SemanticMemory,
         *,
         chat_id: str = "",
         recent_turns: list[dict[str, Any]] | None = None,
@@ -714,14 +710,14 @@ class ReferenceResolver:
     async def remember_speaker(
         self,
         speaker: ResolvedSpeaker,
-        semantic: "SemanticMemory",
-        task_store: "TaskStore | None",
+        semantic: SemanticMemory,
+        task_store: TaskStore | None,
         *,
         message: str,
         chat_id: str = "",
         task_id: str | int | None = None,
         source_hint: str = "",
-        metabolic: "MetabolicEngine | None" = None,
+        metabolic: MetabolicEngine | None = None,
     ) -> None:
         if not speaker.node_id:
             return
@@ -815,9 +811,9 @@ class ReferenceResolver:
     async def resolve(
         self,
         message: str,
-        semantic: "SemanticMemory",
-        episodic: "EpisodicMemory",
-    ) -> list["ResolvedEntity"]:
+        semantic: SemanticMemory,
+        episodic: EpisodicMemory,
+    ) -> list[ResolvedEntity]:
         """两阶段：本地召回候选 → LLM 推理判断 → ResolvedEntity 列表。
 
         Provider 不可用时：自动降级为本地评分，保持可用性。
@@ -880,7 +876,7 @@ class ReferenceResolver:
     # ── 格式化注入 entity_section ────────────────────────────────────────────
 
     @staticmethod
-    def format_section(entities: list["ResolvedEntity"]) -> str:
+    def format_section(entities: list[ResolvedEntity]) -> str:
         if not entities:
             return "（无可链接的历史实体）"
         lines = ["从记忆中识别到以下相关实体（LLM 推理确认，按置信度排列）："]
@@ -894,15 +890,14 @@ class ReferenceResolver:
         return "\n".join(lines)
 
     @staticmethod
-    def format_speaker_section(speaker: "ResolvedSpeaker | None") -> str:
+    def format_speaker_section(speaker: ResolvedSpeaker | None) -> str:
         if speaker is None:
             return "（当前轮尚未稳定识别当前交互对象，先依赖本轮消息与 chat 连续性）"
         status = "临时画像" if speaker.provisional else "稳定画像"
         lines = [f"当前交互对象候选: {speaker.title}（confidence:{speaker.confidence:.2f}，{status}）"]
         if speaker.relationship_note:
             lines.append(f"判断: {speaker.relationship_note}")
-        for item in speaker.evidence[:3]:
-            lines.append(f"- {item}")
+        lines.extend(f"- {item}" for item in speaker.evidence[:3])
         if speaker.snippet:
             lines.append(f"画像记忆: {speaker.snippet}")
         return "\n".join(lines)

@@ -99,9 +99,7 @@ def _should_continue_within_tick(
     if (action.chosen_action_id or "") in {"task.complete", "task.fail"}:
         return False
     # mutation tool in a user-prompted tick with active task: don't auto-continue
-    if user_message and has_active_task and tool_tier(action.chosen_action_id or "", registry) != "reader":
-        return False
-    return True
+    return not (user_message and has_active_task and tool_tier(action.chosen_action_id or "", registry) != "reader")
 
 
 def _preferred_continue_tier(

@@ -18,8 +18,8 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, CAPS_EXEMPT
 from core.probe.types import ProbeConfig, ProbeDataBack, ProbeKind, normalize_probe_coverage_tags
+from tools.registry import CAPS_EXEMPT, ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _log = logging.getLogger("lingzhou.probe")
 
@@ -79,11 +79,11 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     cfg = ProbeConfig(
         name=name,
-        kind=cast(ProbeKind, kind),
+        kind=cast("ProbeKind", kind),
         spec=spec,
         trigger=trigger,
         purpose=str(params.get("purpose") or "").strip(),
-        data_back=cast(ProbeDataBack, data_back_raw),
+        data_back=cast("ProbeDataBack", data_back_raw),
         coverage_tags=coverage_tags,
         alert_expr=str(params.get("alert_expr") or "") or None,
         alert_message=str(params.get("alert_message") or "") or None,
@@ -232,7 +232,7 @@ async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             f"  kind={p.kind}  trigger={p.trigger}  data_back={p.data_back}\n"
             f"{coverage_preview}\n"
             f"  最近运行: {last}{result_preview}"
-            + (f"\n{confidence_preview}" if confidence_preview else "")
+            + (f"\n{confidence_preview}" if confidence_preview else ""),
         )
 
     return ToolResult(summary="\n".join(lines))

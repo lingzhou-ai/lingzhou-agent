@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
@@ -22,7 +22,7 @@ def _parse_run_at(run_at_str: str | None) -> str:
     - 偏移量 '+3600'（秒）或 '+1h' / '+30m' / '+1d'：相对当前时间
     """
     if not run_at_str:
-        return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     s = run_at_str.strip()
 
@@ -38,7 +38,7 @@ def _parse_run_at(run_at_str: str | None) -> str:
             seconds = int(offset_str[:-1]) * 60
         else:
             seconds = int(offset_str)
-        dt = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        dt = datetime.now(UTC) + timedelta(seconds=seconds)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # ISO8601 with timezone
@@ -47,14 +47,14 @@ def _parse_run_at(run_at_str: str | None) -> str:
         try:
             dt = datetime.fromisoformat(s_norm)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         except ValueError:
             pass
 
     # 纯日期
     try:
-        dt = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC)
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         pass
@@ -119,13 +119,13 @@ async def schedule_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ],
 ))
 async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    from datetime import datetime, timezone
+    from datetime import datetime
     include_done = bool(params.get("include_done", False))
     limit = int(params.get("limit") or 20)
     sigs = await ctx.task_store.list_signals(limit=limit, include_done=include_done)
     if not sigs:
         return ToolResult(summary="暂无调度信号", evidence="")
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     lines = []
     for s in sigs:
         repeat = f" 重复{s['repeat_secs']}s" if s["repeat_secs"] else ""
@@ -133,7 +133,7 @@ async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             run_at_str = s["run_at"].replace("Z", "+00:00")
             run_at_dt = datetime.fromisoformat(run_at_str)
             if run_at_dt.tzinfo is None:
-                run_at_dt = run_at_dt.replace(tzinfo=timezone.utc)
+                run_at_dt = run_at_dt.replace(tzinfo=UTC)
             due_tag = "⚡到期" if run_at_dt <= now_utc else f"⏰{s['run_at']}"
         except Exception:
             due_tag = s["run_at"]

@@ -245,7 +245,7 @@ def _build_semantic_node(
     activation = min(0.96, 0.42 + priority * 0.45 + min(importance_bonus, 0.12))
     body_max_chars = int(getattr(memory_cfg, "promotion_body_max_chars", 0))
     body = cleaned if body_max_chars <= 0 else cleaned[:body_max_chars]
-    digest = hashlib.sha1(f"{memory_kind}|{kind}|{cleaned}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1(f"{memory_kind}|{kind}|{cleaned}".encode()).hexdigest()[:16]
     prefix = _TITLE_PREFIX.get(memory_kind, "trace")
     scope_label = f"task#{task_id}" if task_id else "free"
     snippet = cleaned.replace("\n", " ")[:72]

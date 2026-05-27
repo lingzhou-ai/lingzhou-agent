@@ -18,4 +18,3 @@ def register(ctx):
 
 def unregister():
     """移除工具。"""
-    pass

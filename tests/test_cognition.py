@@ -1,27 +1,17 @@
 """认知循环、chat reply、resolve 等集成测试"""
 import asyncio
-import builtins
-import io
 import json
-import logging
-import math
 import os
 import tempfile
-import time
-from functools import lru_cache
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 
 from conftest import (
     _proj_root,
-    _test_config,
-    _tool_ctx,
-    _execution_layer,
     _tool_registry,
     _judgment_output,
 )
@@ -109,7 +99,7 @@ async def _curiosity_signal_does_not_auto_create_task():
         try:
             loop._idle_cycles = cfg.thresholds.curiosity_idle_min_cycles
             loop._last_curiosity_signal_idle_cycle = 0
-            ethos_state = cast(Any, SimpleNamespace(
+            ethos_state = cast("Any", SimpleNamespace(
                 values=SimpleNamespace(curiosity=cfg.thresholds.curiosity_idle_task + 0.1)
             ))
 
@@ -669,7 +659,7 @@ async def _invalid_routing_overrides_clear_previous_pending_state():
         await store.open()
         try:
             await store.set_fact("pref:routing_overrides", '{"reader":"demo/model"}', scope="system")
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _cfg=SimpleNamespace(
                     loop=SimpleNamespace(
                         idle_with_task_bounds=[100, 30000],
@@ -773,7 +763,7 @@ async def _run_tick_maintenance_uses_configured_global_md_warn_lines():
         async def _wal_checkpoint() -> None:
             await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
-        loop = cast(Any, SimpleNamespace(
+        loop = cast("Any", SimpleNamespace(
             _cfg=cfg,
             _wm=wm,
             _soul=soul,
@@ -842,7 +832,7 @@ async def _run_tick_maintenance_uses_configured_low_pressure_skip_threshold():
                 },
             })
 
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _cfg=cfg,
                 _wm=_WM(pressure=0.86),
                 _soul=_Soul(),
@@ -880,7 +870,7 @@ async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
             assert active_task is not None
             await store.update_status(task_id, "done", "finished")
             semantic = SemanticMemory(root / "semantic")
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _task_store=store,
                 _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "任务完成叙事"),
                 _semantic=semantic,
@@ -892,7 +882,7 @@ async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
                     emotion=SimpleNamespace(),
                 ),
             ))
-            action = cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection="", rationale=""))
+            action = cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection="", rationale=""))
             result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
 
             await _post_tick_memory_impl(loop, action, result, active_task, cycle=1, user_message="")
@@ -926,7 +916,7 @@ async def _consolidate_promotes_semantic_nodes_and_durable_user_facts():
             active_task = await store.get_task_by_id(task_id)
             assert active_task is not None
 
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _wm=WorkingMemory(capacity=20),
                 _episodic=EpisodicMemory(memory_dir),
                 _semantic=SemanticMemory(memory_dir, decay_lambda=0.0),
@@ -993,7 +983,7 @@ async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
             active_task = await store.get_task_by_id(task_id)
             assert active_task is not None
             semantic = SemanticMemory(root / "semantic")
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _task_store=store,
                 _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
                 _semantic=semantic,
@@ -1009,7 +999,7 @@ async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
 
             await _post_tick_memory_impl(
                 loop,
-                cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_a, rationale="")),
+                cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_a, rationale="")),
                 result,
                 active_task,
                 cycle=1,
@@ -1017,7 +1007,7 @@ async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
             )
             await _post_tick_memory_impl(
                 loop,
-                cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_b, rationale="")),
+                cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection=reflection_b, rationale="")),
                 result,
                 active_task,
                 cycle=2,
@@ -1053,7 +1043,7 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
             active_task = await store.get_task_by_id(task_id)
             assert active_task is not None
             semantic = SemanticMemory(root / "semantic")
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _task_store=store,
                 _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
                 _semantic=semantic,
@@ -1065,7 +1055,7 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
                     emotion=SimpleNamespace(),
                 ),
             ))
-            action = cast(Any, SimpleNamespace(chosen_action_id="", params={}, reflection="事件反思", rationale=""))
+            action = cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection="事件反思", rationale=""))
             result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
 
             await _post_tick_memory_impl(loop, action, result, active_task, cycle=1, user_message="")
@@ -1101,7 +1091,7 @@ async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
 
             episodic = EpisodicMemory(root / "memory")
             semantic = SemanticMemory(root / "semantic")
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _task_store=store,
                 _episodic=episodic,
                 _semantic=semantic,
@@ -1113,7 +1103,7 @@ async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
                     emotion=SimpleNamespace(),
                 ),
             ))
-            action = cast(Any, SimpleNamespace(
+            action = cast("Any", SimpleNamespace(
                 chosen_action_id="",
                 params={},
                 reflection="用户想延续这个 chat 里的远程部署排查。",
@@ -1134,7 +1124,7 @@ async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
             )
 
             ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
-            digest = hashlib.md5("wechat:chat-1".encode("utf-8")).hexdigest()[:12]
+            digest = hashlib.md5(b"wechat:chat-1").hexdigest()[:12]
             node = semantic.get(f"chat-summary-{digest}-{ts_label}")
             assert node is not None
             assert node.kind == "chat_summary"
@@ -1314,11 +1304,11 @@ async def _chat_reply_is_persisted_before_post_tick_cleanup():
         await loop.task_store.open()
         try:
             async def _sense(*args, **kwargs):
-                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+                return cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
 
             loop._perception.sense = _sense
             loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
-                Any,
+                "Any",
                 SimpleNamespace(
                     repeat_action_count=0,
                     repeat_action_tool="",
@@ -1386,11 +1376,11 @@ async def _local_chat_reply_is_persisted_for_default_channel():
         await loop.task_store.open()
         try:
             async def _sense(*args, **kwargs):
-                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+                return cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
 
             loop._perception.sense = _sense
             loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
-                Any,
+                "Any",
                 SimpleNamespace(
                     repeat_action_count=0,
                     repeat_action_tool="",
@@ -1483,11 +1473,11 @@ async def _autonomous_followup_reply_uses_bound_chat_session():
             await loop.task_store.set_fact(f"task:{task_id}:chat_id", "wechat:user-1", scope="task")
 
             async def _sense(*args, **kwargs):
-                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+                return cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
 
             loop._perception.sense = _sense
             loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
-                Any,
+                "Any",
                 SimpleNamespace(
                     repeat_action_count=0,
                     repeat_action_tool="",

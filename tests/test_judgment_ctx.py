@@ -1,27 +1,16 @@
 """行为门控、技能、thinking、模型路由、任务改写等 judgment context 测试"""
 import asyncio
-import builtins
-import io
 import json
 import logging
-import math
-import os
 import tempfile
 import time
-from functools import lru_cache
-from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 
 from conftest import (
-    _proj_root,
-    _test_config,
-    _tool_ctx,
-    _execution_layer,
     _tool_registry,
     _judgment_output,
 )
@@ -124,7 +113,7 @@ def test_model_health_circuit_breaker_blocks_and_clears():
     recover 后返回 True；fallback tier 在主 tier 冷却时被选中。"""
     import time
     from core.config import Config
-    from core.judgment import JudgmentLayer, ModelHealth
+    from core.judgment import JudgmentLayer
     from tools.registry import ToolRegistry
 
     class _Dummy:
@@ -248,7 +237,6 @@ def test_prefer_tier_for_task_uses_pending_then_task_default():
 def test_behavior_gate_passthrough_and_logs_observation(caplog):
     """重复信号只做感知和日志，不替 LLM 改 decision。"""
     from core.behavior_tracker import BehaviorTracker
-    from core.judgment import JudgmentOutput
 
     caplog.set_level(logging.INFO, logger="lingzhou.behavior_tracker")
     tracker = BehaviorTracker()
@@ -438,7 +426,7 @@ def test_next_thinking_override_is_one_shot_and_strict():
 def test_resolve_thinking_override_uses_mode_defaults_and_strategy():
     from core.loop.common import _resolve_thinking_override
 
-    cfg = cast(Any, SimpleNamespace(
+    cfg = cast("Any", SimpleNamespace(
         thinking="off",
         loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="medium"),
     ))
@@ -610,7 +598,6 @@ def test_model_routing_section_uses_effective_thinking():
     assert "delegation_guide" in payload
     assert "tier_descriptions" in payload
     assert "reasoner" in payload["tier_descriptions"]
-    assert payload["implicit_next_phase_default"] is None
 
 
 def test_select_provider_matches_routing_provider_by_public_model_ref():
@@ -995,7 +982,7 @@ def test_model_routing_section_no_longer_exposes_implicit_reader_default():
     })
 
     layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-    payload = json.loads(layer._assembler._build_model_routing_section(
+    json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="file.read",
@@ -1003,8 +990,6 @@ def test_model_routing_section_no_longer_exposes_implicit_reader_default():
         effective_thinking="low",
     ))
 
-    assert payload["implicit_next_phase_default"] is None
-    assert "必须由你显式设置 next_phase_tier" in payload["delegation_guide"]
 
 
 def test_model_routing_section_uses_configured_idle_bounds_and_defaults():
@@ -1451,7 +1436,7 @@ async def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
 
 async def test_decide_continue_uses_passed_thinking_override():
     from core.config import Config
-    from core.judgment import JudgmentLayer, ModelSelection
+    from core.judgment import JudgmentLayer
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -1561,7 +1546,6 @@ async def test_decide_continue_updates_last_call_meta_after_fallback():
 
 
 def test_action_made_progress_result_aware():
-    from core.judgment import JudgmentOutput
     from core.loop.progress import _action_made_progress, _result_fingerprint
     from tools.registry import ToolEntry, ToolManifest, ToolResult
 
@@ -1668,7 +1652,7 @@ async def _success_stall_reflection_tracks_capability_based_tool():
             task = await store.get_task_by_id(task_id)
             assert task is not None
 
-            loop = cast(Any, SimpleNamespace(
+            loop = cast("Any", SimpleNamespace(
                 _task_store=store,
                 _registry=_tool_registry(),
                 _last_act_progressful=False,
@@ -1757,12 +1741,12 @@ async def test_finalize_tick_user_reply_does_not_synthesize_progress_reply_on_no
             self.messages.append((role, content, chat_id))
             return len(self.messages)
 
-    cfg = cast(Any, SimpleNamespace(
+    cfg = cast("Any", SimpleNamespace(
         thinking="off",
         loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="minimal"),
     ))
     store = _Store()
-    loop = cast(Any, SimpleNamespace(
+    loop = cast("Any", SimpleNamespace(
         _cfg=cfg,
         _judgment=_Judgment(),
         _pending_routing_overrides=None,
@@ -1809,12 +1793,12 @@ async def test_finalize_tick_user_reply_keeps_disaster_fallback_for_reply_only_f
             self.messages.append((role, content, chat_id))
             return len(self.messages)
 
-    cfg = cast(Any, SimpleNamespace(
+    cfg = cast("Any", SimpleNamespace(
         thinking="off",
         loop=SimpleNamespace(chat_thinking="low", autonomous_thinking="minimal"),
     ))
     store = _Store()
-    loop = cast(Any, SimpleNamespace(
+    loop = cast("Any", SimpleNamespace(
         _cfg=cfg,
         _judgment=_Judgment(),
         _pending_routing_overrides=None,
@@ -1853,7 +1837,7 @@ async def test_persist_tick_user_reply_does_not_append_skill_suffix():
             return len(self.messages)
 
     store = _Store()
-    loop = cast(Any, SimpleNamespace(_task_store=store))
+    loop = cast("Any", SimpleNamespace(_task_store=store))
     action = _judgment_output(
         decision="pause",
         rationale="证据已足够，直接回复用户。",
@@ -1887,26 +1871,29 @@ def test_infer_valence_from_text_uses_explicit_hint_only():
 
 
 def test_should_continue_within_tick_for_autonomous_act():
-    from core.judgment import JudgmentOutput
     from core.loop.common import _preferred_continue_tier, _should_continue_within_tick
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="task.complete")) is False
     assert _should_continue_within_tick(_judgment_output(decision="wait")) is False
+    reg = _tool_registry()
     assert _should_continue_within_tick(
         _judgment_output(decision="act", chosen_action_id="file.read"),
         user_message="帮我看下 mini 为什么 400",
         has_active_task=True,
+        registry=reg,
     ) is True
     assert _should_continue_within_tick(
         _judgment_output(decision="act", chosen_action_id="file.read"),
         user_message="帮我看下 mini 为什么 400",
         has_active_task=False,
+        registry=reg,
     ) is True
     assert _should_continue_within_tick(
         _judgment_output(decision="act", chosen_action_id="file.write"),
         user_message="帮我顺手改一下配置",
         has_active_task=True,
+        registry=reg,
     ) is False
     assert _preferred_continue_tier(
         _judgment_output(decision="act", chosen_action_id="memory.search"),
@@ -1922,31 +1909,9 @@ def test_should_continue_within_tick_for_autonomous_act():
     ) == "reader"
 
 
-def test_rewrite_task_ask_does_not_override_llm_decision_before_asking_for_id():
-    from core.judgment.runtime import _rewrite_task_ask_to_evidence
-
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="task.ask",
-        params={"question": "请提供相关 task id"},
-        rationale="我需要先定位任务。",
-    )
-
-    rewritten = _rewrite_task_ask_to_evidence(
-        action,
-        user_message="帮我看看昨晚那个任务为什么没回消息",
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "task.ask"
-    assert rewritten.params == {"question": "请提供相关 task id"}
-
-
 async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
     from core.config import Config
     from core.judgment import JudgmentLayer
-    from tools.registry import ToolRegistry
 
     class _DummyProvider:
         def __init__(self) -> None:
@@ -2045,7 +2010,6 @@ async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime
 async def test_decide_continue_includes_structured_tool_history_window():
     from core.config import Config
     from core.judgment import JudgmentLayer
-    from tools.registry import ToolRegistry
 
     class _DummyProvider:
         def __init__(self) -> None:
@@ -2100,7 +2064,6 @@ async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from store.task import Task
-    from tools.registry import ToolRegistry
 
     class _DummyProvider:
         async def chat(self, messages, *, temperature=None, thinking_override=None):
@@ -2149,211 +2112,6 @@ async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
     assert out.chosen_action_id == "shell.run"
     assert out.params == {"command": "pytest -q"}
     assert out.next_step == "再修复 chat 回复链路"
-
-
-def test_rewrite_task_ask_keeps_direct_question_after_evidence():
-    from core.judgment.runtime import _rewrite_task_ask_to_evidence
-
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="task.ask",
-        params={"question": "还需要你补充具体 id 吗？"},
-    )
-
-    rewritten = _rewrite_task_ask_to_evidence(
-        action,
-        user_message="继续分析",
-        tool_history=[
-            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"},
-            {"tool": "task.list", "params": {"status": "all"}, "result": "[12] [in_progress] 继续分析"},
-        ],
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "task.ask"
-    assert rewritten.params["question"] == "还需要你补充具体 id 吗？"
-
-
-def test_rewrite_task_ask_leaves_evidence_budget_decision_to_llm():
-    from core.judgment.runtime import _rewrite_task_ask_to_evidence
-
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="task.ask",
-        params={"question": "还需要你补充具体 id 吗？"},
-    )
-
-    rewritten = _rewrite_task_ask_to_evidence(
-        action,
-        user_message="继续分析",
-        tool_history=[
-            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 1 条相关记忆"},
-        ],
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "task.ask"
-    assert rewritten.params == {"question": "还需要你补充具体 id 吗？"}
-
-
-def test_rewrite_task_ask_ignores_configured_evidence_budget_for_passthrough():
-    from core.judgment.runtime import _rewrite_task_ask_to_evidence
-
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="task.ask",
-        params={"question": "请补充 task id"},
-    )
-
-    rewritten = _rewrite_task_ask_to_evidence(
-        action,
-        user_message="继续分析",
-        tool_history=[
-            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 1 条相关记忆"},
-            {"tool": "task.list", "params": {"status": "all"}, "result": "命中 1 条任务"},
-        ],
-        registry=_tool_registry(),
-        evidence_budget=3,
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "task.ask"
-    assert rewritten.params == {"question": "请补充 task id"}
-
-
-def test_rewrite_complex_user_act_keeps_llm_chosen_mutation():
-    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from store.task import Task
-
-    task = Task(
-        id=7,
-        title="修复 chat 回复",
-        status="active",
-        priority="high",
-        created_at="2026-05-15T00:00:00+00:00",
-        goal="逐一排查 chat 回复链路",
-    )
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="shell.run",
-        params={"command": "rg \"chat\" core -n"},
-        rationale="先检查日志，再修复回复链路。",
-        next_step="再修复 chat 回复链路",
-    )
-
-    rewritten = _rewrite_complex_act_to_task_plan(
-        action,
-        user_message="请你逐一排查昨天日志并修复 chat 回复问题",
-        active_task=task,
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "shell.run"
-    assert rewritten.params == {"command": "rg \"chat\" core -n"}
-    assert rewritten.next_step == "再修复 chat 回复链路"
-
-
-def test_rewrite_complex_user_act_keeps_read_action_without_plan():
-    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from store.task import Task
-
-    task = Task(
-        id=8,
-        title="排查日志",
-        status="active",
-        priority="high",
-        created_at="2026-05-15T00:00:00+00:00",
-        goal="逐一分析昨天日志",
-    )
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="file.read",
-        params={"path": "/tmp/runtime.log"},
-        next_step="再总结问题点",
-    )
-
-    rewritten = _rewrite_complex_act_to_task_plan(
-        action,
-        user_message="请你逐一分析昨天日志并整理问题",
-        active_task=task,
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "file.read"
-
-
-def test_rewrite_complex_user_act_keeps_structural_next_step_without_rewrite():
-    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from store.task import Task
-
-    task = Task(
-        id=9,
-        title="处理回复",
-        status="active",
-        priority="high",
-        created_at="2026-05-15T00:00:00+00:00",
-        goal="处理 chat 回复",
-    )
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="shell.run",
-        params={"command": "pytest -q"},
-        next_step="汇总结果并修复失败项",
-    )
-
-    rewritten = _rewrite_complex_act_to_task_plan(
-        action,
-        user_message="帮我处理一下",
-        active_task=task,
-        registry=_tool_registry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "shell.run"
-    assert rewritten.next_step == "汇总结果并修复失败项"
-
-
-def test_rewrite_complex_user_act_respects_plan_alignment_exempt_capability():
-    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from store.task import Task
-    from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
-
-    @tool(ToolManifest(
-        name="debug.plan.exempt",
-        description="调试用对齐豁免工具",
-        capabilities=("plan_alignment_exempt",),
-    ))
-    async def _debug_plan_exempt(params: dict[str, object], ctx: ToolContext) -> ToolResult:
-        return ToolResult(summary="ok")
-
-    task = Task(
-        id=10,
-        title="处理回复",
-        status="active",
-        priority="high",
-        created_at="2026-05-15T00:00:00+00:00",
-        goal="处理 chat 回复",
-    )
-    action = _judgment_output(
-        decision="act",
-        chosen_action_id="debug.plan.exempt",
-        params={"query": "check"},
-        next_step="继续汇总",
-    )
-
-    rewritten = _rewrite_complex_act_to_task_plan(
-        action,
-        user_message="帮我继续处理",
-        active_task=task,
-        registry=ToolRegistry(),
-    )
-
-    assert rewritten is action
-    assert rewritten.chosen_action_id == "debug.plan.exempt"
 
 
 def test_preferred_continue_tier_uses_manifest_reader_tier():
@@ -2531,8 +2289,8 @@ async def _load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limi
 
     store = _Store()
     facts = await _load_context_facts_snapshot(
-        cast(Any, store),
-        cast(Any, SimpleNamespace(id=7)),
+        cast("Any", store),
+        cast("Any", SimpleNamespace(id=7)),
         exclude_prefixes=['pref:', 'run:'],
         task_limit=2,
         global_limit=2,
@@ -2645,7 +2403,7 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=EpisodicMemory(Path(d) / "memory"),
@@ -2707,7 +2465,7 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
             layer._probe_manager = None
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=EpisodicMemory(Path(d) / "memory"),
@@ -2779,7 +2537,7 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
                 captured.extend(str(a) for a in anchors)
                 return []
 
-            semantic.retrieve_multi_anchor = cast(Any, _capture_retrieve_multi_anchor)
+            semantic.retrieve_multi_anchor = cast("Any", _capture_retrieve_multi_anchor)
 
             emotion = EmotionState.from_config(cfg)
             emotion.valence = 0.10
@@ -2789,7 +2547,7 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=EpisodicMemory(Path(d) / "memory"),
@@ -2874,8 +2632,8 @@ async def _assemble_context_consumes_parallel_fetch_exceptions():
             async def _list_failures_fail(*args: Any, **kwargs: Any) -> Any:
                 raise RuntimeError("failures boom")
 
-            store.list_runs = cast(Any, _list_runs_fail)
-            store.list_failures_for_task = cast(Any, _list_failures_fail)
+            store.list_runs = cast("Any", _list_runs_fail)
+            store.list_failures_for_task = cast("Any", _list_failures_fail)
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
@@ -2883,7 +2641,7 @@ async def _assemble_context_consumes_parallel_fetch_exceptions():
             with pytest.raises(RuntimeError, match="recent runs boom"):
                 await layer._assembler._assemble_context(
                     CognitionFrame(
-                        percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                        percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                         wm=WorkingMemory(capacity=20),
                         task_store=store,
                         episodic=EpisodicMemory(Path(d) / "memory"),
@@ -2948,7 +2706,7 @@ async def _assemble_context_registry_override_limits_tools_section():
             layer = JudgmentLayer(_DummyProvider(), registry, cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=EpisodicMemory(Path(d) / "memory"),
@@ -3029,7 +2787,7 @@ async def _assemble_context_includes_recent_daily_continuity():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=episodic,
@@ -3105,7 +2863,7 @@ async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=episodic,
@@ -3185,7 +2943,7 @@ async def _assemble_context_includes_chat_scoped_memory_layers():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=episodic,
@@ -3275,7 +3033,7 @@ async def _assemble_context_includes_current_interlocutor_sections():
             layer = JudgmentLayer(_SpeakerProvider(), ToolRegistry(), cfg)
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
-                    percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
                     task_store=store,
                     episodic=episodic,

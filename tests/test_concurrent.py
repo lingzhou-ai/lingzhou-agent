@@ -1,29 +1,16 @@
 """并发安全测试：_ScopedTaskStore / parallel dispatch / aiosqlite 行隔离"""
 import asyncio
-import builtins
-import io
-import json
 import logging
-import math
-import os
 import tempfile
-import time
-from functools import lru_cache
-from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 
 from conftest import (
-    _proj_root,
     _test_config,
     _tool_ctx,
-    _execution_layer,
-    _tool_registry,
-    _judgment_output,
 )
 # ══════════════════════════════════════════════════════════════════════════════
 # 并发安全测试
@@ -152,7 +139,7 @@ async def _scoped_task_store_get_active_returns_pinned():
         async def get_active(self):
             return task_a  # inner 返回 A
 
-    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, task_b))  # pin 为 B
+    scoped = _ScopedTaskStore(_InnerStore(), cast("Any", task_b))  # pin 为 B
 
     result = await scoped.get_active()
     assert result is task_b, "scoped store 应返回 pinned task_b，而非 inner 的 task_a"
@@ -181,10 +168,10 @@ async def _scoped_task_store_delegates_other_methods():
 
         async def get_active(self):
             calls.append("inner_get_active")
-            return None
+            return
 
     task_pin = SimpleNamespace(id=99, goal="pin")
-    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, task_pin))
+    scoped = _ScopedTaskStore(_InnerStore(), cast("Any", task_pin))
 
     await scoped.update_status(7, "done")
     await scoped.update_task_result(7, {"k": "v"})
@@ -207,7 +194,7 @@ def test_scoped_task_store_does_not_leak_unknown_methods():
         async def delete_fact(self, key):
             raise AssertionError(f"delete_fact 不应透传: {key}")
 
-    scoped = _ScopedTaskStore(_InnerStore(), cast(Any, SimpleNamespace(id=5, goal="pin")))
+    scoped = _ScopedTaskStore(_InnerStore(), cast("Any", SimpleNamespace(id=5, goal="pin")))
 
     with pytest.raises(AttributeError):
         _ = scoped.delete_fact
@@ -263,7 +250,7 @@ async def _run_one_task_dispatch_ctx_pins_own_task():
     ctx = _tool_ctx(task_store=store)
     spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
 
-    await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
+    await _run_one_task(cast("Any", target_task), spec, ctx, cast("Any", loop))
 
     assert seen_active_ids, "dispatch 应被调用至少一次"
     assert all(aid == 42 for aid in seen_active_ids), (
@@ -320,7 +307,7 @@ async def _run_one_task_does_not_inject_task_id_into_task_tool_params():
     ctx = _tool_ctx(task_store=store)
     spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
 
-    await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
+    await _run_one_task(cast("Any", target_task), spec, ctx, cast("Any", loop))
 
     assert seen_params == [{}]
 
@@ -378,7 +365,7 @@ async def _run_one_task_surfaces_terminal_wait_decision_to_parent_history():
     ctx = _tool_ctx(task_store=store)
     spec = {"id": "T", "goal": "target-goal", "tools": [], "max_rounds": 3}
 
-    entry = await _run_one_task(cast(Any, target_task), spec, ctx, cast(Any, loop))
+    entry = await _run_one_task(cast("Any", target_task), spec, ctx, cast("Any", loop))
 
     assert captured_result_json["terminal_decision"] == "wait"
     assert entry["status"] == "wait"
@@ -441,6 +428,7 @@ async def _run_tasks_parallel_each_task_sees_own_active():
             _judgment=_MockJudgment(),
             _execution=_MockExecution(),
             _task_store=store,
+            _cfg=_test_config(),
         )
         ctx = _tool_ctx(task_store=store)
         specs = [
@@ -448,7 +436,7 @@ async def _run_tasks_parallel_each_task_sees_own_active():
             {"id": "beta",  "goal": "do beta",  "tools": [], "max_rounds": 3},
         ]
 
-        entries = await run_tasks_parallel(specs, ctx, cast(Any, loop))
+        entries = await run_tasks_parallel(specs, ctx, cast("Any", loop))
 
         # 应创建 2 个子任务并各有 1 次 dispatch
         assert len(entries) == 2
@@ -498,13 +486,14 @@ async def _run_tasks_parallel_reuses_similar_open_task():
             _judgment=_UnusedJudgment(),
             _execution=_UnusedExecution(),
             _task_store=store,
+            _cfg=_test_config(),
         )
         ctx = _tool_ctx(task_store=store)
 
         entries = await run_tasks_parallel(
             [{"id": "alpha", "goal": "解决远程运行重启循环", "tools": [], "max_rounds": 3}],
             ctx,
-            cast(Any, loop),
+            cast("Any", loop),
         )
 
         assert len(entries) == 1
@@ -579,7 +568,7 @@ async def _dispatch_parallel_merges_results():
         class loop:
             debug = False
 
-    layer = ExecutionLayer(registry, cast(Any, _FakeCfg()))
+    layer = ExecutionLayer(registry, cast("Any", _FakeCfg()))
 
     # 记录每次 _dispatch_act 收到的 action_id 和调用顺序
     call_log: list[str] = []

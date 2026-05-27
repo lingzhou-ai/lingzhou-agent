@@ -1,6 +1,7 @@
 """tools/file.py — 文件读写和编辑工具。"""
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -26,11 +27,7 @@ def _is_core_file(path: Path) -> bool:
         rel = path.relative_to(_repo_root())
     except ValueError:
         return False
-    if rel.parts[0] in _CORE_DIRS:
-        return True
-    if str(rel) in _CORE_EXTRA:
-        return True
-    return False
+    return str(rel) in _CORE_EXTRA or rel.parts[0] in _CORE_DIRS
 
 # 文件大小限制
 MAX_READ_CHARS = 100_000
@@ -56,7 +53,7 @@ def _write_allow_roots(ctx: ToolContext | None = None) -> list[Path]:
 
 def _path_guard(path: Path, ctx: ToolContext | None = None) -> tuple[bool, str]:
     """路径安全守卫。
-    
+
     返回 (is_safe, warning)。
     - 路径穿越检测（../etc/passwd 等）
     - 可选 workspace 沙箱
@@ -65,7 +62,7 @@ def _path_guard(path: Path, ctx: ToolContext | None = None) -> tuple[bool, str]:
         resolved = path.resolve()
     except Exception:
         return False, f"无法解析路径: {path}"
-    
+
     # 路径穿越检测：确保解析后的路径仍在预期范围内
     allow_roots = _write_allow_roots(ctx)
     if allow_roots:
@@ -80,12 +77,11 @@ def _path_guard(path: Path, ctx: ToolContext | None = None) -> tuple[bool, str]:
                 f"路径 {path} 不在允许的工作区内。"
                 f"只能写入 {', '.join(str(root) for root in allow_roots)} 内的文件。"
             )
-    
+
     return True, ""
 
 
 
-import re
 
 
 def _fuzzy_find(content: str, old_text: str) -> int:
@@ -102,8 +98,8 @@ def _fuzzy_find(content: str, old_text: str) -> int:
     # 3. 行级去空白精确匹配（修复原 startswith 过于宽松导致的误判/漏判）
     old_lines = old_text.split('\n')
     content_lines = content.split('\n')
-    old_stripped = [l.strip() for l in old_lines]
-    
+    old_stripped = [ln.strip() for ln in old_lines]
+
     # 过滤首尾空行，提高容错
     while old_stripped and not old_stripped[0]:
         old_stripped.pop(0)
@@ -126,20 +122,18 @@ def _fuzzy_find(content: str, old_text: str) -> int:
     return -1
 
 
-def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
+def _safety_guard(path: Path) -> tuple[str, str | None]:
     """代码修改安全守卫：备份 + 语法验证。
     返回 (warning, error)。error 非空表示应阻断操作。
     """
     warnings: list[str] = []
-    
+
     # 1. 自动备份（Python 文件）
     if path.suffix == '.py' and path.exists():
         backup = path.with_suffix(path.suffix + '.lingzhou-backup')
-        try:
+        with contextlib.suppress(Exception):  # 备份失败不阻断
             backup.write_text(path.read_text(encoding='utf-8'), encoding='utf-8')
-        except Exception:
-            pass  # 备份失败不阻断
-    
+
     # 2. 核心文件警告
     if _is_core_file(path):
         try:
@@ -149,13 +143,13 @@ def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
         warnings.append(
             f"⚠️ 正在修改核心文件 {rel}。请修改后立即用 shell.run 验证系统可正常导入/启动。"
         )
-    
+
     return "\n".join(warnings) if warnings else "", None
 
 
 def _verify_python_syntax(path: Path, content: str) -> str | None:
     """验证 Python 文件语法。返回 None 表示通过，否则返回错误信息。"""
-    if not path.suffix == '.py':
+    if path.suffix != '.py':
         return None
     try:
         import ast
@@ -490,8 +484,8 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     try:
         # 安全守卫：备份原文件 + 核心文件警告
-        guard_warning, _ = _safety_guard(path, "写入")
-        
+        guard_warning, _ = _safety_guard(path)
+
         # 目录保护：路径是目录而非文件时给出明确提示
         if path.is_dir():
             return ToolResult(
@@ -499,7 +493,7 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 error="IsDirectory",
                 skipped=True,
             )
-        
+
         path.parent.mkdir(parents=True, exist_ok=True)
         # 写前语法验证（.py 文件）：语法错误直接阻断，不写入损坏文件
         if path.suffix == ".py":
@@ -585,9 +579,9 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ok, err = _path_guard(path, ctx)
         if not ok:
             return ToolResult(summary=err, error="PathBlocked", skipped=True)
-        
+
         # 安全守卫：备份原文件 + 核心文件警告
-        guard_warning, _ = _safety_guard(path, "编辑")
+        guard_warning, _ = _safety_guard(path)
         original = path.read_text(encoding="utf-8", errors="replace")
         content = original
         matched: list[dict[str, Any]] = []
@@ -656,7 +650,7 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             })
 
         matched.sort(key=lambda item: int(item["start"]))
-        for prev, cur in zip(matched, matched[1:]):
+        for prev, cur in zip(matched, matched[1:], strict=False):
             if int(prev["end"]) > int(cur["start"]):
                 return ToolResult(
                     summary=(

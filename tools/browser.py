@@ -14,14 +14,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
 
@@ -66,7 +63,7 @@ _NAVIGATE_DEPENDENCY_PATTERNS = (
 )
 
 
-def _find_browser() -> Optional[str]:
+def _find_browser() -> str | None:
     """检查 agent-browser 是否可用。"""
     if shutil.which("agent-browser"):
         return "agent-browser"
@@ -99,7 +96,7 @@ async def _browser_run(*args: str, timeout: int = BROWSER_TIMEOUT) -> tuple[int,
         if rc is None:
             rc = 0 if stdout.strip() else -1
         return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         return -1, "", "操作超时"
 
@@ -112,14 +109,6 @@ def _make_snapshot_summary(text: str, max_lines: int = 60) -> str:
     head = "\n".join(lines[:max_lines // 2])
     tail = "\n".join(lines[-max_lines // 2:])
     return f"{head}\n...({len(lines) - max_lines} 行省略)...\n{tail}"
-
-
-def _browser_failure_summary(action: str, code: int, stdout: str, stderr: str) -> str:
-    detail = (stderr or stdout or "").strip()
-    prefix = f"{action}失败(exit={code})"
-    if not detail:
-        return prefix
-    return f"{prefix}: {detail[:200]}"
 
 
 def _classify_navigate_failure(code: int, stdout: str, stderr: str) -> tuple[str, str]:

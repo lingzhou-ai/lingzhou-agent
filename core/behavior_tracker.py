@@ -111,7 +111,7 @@ class BehaviorTracker:
 
     # ── 状态接口 ──────────────────────────────────────────────────────────────
 
-    def apply_execution_gate(self, action: "JudgmentOutput", signals: Any) -> "JudgmentOutput":
+    def apply_execution_gate(self, action: JudgmentOutput, signals: Any) -> JudgmentOutput:
         """感知重复信号并记录日志，不替 LLM 改 decision（纯观察门）。"""
         repeat_action = getattr(signals, "repeat_action_count", 0)
         repeat_read = getattr(signals, "repeat_read_count", 0)
@@ -156,7 +156,7 @@ class BehaviorTracker:
         key_param: str,
         task_id: str | None,
         params: dict | None = None,
-    ) -> list["WMItem"]:
+    ) -> list[WMItem]:
         """追踪 act 行为（file.read 和非 file.read 均需调用）。
 
         - action streak：非 file.read / file.list 工具连续相同时返回 WMItem
@@ -227,7 +227,7 @@ class BehaviorTracker:
         *,
         start: int = 0,
         end: int = 0,
-    ) -> list["WMItem"]:
+    ) -> list[WMItem]:
         """追踪 file.read 重复读取。
 
         两层检测：
@@ -267,7 +267,7 @@ class BehaviorTracker:
         if (
             len(self._recent_read_fps) == _n
             and all(fp[0] == path for fp in self._recent_read_fps)
-            and len(set(fp[2] for fp in self._recent_read_fps)) > 1  # 内容确实不同，排除 Layer 1 已处理的情况
+            and len({fp[2] for fp in self._recent_read_fps}) > 1  # 内容确实不同，排除 Layer 1 已处理的情况
         ):
             _log.info("[self-awareness] 连续 %d 次读取同一文件不同窗口: %s", _n, path)
             items.append(WMItem(
@@ -315,7 +315,7 @@ class BehaviorTracker:
 
         return items
 
-    def on_list(self, path: str, result_summary: str) -> list["WMItem"]:
+    def on_list(self, path: str, result_summary: str) -> list[WMItem]:
         """追踪 file.list 相同目录结果的重复枚举。
 
         只在“同一路径 + 同样列表结果”连续出现时报警；
@@ -345,7 +345,7 @@ class BehaviorTracker:
             ))
         return items
 
-    def on_wait(self, decision: str, has_active_task: bool) -> list["WMItem"]:
+    def on_wait(self, decision: str, has_active_task: bool) -> list[WMItem]:
         """追踪连续 wait/pause 决策，向 WM 注入状态汇报。
 
         原则：只汇报事实，由 LLM 自主决定是否继续等待。不做硬阻断。
@@ -381,7 +381,7 @@ class BehaviorTracker:
                 break  # 每轮最多触发一条通知
         return items
 
-    def on_judgment(self, rationale: str) -> list["WMItem"]:
+    def on_judgment(self, rationale: str) -> list[WMItem]:
         """追踪 LLM rationale 指纹，检测"信念固化"（连续相同结论）。
 
         将 rationale 前 belief_hash_prefix 字符规范化后计算 MD5 指纹。
@@ -427,7 +427,7 @@ class BehaviorTracker:
 
     def on_edit_failure(self, error: str) -> list:
         """追踪 file.edit 失败，连续失败时返回感知信号。
-        
+
         LLM 可感知信号，自行决定是否切换策略（如用 file.write 或 shell.run sed 代替 file.edit）。
         """
         from memory.working import WMItem

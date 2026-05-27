@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -56,24 +57,20 @@ def _provider_reload_signature(cfg: Config) -> str:
 
 
 async def _close_provider_stack(provider: Any, routing_providers: dict[str, Any]) -> None:
-    try:
+    with contextlib.suppress(Exception):
         await provider.close()
-    except Exception:
-        pass
     for routing_provider in routing_providers.values():
-        try:
+        with contextlib.suppress(Exception):
             await routing_provider.close()
-        except Exception:
-            pass
 
 
-def _refresh_semantic_embed_runtime(loop: "CognitionLoop") -> None:
+def _refresh_semantic_embed_runtime(loop: CognitionLoop) -> None:
     semantic = loop.semantic  # CognitionLoop 公开属性
-    setattr(semantic, "_embed_fn", loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None)
-    setattr(semantic, "_embedding_weight", loop._cfg.memory.embedding_weight)
+    semantic._embed_fn = loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None
+    semantic._embedding_weight = loop._cfg.memory.embedding_weight
 
 
-async def _refresh_runtime_routing_overrides(loop: "CognitionLoop") -> None:
+async def _refresh_runtime_routing_overrides(loop: CognitionLoop) -> None:
     task_store = getattr(loop, "_task_store", None)
     if task_store is None:
         return
@@ -104,7 +101,7 @@ async def _refresh_runtime_routing_overrides(loop: "CognitionLoop") -> None:
 
 
 async def _build_reload_candidate(
-    loop: "CognitionLoop",
+    loop: CognitionLoop,
     new_cfg: Config,
     *,
     auth_changed: bool,
@@ -143,13 +140,12 @@ async def _build_reload_candidate(
 
 
 async def _commit_hot_reload_candidate(
-    loop: "CognitionLoop",
+    loop: CognitionLoop,
     candidate: _HotReloadCandidate,
     *,
     cfg_mtime: float,
     auth_mtime: float,
 ) -> None:
-    old_cfg = loop._cfg
     old_provider = loop._provider
     old_routing_providers = loop._routing_providers
 
@@ -175,7 +171,7 @@ async def _commit_hot_reload_candidate(
         await _close_provider_stack(old_provider, old_routing_providers)
 
 
-async def _maybe_hot_reload_provider_impl(loop: "CognitionLoop") -> None:
+async def _maybe_hot_reload_provider_impl(loop: CognitionLoop) -> None:
     if not loop._cfg_file.exists():
         return
 

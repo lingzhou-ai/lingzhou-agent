@@ -6,6 +6,7 @@ LLM 可通过此工具向用户提问，获取澄清或额外信息。
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext, CAPS_EXEMPT
@@ -37,10 +38,8 @@ async def task_ask(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if choices_raw:
         if isinstance(choices_raw, str):
             import json
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 choices_raw = json.loads(choices_raw)
-            except json.JSONDecodeError:
-                pass
         if isinstance(choices_raw, list):
             choices = [str(c).strip() for c in choices_raw[:4] if str(c).strip()]
 
@@ -48,7 +47,7 @@ async def task_ask(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if choices:
         for i, c in enumerate(choices, 1):
             lines.append(f"  [{i}] {c}")
-        lines.append(f"  [5] 其他（请直接回复）")
+        lines.append("  [5] 其他（请直接回复）")
 
     summary = "\n".join(lines)
     return ToolResult(

@@ -26,7 +26,7 @@ def compute_judgment_signals(
     failure_count: int,
     high_error_streak: int,
     perception_trend: str,
-    emotion_state: "EmotionState",
+    emotion_state: EmotionState,
     thresholds: Any,
 ) -> JudgmentSignals:
     """LLM 前的确定性预判：减少"冷启动"时 LLM 从零估算的不确定性。"""

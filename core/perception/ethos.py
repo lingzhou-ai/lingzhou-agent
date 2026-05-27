@@ -25,7 +25,7 @@ class EthosValues:
     care: float = 0.55          # 对用户数据和状态负责
 
     @classmethod
-    def from_dict(cls, d: dict) -> "EthosValues":
+    def from_dict(cls, d: dict) -> EthosValues:
         """从 DB dict 转强类型。缺维度取默认值；值无法转 float 则显式 ValueError（公理 A2 Mode 6）。"""
         defaults = cls()
         kwargs: dict[str, float] = {}
@@ -75,8 +75,8 @@ def derive_ethos_state(
     has_next_step: bool,
     perception_trend: str,
     emotion_down_regulate_streak: int,
-    ethos_cfg: "EthosConfig",
-    baseline: "EthosValues | None" = None,
+    ethos_cfg: EthosConfig,
+    baseline: EthosValues | None = None,
 ) -> EthosState:
     """每 tick 从信号确定性推导 EthosState（含 EMA 基线混合）。
 

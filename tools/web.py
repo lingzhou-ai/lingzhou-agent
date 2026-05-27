@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
-from tools.file import workspace_candidate_path
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 DEFAULT_UA = (
@@ -61,7 +58,7 @@ def _html_to_text(html: str, max_chars: int = MAX_FETCH_CHARS) -> str:
     # 压缩空白
     text = re.sub(r"\s+", " ", text).strip()
     # 去重空行
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     result = "\n".join(lines)
     if len(result) > max_chars:
         result = result[:max_chars] + f"\n...(截断，原文共 {len(result)} 字符)"

@@ -14,4 +14,4 @@ Phase 2 起：
 from core.metabolic.proposal import StateProposal
 from core.metabolic.engine import MetabolicEngine
 
-__all__ = ["StateProposal", "MetabolicEngine"]
+__all__ = ["MetabolicEngine", "StateProposal"]

@@ -28,11 +28,11 @@ _log = logging.getLogger("lingzhou.judgment")
 class JudgmentExecutor:
     """LLM provider 管理与调用层。由 JudgmentLayer 创建并持有。"""
 
-    def __init__(self, provider: "Provider", cfg: "Config") -> None:
+    def __init__(self, provider: Provider, cfg: Config) -> None:
         self._provider = provider
         self._cfg = cfg
-        self._routing_providers: dict[str, "Provider"] = {}
-        self._override_providers: dict[str, "Provider"] = {}
+        self._routing_providers: dict[str, Provider] = {}
+        self._override_providers: dict[str, Provider] = {}
         self._model_health: dict[str, ModelHealth] = {}
         self._provider_errors: dict[str, str] = {}
         self._last_call_meta: dict[str, Any] = {
@@ -46,7 +46,7 @@ class JudgmentExecutor:
 
     # ── 公开 API ───────────────────────────────────────────────────────────────
 
-    def set_routing_providers(self, providers: dict[str, "Provider"]) -> None:
+    def set_routing_providers(self, providers: dict[str, Provider]) -> None:
         """注入分层路由 providers（由 CognitionLoop.open() 调用）。"""
         changed = set(providers.keys()) != set(self._routing_providers.keys())
         self._routing_providers = providers
@@ -170,7 +170,7 @@ class JudgmentExecutor:
     def _is_model_available(self, model_ref: str) -> bool:
         return self._get_health(model_ref).cooldown_until <= time.time()
 
-    def _find_or_create_provider(self, model_ref: str) -> "Provider":
+    def _find_or_create_provider(self, model_ref: str) -> Provider:
         """按 model_ref 找到或创建 provider（用于 routing_overrides 临时覆盖）。"""
         if model_ref == self._cfg.model:
             return self._provider
@@ -196,11 +196,6 @@ class JudgmentExecutor:
         if tier == "repair":
             return ("reader", "reasoner")
         return ("reader", "reasoner", "repair")
-
-    def _tool_history_has_error(self, tool_history: list[dict[str, Any]] | None) -> bool:
-        if not tool_history:
-            return False
-        return any(str(item.get("result", "")).startswith("ERROR:") for item in tool_history)
 
     # ── provider 选择 ──────────────────────────────────────────────────────────
 
@@ -233,7 +228,7 @@ class JudgmentExecutor:
         prefer_tier: str | None = None,
         thinking_override: str | None = None,
         routing_overrides: dict[str, str] | None = None,
-    ) -> tuple["Provider", ModelSelection]:
+    ) -> tuple[Provider, ModelSelection]:
         tier = self._select_tier(
             phase=phase,
             user_message=user_message,
@@ -243,7 +238,7 @@ class JudgmentExecutor:
         )
         chosen_tier = tier
         chosen_model = self._cfg.model
-        provider: "Provider" = self._provider
+        provider: Provider = self._provider
         selected = False
 
         # 先试当前 tier，再按 tier fallback 试其他 tier。
@@ -308,7 +303,7 @@ class JudgmentExecutor:
             meta["primary_skill_guidance"] = bool(primary_skill_guidance)
         self._last_call_meta = meta
 
-    def _track_token_usage(self, provider: "Provider") -> None:
+    def _track_token_usage(self, provider: Provider) -> None:
         """从 provider 读取 last_usage 并累积到 self_model。"""
         usage = getattr(provider, "last_usage", None)
         if isinstance(usage, dict):
@@ -320,7 +315,7 @@ class JudgmentExecutor:
     async def _chat_with_retry(
         self,
         *,
-        selected_provider: "Provider",
+        selected_provider: Provider,
         selection: ModelSelection,
         messages: list[Any],
         phase: str,
@@ -385,7 +380,7 @@ class JudgmentExecutor:
 
     # ── 输出修复（二次 LLM 调用）──────────────────────────────────────────────
 
-    async def _repair_output(self, context_text: str, raw: str) -> "JudgmentOutput | None":
+    async def _repair_output(self, context_text: str, raw: str) -> JudgmentOutput | None:
         """对被截断或损坏的 JSON 做一次二次修复。"""
         from provider.base import Message
 
@@ -395,7 +390,7 @@ class JudgmentExecutor:
                 content=(
                     "你是一个严格的 JSON 修复器。"
                     "只输出合法 JSON，不要解释，不要使用 markdown 代码块。"
-                    "必须遵循这个 schema: {decision, chosen_action_id, params, parallel_actions, delegate_tasks, rationale, reflection, reply_to_user, next_step, model_strategy}."  # noqa: E501
+                    "必须遵循这个 schema: {decision, chosen_action_id, params, parallel_actions, delegate_tasks, rationale, reflection, reply_to_user, next_step, model_strategy}."
                     "如果原输出被截断，请根据上下文重新生成一个完整、简短的 JSON。"
                     "如果 broken_output 是裸代码（bash/python 脚本等），将代码原文放入 reply_to_user 字段，decision 设为 pause，rationale 说明代码已封装。"
                 ),

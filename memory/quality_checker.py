@@ -7,7 +7,6 @@ r"""memory/quality_checker.py — 语义记忆检索质量评估。
 """
 from __future__ import annotations
 
-import math
 import re
 from datetime import datetime, UTC
 from typing import Any
@@ -31,10 +30,10 @@ def calculate_relevance(query: str, retrieved_text: str) -> float:
 
     if not q_tokens or not r_tokens:
         return 0.0
-        
+
     intersection = len(q_tokens & r_tokens)
     union = len(q_tokens | r_tokens)
-    
+
     return intersection / union if union > 0 else 0.0
 
 
@@ -49,10 +48,10 @@ def calculate_recency_decay(created_at_iso: str, decay_lambda: float = 0.1, acti
         created = datetime.fromisoformat(created_at_iso)
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
-        
+
         now = datetime.now(UTC)
         days_since = max(0.0, (now - created).total_seconds() / 86400)
-        
+
         # 双曲线衰减 + 激活补偿
         return activation / (1.0 + decay_lambda * days_since)
     except Exception:
@@ -84,7 +83,7 @@ def check_completeness(query: str, retrieved_memories: list[dict[str, Any]]) -> 
     missing_keywords = list(query_keywords - covered_keywords)
 
     coverage_ratio = len(covered_keywords) / len(query_keywords)
-    
+
     return {
         "coverage": coverage_ratio,
         "missing_keywords": missing_keywords,
@@ -115,7 +114,7 @@ def evaluate_retrieval_quality(
             "completeness": 0.0,
             "details": "无检索结果",
         }
-        
+
     # 1. 相关度（各结果平均）
     relevances: list[float] = []
     for mem in retrieved_memories:
@@ -139,7 +138,7 @@ def evaluate_retrieval_quality(
 
     # 加权合成：相关度 > 完整度 > 时间新近度
     overall_score = (w_rel * avg_relevance) + (w_comp * completeness_score) + (w_rec * avg_recency)
-    
+
     return {
         "overall_score": round(overall_score, 4),
         "metrics": {

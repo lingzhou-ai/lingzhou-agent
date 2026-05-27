@@ -8,9 +8,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
-import tempfile
-from pathlib import Path
 from core.paths import generated_dir
 from typing import Any
 
@@ -46,7 +43,8 @@ async def tts_speak(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         if proc.returncode == 0 and stdout:
-            import hashlib, time
+            import hashlib
+            import time
             filename = f"tts_{hashlib.md5(text.encode()).hexdigest()[:8]}_{int(time.time())}.mp3"
             out_path = OUT_DIR / filename
             out_path.write_bytes(stdout)
@@ -82,7 +80,8 @@ async def tts_speak(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 url = (data.get("output", {}) or {}).get("audio_url", "")
                 if url:
                     resp2 = await client.get(url)
-                    import hashlib, time
+                    import hashlib
+                    import time
                     filename = f"tts_ds_{hashlib.md5(text.encode()).hexdigest()[:8]}_{int(time.time())}.mp3"
                     out_path = OUT_DIR / filename
                     out_path.write_bytes(resp2.content)

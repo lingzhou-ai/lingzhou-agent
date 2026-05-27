@@ -70,11 +70,9 @@ def is_readonly_blocked_tool(name: str, manifest: Any | None) -> bool:
         return False
     if name in _READONLY_BLOCKED_TOOL_NAMES:
         return True
-    if name.startswith("task.") and name not in _READONLY_ALLOWED_TASK_TOOLS:
-        return True
-    if manifest is not None and getattr(manifest, "progress_category", "") == "mutation":
-        return True
-    return False
+    return (name.startswith("task.") and name not in _READONLY_ALLOWED_TASK_TOOLS) or (
+        manifest is not None and getattr(manifest, "progress_category", "") == "mutation"
+    )
 
 
 # ── 宪法保护模块：不允许被 evolve_tool 直接重写 ──────────────────────────────────

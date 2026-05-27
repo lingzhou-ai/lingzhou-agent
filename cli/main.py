@@ -1,7 +1,7 @@
 """cli/main.py — CLI 入口（纯注册层，不含业务逻辑）。"""
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -35,7 +35,7 @@ app = typer.Typer(
 def app_callback(
     ctx: typer.Context,
     version: Annotated[
-        Optional[bool],
+        bool | None,
         typer.Option("--version", "-V", callback=_version_callback, is_eager=True, help="显示版本号"),
     ] = None,
 ) -> None:

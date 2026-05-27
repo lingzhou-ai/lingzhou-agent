@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from core.workspace.defaults import (
     IDENTITY_MD,
@@ -27,7 +27,6 @@ from core.workspace.defaults import (
 
 from core.workspace.state import (
     BootstrapMode,
-    WorkspaceState,
     bootstrap_status,
     read_workspace_state,
     reconcile_bootstrap_completion,
@@ -69,9 +68,9 @@ class SoulManager:
 
     def __init__(
         self,
-        cfg: "Config",
-        task_store: "TaskStore",
-        wm: "WorkingMemory",
+        cfg: Config,
+        task_store: TaskStore,
+        wm: WorkingMemory,
     ) -> None:
         from core.persona import PersonaEngine
         self._cfg = cfg
@@ -133,7 +132,7 @@ class SoulManager:
 
     async def bootstrap(
         self,
-        judgment: "JudgmentLayer | None" = None,
+        judgment: JudgmentLayer | None = None,
         run_kind: Literal["interactive", "heartbeat", "cron"] = "interactive",
     ) -> BootstrapMode:
         """冷启动：Soul 文件初始化 + WM 身份注入 + system prompt 前缀注入。
@@ -212,7 +211,7 @@ class SoulManager:
 
         return mode
 
-    async def refresh_identity(self, judgment: "JudgmentLayer | None" = None) -> None:
+    async def refresh_identity(self, judgment: JudgmentLayer | None = None) -> None:
         """重读身份文件，更新 system prompt 前缀。
 
         在 evolution 运行后调用：evolution 可能已通过 file.write 修改

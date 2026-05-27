@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .output import JudgmentOutput
 
@@ -24,14 +24,13 @@ _MEMORY_ASSERTIVE_PHRASE_RE = re.compile(
 
 def simulate_safe_output(
     failure_count: int,
-    signals: "JudgmentSignals | None",
+    signals: JudgmentSignals | None,
     hard_boundaries: list[str],
     reason: str = "",
 ) -> JudgmentOutput:
     """LLM 不可用时的确定性回退。行为原则：posture > wait。"""
-    if signals:
-        if signals.posture in ("pause", "narrow"):
-            return JudgmentOutput.wait(reason=f"[fallback] posture={signals.posture}, LLM 不可用: {reason}")
+    if signals and signals.posture in ("pause", "narrow"):
+        return JudgmentOutput.wait(reason=f"[fallback] posture={signals.posture}, LLM 不可用: {reason}")
     return JudgmentOutput.wait(reason=f"[fallback] LLM 不可用: {reason}")
 
 

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any
 
-import aiosqlite
 
 from ._base import BaseAsyncStore
 

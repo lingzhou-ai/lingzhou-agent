@@ -1,31 +1,12 @@
 """语义记忆（semantic）与情节记忆（episodic）测试"""
-import asyncio
-import builtins
-import io
 import json
-import logging
 import math
-import os
 import sqlite3
 import tempfile
-import time
-from functools import lru_cache
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 
-import aiosqlite
-import pytest
 
-from conftest import (
-    _proj_root,
-    _test_config,
-    _tool_ctx,
-    _execution_layer,
-    _tool_registry,
-    _judgment_output,
-)
 # SemanticMemory — Ebbinghaus 衰减
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -360,7 +341,7 @@ def test_episodic_search_exclude_task_id_blocks_self_echo():
         ep.record("assistant", "正在分析 core/evolution.py", task_id="cur-task")
 
         # 不传 exclude_task_id：old-task-1 的 goal echo 可能命中
-        result_no_excl = ep.search(goal, max_chars=4000)
+        ep.search(goal, max_chars=4000)
 
         # 传入 exclude_task_id：goal echo（content 含 goal 前 40 字符）应被过滤
         result_excl = ep.search(goal, max_chars=4000, exclude_task_id="cur-task")

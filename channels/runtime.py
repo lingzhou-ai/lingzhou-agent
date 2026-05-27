@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from .wechat import describe_wechat_channel, start_wechat_channel
 from .webhook import describe_webhook_channel, start_webhook_channel

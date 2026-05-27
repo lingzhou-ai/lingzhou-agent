@@ -105,6 +105,8 @@ class ProbeConfig:
     last_confidence: float | None = None
     last_confidence_reason: str | None = None
     last_suspect: bool = False
+    last_alerted: bool = False
+    last_alert_detail: str | None = None
 
 
 @dataclass

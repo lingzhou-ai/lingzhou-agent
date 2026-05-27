@@ -55,7 +55,7 @@ def _deep_merge_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
     """将 patch 递归合并进 target，标量与数组直接覆盖。"""
     for key, value in patch.items():
         if isinstance(value, dict) and isinstance(target.get(key), dict):
-            _deep_merge_dict(cast(dict[str, Any], target[key]), value)
+            _deep_merge_dict(cast("dict[str, Any]", target[key]), value)
             continue
         target[key] = value
 
@@ -65,9 +65,9 @@ def _stable_json(value: Any) -> str:
     if value is None or not isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, list):
-        items = cast(list[Any], value)
+        items = cast("list[Any]", value)
         return "[" + ",".join(_stable_json(item) for item in items) + "]"
-    obj = cast(dict[str, Any], value)
+    obj = cast("dict[str, Any]", value)
     entries: list[tuple[str, Any]] = sorted(obj.items())
     return "{" + ",".join(f"{json.dumps(k)}:{_stable_json(v)}" for k, v in entries) + "}"
 
@@ -148,7 +148,7 @@ class EnsureResult:
     path: Path     # workspace_dir/models.json 的实际路径
 
 
-async def ensure_models_json(cfg: "Config") -> EnsureResult:
+async def ensure_models_json(cfg: Config) -> EnsureResult:
     """确保 workspace_dir/models.json 是基于当前 config 生成的最新版本。
 
         三态行为（skip/noop/write）：

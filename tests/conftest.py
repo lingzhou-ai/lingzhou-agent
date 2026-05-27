@@ -1,21 +1,9 @@
 """共享 fixtures 与 helpers，供 tests/ 下所有测试使用。"""
-import asyncio
-import builtins
-import io
-import json
-import logging
-import math
-import os
-import tempfile
-import time
 from functools import lru_cache
-from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
-import pytest
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _proj_root() -> Path:
@@ -31,7 +19,7 @@ def _test_config(
     shell_max_output_chars: int = 200,
 ) -> Any:
     return cast(
-        Any,
+        "Any",
         SimpleNamespace(
             loop=SimpleNamespace(
                 act=act,
@@ -48,6 +36,8 @@ def _test_config(
                 durable_failure_threshold=3,
                 durable_failure_ttl_sec=7200,
                 log_text_chars=240,
+                task_duplicate_reuse_score=0.66,
+                task_similarity_context_score=0.45,
             ),
         ),
     )
@@ -68,9 +58,9 @@ def _tool_ctx(
 ):
     from tools.registry import ToolContext
 
-    return cast(Any, ToolContext)(
+    return cast("Any", ToolContext)(
         config=cast(
-            Any,
+            "Any",
             _test_config(
                 act=act,
                 debug=debug,
@@ -79,11 +69,11 @@ def _tool_ctx(
                 shell_max_output_chars=shell_max_output_chars,
             ),
         ),
-        wm=cast(Any, wm),
-        task_store=cast(Any, task_store),
-        episodic=cast(Any, episodic),
-        semantic=cast(Any, semantic),
-        emotion=cast(Any, emotion),
+        wm=cast("Any", wm),
+        task_store=cast("Any", task_store),
+        episodic=cast("Any", episodic),
+        semantic=cast("Any", semantic),
+        emotion=cast("Any", emotion),
     )
 
 
@@ -105,6 +95,6 @@ def _tool_registry():
 def _judgment_output(**kwargs: Any) -> Any:
     from core.judgment import JudgmentOutput
 
-    return cast(Any, JudgmentOutput)(**kwargs)
+    return cast("Any", JudgmentOutput)(**kwargs)
 
 

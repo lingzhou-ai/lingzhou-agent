@@ -11,7 +11,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Annotated, Any, Optional  # noqa: F401
+from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
@@ -191,7 +191,7 @@ async def _infer_user_title_with_llm(provider: Any, messages: list[dict[str, obj
 def chat(
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     ask: Annotated[
-        Optional[str],
+        str | None,
         typer.Option("--ask", "-a", help="发送一条消息并等待回复，收到回复后退出"),
     ] = None,
     timeout: Annotated[
@@ -218,7 +218,7 @@ def chat(
 
 async def _main(
     config: Path,
-    ask: Optional[str],
+    ask: str | None,
     timeout: int,
     chat_id: str,
 ) -> None:
@@ -244,15 +244,14 @@ async def _main(
         if ask is not None:
             await _ask_once(store, ask, timeout, chat_id, name_val)
         else:
-            # 交互模式：从配置读 chat_reply_timeout
-            interactive_timeout = cfg.loop.chat_reply_timeout
-            await _interactive(store, cfg, chat_id, name_val, interactive_timeout)
+            # 交互模式：直接进入 REPL
+            await _interactive(store, cfg, chat_id, name_val)
     finally:
         await store.close()
 
 
 async def _ask_once(
-    store: "TaskStore",
+    store: TaskStore,
     text: str,
     timeout: int,
     chat_id: str,
@@ -278,11 +277,10 @@ async def _ask_once(
 
 
 async def _interactive(
-    store: "TaskStore",
+    store: TaskStore,
     cfg,
     chat_id: str,
     agent_name: str,
-    reply_timeout: int = 300,  # noqa: ARG001 — 保留签名兼容，异步模式不再阻塞等待
 ) -> None:
     """交互式对话 REPL：发送消息不阻塞，回复异步展示。
 

@@ -30,7 +30,7 @@ class WebhookChannel:
         ingress = self._ingress
 
         class _Handler(BaseHTTPRequestHandler):
-            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
             def do_POST(self) -> None:

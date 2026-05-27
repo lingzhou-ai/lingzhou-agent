@@ -33,7 +33,7 @@ from tools.registry import (
     CAPS_EXEMPT,
 )
 from store.semantic import MemoryNode
-from store.task import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
+from store.task import build_task_similarity_query
 
 
 def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:
@@ -131,7 +131,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         similar_tasks = await finder(
             build_task_similarity_query(title, goal, next_step),
             limit=1,
-            min_score=TASK_DUPLICATE_REUSE_SCORE,
+            min_score=ctx.config.thresholds.task_duplicate_reuse_score,
         )
         if similar_tasks:
             existing, score = similar_tasks[0]

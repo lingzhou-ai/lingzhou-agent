@@ -18,7 +18,7 @@
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import hashlib
 import json
 import logging
@@ -152,10 +152,8 @@ class EpisodicMemory:
         self._conn_ref = None
         self._session_depth = 0
         if conn is not None:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     @property
     def max_events(self) -> int:
@@ -680,10 +678,8 @@ class EpisodicMemory:
         for r in reversed(rows):
             affect: dict[str, Any] | None = None
             if r["affect"]:
-                try:
+                with suppress(Exception):
                     affect = json.loads(r["affect"])
-                except Exception:
-                    pass
             result.append({
                 "role": r["role"],
                 "content": r["content"] or "",
@@ -933,7 +929,7 @@ class EpisodicMemory:
                         continue
                     # 跳过块内容本质上就是查询文本本身（剖除 markdown 元数据行后比较）
                     _block_body = '\n'.join(
-                        l for l in block.splitlines() if l.strip() and not l.startswith('**[')
+                        ln for ln in block.splitlines() if ln.strip() and not ln.startswith('**[')
                     ).strip()
                     if _q and _block_body == _q:
                         continue

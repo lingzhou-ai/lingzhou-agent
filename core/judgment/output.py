@@ -15,92 +15,47 @@ from tools.registry import tool_has_capability
 if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
-# ── 工具分层常量 ─────────────────────────────────────────────────────────────
-
-# 低成本读取/枚举类工具 → reader tier（仅保留 no-registry / legacy fallback）
-_READER_TOOLS = frozenset({
-    "file.list", "file.read",
-    "memory.get_fact", "memory.search",
-    "schedule.list",
-    "shell.capabilities",
-    "task.list",
-    # 探针：只读列举，不触发执行
-    "probe.list",
-})
-
-_TOOL_TIER_MAPPING = {
-    "reader": sorted(_READER_TOOLS),
-    "reasoner": [],
-    "repair": [],
-}
-
-
-def _tool_manifest(tool_id: str, registry: "ToolRegistry | None" = None) -> Any | None:
+def _tool_manifest(tool_id: str, registry: ToolRegistry | None = None) -> Any | None:
     if registry is None or not tool_id:
         return None
     entry = registry.get(tool_id)
     return entry.manifest if entry else None
 
 
-def is_reader_tool(tool_id: str, registry: "ToolRegistry | None" = None) -> bool:
+def is_reader_tool(tool_id: str, registry: ToolRegistry | None = None) -> bool:
+    """判断工具是否属于 reader tier，完全依赖 ToolManifest（蓝图模式 2）。"""
     manifest = _tool_manifest(tool_id, registry)
-    if manifest is not None:
-        if manifest.prefer_tier == "reader":
-            return True
-        if manifest.prefer_tier in {"reasoner", "repair"}:
-            return False
-        caps = set(manifest.capabilities or ())
-        if "completion_mutation" in caps or "completion_verify" in caps or "multimodal" in caps:
-            return False
-        if "completion_info_only" in caps and "completion_mutation" not in caps:
-            return True
-        if manifest.progress_category == "info":
-            return True
-        if manifest.progress_category in {"mutation", "io"}:
-            return False
-    return tool_id in _READER_TOOLS
+    if manifest is None:
+        return False
+    if manifest.prefer_tier == "reader":
+        return True
+    if manifest.prefer_tier in {"reasoner", "repair"}:
+        return False
+    caps = set(manifest.capabilities or ())
+    if "completion_mutation" in caps or "completion_verify" in caps or "multimodal" in caps:
+        return False
+    if "completion_info_only" in caps and "completion_mutation" not in caps:
+        return True
+    if manifest.progress_category == "info":
+        return True
+    if manifest.progress_category in {"mutation", "io"}:
+        return False
+    return False
 
 
-def is_plan_alignment_exempt(tool_id: str, registry: "ToolRegistry | None" = None) -> bool:
+def is_plan_alignment_exempt(tool_id: str, registry: ToolRegistry | None = None) -> bool:
     return tool_has_capability(registry, tool_id, "plan_alignment_exempt")
 
 
-def tool_tier_mapping(registry: "ToolRegistry | None" = None) -> dict[str, list[str]]:
-    if registry is None:
-        return {tier: list(names) for tier, names in _TOOL_TIER_MAPPING.items()}
+def tool_tier_mapping(registry: ToolRegistry | None = None) -> dict[str, list[str]]:
     mapping: dict[str, list[str]] = {"reader": [], "reasoner": [], "repair": []}
+    if registry is None:
+        return mapping
     for manifest in registry.list_manifests():
         mapping.setdefault(tool_tier(manifest.name, registry), []).append(manifest.name)
     for tier in mapping:
         mapping[tier] = sorted(dict.fromkeys(mapping[tier]))
     return mapping
-
-# ── 兼容 helper：保留接口，但不再替 LLM 改写输出 ────────────────────────────────
-
-
-def _rewrite_task_ask_to_evidence(
-    action: "JudgmentOutput",
-    *,
-    user_message: str = "",
-    tool_history: "list[dict[str, Any]] | None" = None,
-    registry: "Any | None" = None,
-    evidence_budget: int = 2,
-) -> "JudgmentOutput":
-    """兼容入口：ask_evidence_budget 已显式暴露给 LLM，自身不再重写 task.ask。"""
-    return action
-
-
-# ── 兼容 helper：保留接口，但不再替 LLM 改写复杂 act ───────────────────────────
-
-def _rewrite_complex_act_to_task_plan(
-    action: "JudgmentOutput",
-    *,
-    user_message: str = "",
-    active_task: "Any | None" = None,
-    registry: "Any | None" = None,
-) -> "JudgmentOutput":
-    """兼容入口：task.plan policy 已显式暴露给 LLM，自身不再改写复杂 act。"""
-    return action
 
 
 def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple[str, str]:
@@ -178,7 +133,7 @@ def _build_team_view_from_cfg(cfg: Any) -> str:
     return "\n".join(lines)
 
 
-def tool_tier(tool_id: str, registry: "ToolRegistry | None" = None) -> str:
+def tool_tier(tool_id: str, registry: ToolRegistry | None = None) -> str:
     """判断工具应该用哪个 tier。
 
     优先级：manifest.prefer_tier / capabilities → 硬编码 fallback → 默认 reasoner。
@@ -226,7 +181,7 @@ class ModelHealth:
 class JudgmentOutput:
     decision: str = "wait"              # act | pause | wait
     chosen_action_id: str = ""          # 工具名称
-    params: dict[str, Any] = field(default_factory=lambda: {})  # type: ignore[assignment]
+    params: dict[str, Any] = field(default_factory=dict)  # type: ignore[assignment]
     rationale: str = ""                 # 内部推理过程（内部独白）
     reflection: str = ""                # 对最近经历的后验反思（写入语义记忆）
     reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
@@ -237,7 +192,7 @@ class JudgmentOutput:
     delegate_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def wait(cls, reason: str = "") -> "JudgmentOutput":
+    def wait(cls, reason: str = "") -> JudgmentOutput:
         return cls(decision="wait", rationale=reason, reply_to_user="")
 
     @staticmethod
@@ -276,7 +231,7 @@ class JudgmentOutput:
         return str(value)
 
     @classmethod
-    def from_llm(cls, text: str) -> "JudgmentOutput":
+    def from_llm(cls, text: str) -> JudgmentOutput:
         """从 LLM 输出文本解析 JudgmentOutput，容错处理。"""
         original = text.strip()
         text = original

@@ -27,7 +27,7 @@ class MetabolicEngine:
     Phase 2：先做免疫检查，通过后落地并追加生命史账本。
     """
 
-    def __init__(self, task_store: "TaskStore") -> None:
+    def __init__(self, task_store: TaskStore) -> None:
         self._task_store = task_store
 
     async def submit(self, proposal: StateProposal) -> None:
@@ -87,6 +87,6 @@ class MetabolicEngine:
                 source=proposal.source,
                 accepted=accepted,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _log.warning("[metabolic] 生命史账本写入失败（不影响主流程）: %s", exc)
 

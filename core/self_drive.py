@@ -17,12 +17,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-import sqlite3
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 _log = logging.getLogger("lingzhou.self_drive")
 
@@ -32,7 +29,7 @@ class CuriosityState:
     """好奇心状态 — 追踪灵舟对各个领域的兴趣水平。"""
 
     # 知识领域 → 兴趣分 (0-1)
-    # 高兴趣 = 高好奇心 = 应该探索
+    # 高兴趣 = 高好奇心 = 应该探索  # noqa: ERA001
     interests: dict[str, float] = field(default_factory=lambda: {
         "code_structure": 0.5,    # 代码结构理解
         "tool_mastery": 0.5,      # 工具掌握
@@ -99,7 +96,7 @@ class DriveSignal:
     should_explore: bool = False
     drive_type: str = "explore"    # "explore"（扩展探索）| "consolidate"（内聚整合）
     curiosity_score: float = 0.5
-    suggested_domain: Optional[str] = None
+    suggested_domain: str | None = None
     rationale: str = ""
 
 
@@ -201,12 +198,12 @@ class SelfDriveEngine:
             should_explore = True
             rationale_parts.append(f"空闲 {idle_ticks} 轮强制探索")
 
-        # 场景3: 好奇心超过阈值
+        # 场景3: 好奇心超过阈值  # noqa: ERA001
         elif C > EXPLORE_THRESHOLD:
             should_explore = True
             rationale_parts.append(f"好奇心 C={C:.2f}>{EXPLORE_THRESHOLD}")
 
-        # 场景4: 惊奇事件
+        # 场景4: 惊奇事件  # noqa: ERA001
         elif s.surprise_count > 0:
             should_explore = True
             rationale_parts.append(f"惊奇事件 {s.surprise_count} 个")

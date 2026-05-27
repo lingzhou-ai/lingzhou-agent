@@ -84,8 +84,7 @@ class MemoryContextScrubber:
 
 
 def _clip_reply_for_log(text: str, limit: int = DEFAULT_LOG_REPLY_CHARS) -> str:
-    cleaned = _strip_memory_context(text).replace("\n", "\\n").strip()
-    return cleaned
+    return _strip_memory_context(text).replace("\n", "\\n").strip()
 
 
 def _clip_signal_text(text: str, limit: int = 160) -> str:

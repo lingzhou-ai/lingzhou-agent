@@ -42,8 +42,7 @@ async def _resolve_reply_chat_id(
     chat_id: str | None,
 ) -> str | None:
     if chat_id is not None:
-        resolved_chat_id = str(chat_id or "").strip()
-        return resolved_chat_id
+        return str(chat_id or "").strip()
 
     if active_task is not None:
         task_source = str(getattr(active_task, "source", "") or "").strip()

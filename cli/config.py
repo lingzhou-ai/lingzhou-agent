@@ -32,7 +32,7 @@ def config_get(
         console.print(f"{key} = [cyan]{_json.dumps(val, ensure_ascii=False)}[/cyan]")
     except (KeyError, TypeError):
         console.print(f"[yellow]键不存在: {key}[/yellow]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @config_app.command("set")

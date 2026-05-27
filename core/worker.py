@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
 
 from tools.registry import ToolContext, ToolResult
 
@@ -71,8 +72,8 @@ class WorkerLayer:
     async def dispatch(
         self,
         worker_type: str,
-        entry: "ToolEntry",
-        action: "JudgmentOutput",
+        entry: ToolEntry,
+        action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
         handler = self._handlers.get(worker_type, self._execute_tool_chain)
@@ -102,8 +103,8 @@ class WorkerLayer:
 
     async def _execute_tool_chain(
         self,
-        entry: "ToolEntry",
-        action: "JudgmentOutput",
+        entry: ToolEntry,
+        action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
         result = await entry.handler(action.params, ctx)
@@ -112,8 +113,8 @@ class WorkerLayer:
 
     async def _execute_exec(
         self,
-        entry: "ToolEntry",
-        action: "JudgmentOutput",
+        entry: ToolEntry,
+        action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
         result = await entry.handler(action.params, ctx)
@@ -131,8 +132,8 @@ class WorkerLayer:
 
     async def _execute_multimodal(
         self,
-        entry: "ToolEntry",
-        action: "JudgmentOutput",
+        entry: ToolEntry,
+        action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
         result = await entry.handler(action.params, ctx)
@@ -152,8 +153,8 @@ class WorkerLayer:
 
     async def _execute_llm(
         self,
-        entry: "ToolEntry",
-        action: "JudgmentOutput",
+        entry: ToolEntry,
+        action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
         result = await entry.handler(action.params, ctx)

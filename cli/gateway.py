@@ -9,15 +9,13 @@ import os
 import signal
 import subprocess
 import sys
-import threading
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import typer
 
 from cli.bootstrap import onboarding_status
 from channels import describe_channel_runtime, start_channel_runtime
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
@@ -67,7 +65,7 @@ def _restart_mode_log_line(
 
 def _ensure_singleton() -> None:
     """保证唯一实例。通过 flock 独占锁，与 wrapper.sh 共用同一个锁文件。
-    
+
     如果已有实例持有锁，立即退出并提示。
     锁会在进程退出时自动释放（无论正常退出还是崩溃）。
     """
@@ -89,11 +87,11 @@ def _ensure_singleton() -> None:
         console.print(f"[red]✗ lingzhou 已在运行[/red]  （锁文件: {_LOCK_FILE}）")
         if holder:
             console.print(f"  [dim]占用进程 PID: {holder}[/dim]")
-        console.print(f"  [dim]停止: lingzhou gateway stop[/dim]")
-        raise typer.Exit(1)
+        console.print("  [dim]停止: lingzhou gateway stop[/dim]")
+        raise typer.Exit(1) from None
     except Exception as e:
         console.print(f"[red] 获取锁失败: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 def _configure_lingzhou_logging(
@@ -134,13 +132,11 @@ def _configure_lingzhou_logging(
 
 def _daemonize(argv: list[str]) -> None:
     """fork 子进程后台运行，父进程立即退出。"""
-    # 去掉 --daemon / -d 标志，避免子进程再次 fork
-    clean_argv = [a for a in argv if a not in ("--daemon", "-d")]
     pid = os.fork()
     if pid > 0:
         # 父进程：打印 PID 后退出
         console.print(f"[green]✓ 已后台启动[/green]  PID={pid}  日志: ~/.lingzhou/logs/")
-        console.print(f"  停止: [bold]lingzhou stop[/bold]")
+        console.print("  停止: [bold]lingzhou stop[/bold]")
         raise typer.Exit(0)
     # 子进程：脱离终端
     os.setsid()
@@ -337,7 +333,7 @@ def gateway_stop() -> None:
     except ProcessLookupError:
         console.print(f"[yellow]进程 {pid_str} 已不存在，清理 PID 文件[/yellow]")
         _PID_FILE.unlink(missing_ok=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     except ValueError:
         console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
 
@@ -357,10 +353,10 @@ def gateway_status() -> None:
         os.kill(pid, 0)  # 仅探测进程是否存在，不发送真实信号
     except ProcessLookupError:
         console.print(f"[yellow]● 进程已退出[/yellow]  PID={pid_str}（PID 文件残留，可运行 lingzhou gateway stop 清理）")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     except ValueError:
         console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # 用 PID 文件 mtime 估算运行时长
     try:
@@ -373,14 +369,14 @@ def gateway_status() -> None:
         uptime_str = "未知"
 
     console.print(f"[green]● 运行中[/green]  PID={pid}  已运行 {uptime_str}")
-    console.print(f"  日志: [dim]~/.lingzhou/logs/[/dim]")
-    console.print(f"  停止: [dim]lingzhou gateway stop[/dim]")
-    console.print(f"  重启: [dim]lingzhou gateway restart[/dim]")
+    console.print("  日志: [dim]~/.lingzhou/logs/[/dim]")
+    console.print("  停止: [dim]lingzhou gateway stop[/dim]")
+    console.print("  重启: [dim]lingzhou gateway restart[/dim]")
 
 
 def _is_systemd_managed() -> bool:
     """检查 lingzhou 是否由 systemd 管理。
-    
+
     不仅检查 active 状态，还检查是否 enabled。
     这样即使服务正在重启或失败，也能检测到 systemd 管理。
     """
@@ -404,7 +400,7 @@ def _is_systemd_managed() -> bool:
 
 def _restart_via_systemd() -> bool:
     """通过 systemd 重启 lingzhou。返回 True 表示成功。
-    
+
     systemd 本身保证 restart 的原子性，不需要额外的 flock。
     """
     try:
@@ -419,13 +415,13 @@ def _restart_via_systemd() -> bool:
 
 @gateway_app.command("restart")
 def gateway_restart(
-    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
+    channel: Annotated[str | None, typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
-    debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
-    dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+    debug: Annotated[bool | None, typer.Option("--debug/--no-debug")] = None,
+    dry_run: Annotated[bool | None, typer.Option("--dry-run/--act")] = None,
 ) -> None:
     """重启认知循环（stop + start）。
-    
+
     优先通过 systemd 重启（如果 lingzhou 由 systemd 管理），
     避免 systemd 与 PID 文件双管理导致多实例竞争。
     """
@@ -441,10 +437,10 @@ def gateway_restart(
 
 @gateway_app.command("start")
 def gateway_start(
-    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
+    channel: Annotated[str | None, typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
-    debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
-    dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+    debug: Annotated[bool | None, typer.Option("--debug/--no-debug")] = None,
+    dry_run: Annotated[bool | None, typer.Option("--dry-run/--act")] = None,
     daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
 ) -> None:
     """启动认知循环 + 消息渠道（loop 是内核，channel 是 I/O 层）。
@@ -453,12 +449,12 @@ def gateway_start(
     webhook  — HTTP 接入，loop 与 webhook server 并行
     wechat   — 微信 iLink 通道
     telegram — Telegram Bot（开发中）
-    
+
     如果检测到 systemd 管理且非 wrapper 调用，自动重定向到 systemctl restart。
     """
     # 检测是否在 wrapper 内调用（避免 wrapper → start → systemctl restart 无限循环）
     is_inside_wrapper = os.environ.get("LINGZHOU_WRAPPER", "") == "1"
-    
+
     # 如果 systemd 在管理且非 wrapper 调用，重定向到 systemctl
     if daemon and _is_systemd_managed() and not is_inside_wrapper:
         console.print("[dim]检测到 systemd 管理，使用 systemctl restart...[/dim]")
@@ -551,9 +547,9 @@ def gateway_start(
 
 def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
-    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
-    debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
-    dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
+    channel: Annotated[str | None, typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
+    debug: Annotated[bool | None, typer.Option("--debug/--no-debug")] = None,
+    dry_run: Annotated[bool | None, typer.Option("--dry-run/--act")] = None,
     daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
 ) -> None:
     """启动认知循环（等同于 gateway start）。"""
@@ -574,10 +570,10 @@ def stop() -> None:
     except ProcessLookupError:
         console.print(f"[yellow]进程 {pid_str} 已不存在，清理 PID 文件[/yellow]")
         _PID_FILE.unlink(missing_ok=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     except ValueError:
         console.print(f"[red]PID 文件内容无效: {pid_str!r}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 def _start_external_channel_runtime(channel: str, gw_conf: dict[str, Any], *, db_path: str | Path) -> object:

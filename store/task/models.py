@@ -47,7 +47,7 @@ class Task:
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
-    def from_row(cls, row: Any) -> "Task":
+    def from_row(cls, row: Any) -> Task:
         """row = (id, title, status, priority, created_at, data_json)"""
         rid, title, status, priority, created_at, data_raw = row
         try:
@@ -124,7 +124,7 @@ class Failure:
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
-    def from_row(cls, row: Any) -> "Failure":
+    def from_row(cls, row: Any) -> Failure:
         """row = (id, kind, dismissed, created_at, data_json)"""
         rid, kind, dismissed, created_at, data_raw = row
         try:
@@ -169,7 +169,7 @@ class Run:
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
-    def from_row(cls, row: Any) -> "Run":
+    def from_row(cls, row: Any) -> Run:
         rid, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")
@@ -237,7 +237,7 @@ class MetaReflection:
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
-    def from_row(cls, row: Any) -> "MetaReflection":
+    def from_row(cls, row: Any) -> MetaReflection:
         rid, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")

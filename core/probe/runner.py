@@ -55,7 +55,7 @@ def _safe_eval_alert(expr: str, output: str) -> bool:
     for node in ast.walk(tree):
         if not isinstance(node, _SAFE_ALERT_NODES):
             raise ValueError(f"alert_expr 含不允许的节点: {type(node).__name__}")
-    return bool(eval(compile(tree, "<alert_expr>", "eval"), {"output": output}, {}))  # noqa: S307
+    return bool(eval(compile(tree, "<alert_expr>", "eval"), {"output": output}, {}))
 
 
 def _evaluate_alert(cfg: ProbeConfig, output: str) -> tuple[bool, str]:
@@ -143,16 +143,19 @@ class ProbeRunner:
     由 ProbeManager 持有。loop._probe_manager.runner 可访问。
     """
 
-    def __init__(self, store: "ProbeStore") -> None:
+    def __init__(self, store: ProbeStore) -> None:
         self._store = store
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # 由 ProbeManager 在启动后注入（避免循环依赖）
         self._wm: Any = None
         self._loop_ref: Any = None
+        self._alert_event: asyncio.Event | None = None
 
     def attach(self, wm: Any, loop_ref: Any | None = None) -> None:
         """注入运行时依赖（WM / Loop 引用）。"""
         self._wm = wm
+        self._loop_ref = loop_ref
+        self._alert_event = asyncio.Event()
         self._loop_ref = loop_ref
 
     async def start_all(self) -> None:
@@ -244,6 +247,8 @@ class ProbeRunner:
             last_confidence=confidence,
             last_confidence_reason=confidence_reason[:300],
             last_suspect=suspect_setup,
+            last_alerted=alerted,
+            last_alert_detail=alert_detail if alerted else None,
         )
 
         _log.info(
@@ -258,7 +263,8 @@ class ProbeRunner:
         """按 data_back 策略回传探针结果。"""
         if result.alerted and result.alert_detail:
             await self._push_wm(f"[🔔 探针告警] {result.alert_detail}", priority=_ALERT_WM_PRIORITY)
-
+            if self._alert_event is not None:
+                self._alert_event.set()
         if result.confidence < 0.6 or result.deployment_suspect:
             hint = (
                 f"[🧪 探针可信度预警] {cfg.name} confidence={result.confidence:.2f}。"

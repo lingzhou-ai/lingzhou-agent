@@ -304,9 +304,10 @@ async def model_upgrade(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not reason:
         return ToolResult(summary="reason 不能为空", skipped=True)
 
-    provider = getattr(ctx, "provider", None)
-    registry = getattr(ctx, "registry", None)
-    if not provider or not registry:
+    judgment = getattr(ctx, "judgment", None)
+    provider = getattr(judgment, "_provider", None)
+    registry = getattr(judgment, "_registry", None)
+    if provider is None or registry is None:
         return ToolResult(
             summary="model.upgrade 缺少 judgment provider/registry 上下文",
             error="MissingEvolutionContext",

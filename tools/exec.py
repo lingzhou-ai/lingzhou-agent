@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -129,10 +130,8 @@ class ProcessManager:
         path = Path(info.log_path)
         if not path.exists():
             return
-        try:
+        with contextlib.suppress(Exception):
             info.stdout = path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
 
     @classmethod
     def _refresh_liveness(cls, info: ProcessInfo) -> None:
@@ -232,10 +231,8 @@ class ProcessManager:
         cls._loaded = True
         root = cls._state_root()
         for p in root.glob("exec-*"):
-            try:
+            with contextlib.suppress(Exception):
                 p.unlink()
-            except Exception:
-                pass
 
 
 _MANAGER = ProcessManager()
@@ -286,7 +283,7 @@ def _build_capabilities_v2(workdir: str) -> dict[str, Any]:
     )
     available = [cmd for cmd in common if shutil.which(cmd)]
     try:
-        import pty as _pty  # noqa: F401
+        import pty  # noqa: F401
         has_pty = True
     except Exception:
         has_pty = False
@@ -566,7 +563,7 @@ async def _watch_pipe_process(info: ProcessInfo) -> None:
     reader_task = asyncio.create_task(_reader())
     try:
         await asyncio.wait_for(proc.wait(), timeout=info.timeout_seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _terminate_info(info)
         await asyncio.sleep(0.1)
         _terminate_info(info, force=True)
@@ -642,10 +639,8 @@ def _run_pty_until_exit(info: ProcessInfo) -> tuple[int, bool, str | None]:
         err = str(e)
         return -1, timed_out, err
     finally:
-        try:
+        with contextlib.suppress(Exception):
             os.close(master_fd)
-        except Exception:
-            pass
         info.master_fd = None
 
 

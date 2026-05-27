@@ -56,6 +56,11 @@ class ProbeManager:
         await self._store.upsert(cfg)
         _log.info("[probe] 已自动注册内置探针: %s", _CONSTITUTION_PROBE)
 
+    @property
+    def alert_event(self) -> asyncio.Event | None:
+        """探针告警事件：任一探针触发 alert_expr 时 set；消费方负责 clear。"""
+        return getattr(self._runner, "_alert_event", None)
+
     def stop(self) -> None:
         """取消所有调度 Task（shutdown 时调用）。"""
         for name in list(self._runner._tasks):

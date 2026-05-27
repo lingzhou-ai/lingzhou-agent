@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, Callable, Optional
+from typing import Any
 
-import aiosqlite
 
 from ._base import BaseAsyncStore
 from .models import Run
@@ -50,7 +49,7 @@ class RunStore(BaseAsyncStore):
         await self._db.commit()
         return run_id
 
-    async def get_run_by_id(self, run_id: int) -> Optional[Run]:
+    async def get_run_by_id(self, run_id: int) -> Run | None:
         async with self._db.execute(
             "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs WHERE id=?",
             (run_id,),

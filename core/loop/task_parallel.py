@@ -26,7 +26,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from store.task import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
+from store.task import build_task_similarity_query
 
 _log = logging.getLogger("lingzhou.task_parallel")
 
@@ -46,17 +46,17 @@ class _ScopedTaskStore:
     新增 TaskStore 方法时，只有并行路径确实需要时才应显式加入这里。
     """
 
-    def __init__(self, inner: Any, pinned: "Task") -> None:
+    def __init__(self, inner: Any, pinned: Task) -> None:
         self._inner = inner
         self._pinned = pinned
 
     async def _call(self, method: str, /, *args: Any, **kwargs: Any) -> Any:
         return await getattr(self._inner, method)(*args, **kwargs)
 
-    async def get_active(self) -> "Task":
+    async def get_active(self) -> Task:
         return self._pinned
 
-    async def get_task_by_id(self, task_id: int) -> "Task | None":
+    async def get_task_by_id(self, task_id: int) -> Task | None:
         return await self._call("get_task_by_id", task_id)
 
     async def add_task(self, title: str, goal: str = "", **kwargs: Any) -> int:
@@ -180,10 +180,10 @@ class _ScopedTaskStore:
 
 
 async def _run_one_task(
-    task: "Task",
+    task: Task,
     spec: dict[str, Any],
-    ctx: "ToolContext",
-    loop: "CognitionLoop",
+    ctx: ToolContext,
+    loop: CognitionLoop,
 ) -> dict[str, Any]:
     """运行单个 Task 的 judgment 循环（reader tier），结果写回 task_store。
 
@@ -320,8 +320,8 @@ async def _run_one_task(
 
 async def run_tasks_parallel(
     specs: list[dict[str, Any]],
-    ctx: "ToolContext",
-    loop: "CognitionLoop",
+    ctx: ToolContext,
+    loop: CognitionLoop,
     parent_task_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """创建真实 Task 并并行执行，返回 tool_history 格式的 entry 列表。
@@ -336,7 +336,7 @@ async def run_tasks_parallel(
 
     _log.info("[task_parallel] 并行启动 %d 个任务: %s", len(valid_specs), [s["id"] for s in valid_specs])
 
-    def _reused_entry(spec: dict[str, Any], task: "Task", score: float) -> dict[str, Any]:
+    def _reused_entry(spec: dict[str, Any], task: Task, score: float) -> dict[str, Any]:
         spec_id = str(spec.get("id") or task.id)
         result_text = (
             f"目标: {spec.get('goal') or task.goal}\n"
@@ -354,14 +354,14 @@ async def run_tasks_parallel(
         }
 
     # 先顺序创建所有 Task（写 DB 不适合并发）
-    scheduled: list[dict[str, Any] | tuple["Task", dict]] = []
+    scheduled: list[dict[str, Any] | tuple[Task, dict]] = []
     finder = getattr(loop._task_store, "find_similar_open_tasks", None)
     for spec in valid_specs:
         if callable(finder):
             similar_tasks = await finder(
                 build_task_similarity_query(spec.get("goal")),
                 limit=1,
-                min_score=TASK_DUPLICATE_REUSE_SCORE,
+                min_score=loop._cfg.thresholds.task_duplicate_reuse_score,
                 exclude_task_ids=[parent_task_id] if parent_task_id else None,
             )
             if similar_tasks:
@@ -395,7 +395,7 @@ async def run_tasks_parallel(
 
     if pending_coros:
         results = await asyncio.gather(*pending_coros)
-        for slot, result in zip(pending_slots, results):
+        for slot, result in zip(pending_slots, results, strict=False):
             entries[slot] = result
 
     return [entry for entry in entries if entry is not None]

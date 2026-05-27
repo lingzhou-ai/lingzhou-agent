@@ -27,7 +27,6 @@ _log = logging.getLogger("lingzhou.execution")
 if TYPE_CHECKING:
     from core.config import Config
     from core.judgment import JudgmentOutput
-    from memory.working import WorkingMemory, WMItem
     from store.task import TaskStore
     from tools.registry import ToolRegistry
 
@@ -42,7 +41,7 @@ def _default_durable_failure_policy() -> dict[str, int]:
     }
 
 
-async def _load_durable_failure_policy(task_store: "TaskStore | None") -> dict[str, int]:
+async def _load_durable_failure_policy(task_store: TaskStore | None) -> dict[str, int]:
     policy = _default_durable_failure_policy()
     if task_store is None:
         return policy
@@ -76,7 +75,7 @@ def action_key_param(params: dict[str, Any] | None) -> str:
     )
 
 
-def _failure_fact_key(action: "JudgmentOutput") -> str:
+def _failure_fact_key(action: JudgmentOutput) -> str:
     sig = f"{action.chosen_action_id or ''}|{action_key_param(action.params)}"
     digest = hashlib.md5(sig.encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"durable_failure:{digest}"
@@ -150,7 +149,7 @@ def _worker_log_fields(result: ToolResult) -> str:
     return " ".join(parts) or "-"
 
 
-def _worker_limit_for_type(cfg: "Config", worker_type: str) -> int:
+def _worker_limit_for_type(cfg: Config, worker_type: str) -> int:
     loop_cfg = getattr(cfg, "loop", None)
     attr_name = {
         "tool-chain-worker": "max_tool_chain_workers",
@@ -183,7 +182,7 @@ def _coerce_task_id(value: Any) -> int:
     return task_id if task_id > 0 else 0
 
 
-def _planned_run_task_id(action: "JudgmentOutput", active_task_id: int) -> int:
+def _planned_run_task_id(action: JudgmentOutput, active_task_id: int) -> int:
     tool_name = action.chosen_action_id or ""
     if tool_name in _TARGET_TASK_TOOLS:
         return _coerce_task_id((action.params or {}).get("task_id")) or active_task_id
@@ -203,7 +202,7 @@ def _infer_run_profile(
     tool_name: str,
     params: dict[str, Any] | None = None,
     *,
-    registry: "ToolRegistry | None" = None,
+    registry: ToolRegistry | None = None,
 ) -> tuple[str, str]:
     p = params or {}
     if p.get("monitor_fact_key") or p.get("status_fact_key"):
@@ -214,26 +213,6 @@ def _infer_run_profile(
     if tool_has_capability(registry, tool_name, "multimodal"):
         return "multimodal", "multimodal-worker"
     return "tool_chain", "tool-chain-worker"
-
-
-def _active_plan_step(task: Any | None) -> str:
-    if task is None:
-        return ""
-    extras = getattr(task, "extras", None)
-    if not isinstance(extras, dict):
-        return ""
-    raw_plan = extras.get("plan")
-    if not isinstance(raw_plan, list):
-        return ""
-    for item in raw_plan:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("status") or "").strip() != "in_progress":
-            continue
-        step = str(item.get("step") or "").strip()
-        if step:
-            return step
-    return ""
 
 
 def _run_status_from_result(result: ToolResult) -> str:
@@ -491,12 +470,12 @@ def build_meta_reflection(
 
 
 class ExecutionLayer:
-    def __init__(self, registry: "ToolRegistry", cfg: "Config") -> None:
+    def __init__(self, registry: ToolRegistry, cfg: Config) -> None:
         self._registry = registry
         self._cfg = cfg
         self._workers = WorkerLayer(cfg)
 
-    async def dispatch(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
+    async def dispatch(self, action: JudgmentOutput, ctx: ToolContext) -> ToolResult:
         """根据 decision 类型分发执行。"""
         match action.decision:
             case "wait":
@@ -530,7 +509,7 @@ class ExecutionLayer:
                     kind="error",
                 )
 
-    async def _dispatch_parallel(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
+    async def _dispatch_parallel(self, action: JudgmentOutput, ctx: ToolContext) -> ToolResult:
         """gather 并行执行 parallel_actions 列表中的多个工具，合并结果返回。"""
         import asyncio
         from core.judgment import JudgmentOutput as _JO
@@ -557,7 +536,7 @@ class ExecutionLayer:
         ))
         merged_summary = "\n".join(
             f"[{a.chosen_action_id}] {r.summary}"
-            for a, r in zip(sub_actions, results)
+            for a, r in zip(sub_actions, results, strict=False)
             if r.summary
         )
         errors = [r.error for r in results if r.error]
@@ -571,7 +550,7 @@ class ExecutionLayer:
             metadata={"parallel_count": len(sub_actions), "errors": errors},
         )
 
-    async def _dispatch_act(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
+    async def _dispatch_act(self, action: JudgmentOutput, ctx: ToolContext) -> ToolResult:
         run_id: int | None = None
         run_type = "tool_chain"
         worker_type = "tool-chain-worker"

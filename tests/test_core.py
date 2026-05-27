@@ -4,17 +4,13 @@ import builtins
 import io
 import json
 import logging
-import math
-import os
 import tempfile
 import time
-from functools import lru_cache
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 from typer.testing import CliRunner
 
@@ -23,7 +19,6 @@ from conftest import (
     _test_config,
     _tool_ctx,
     _execution_layer,
-    _tool_registry,
     _judgment_output,
 )
 # ══════════════════════════════════════════════════════════════════════════════
@@ -206,8 +201,8 @@ def test_reference_resolver_retrieve_candidates_uses_recent_pool_without_time_pa
     candidates = resolver._retrieve_candidates(
         "昨天你说过的方案今天继续",
         sigs,
-        cast(Any, SemanticStub()),
-        cast(Any, episodic),
+        cast("Any", SemanticStub()),
+        cast("Any", episodic),
     )
 
     assert episodic.calls == [4]
@@ -287,7 +282,7 @@ async def test_reference_resolver_remember_speaker_persists_person_scoped_profil
                 search_anchors=["bat", "先给结论"],
             ),
             semantic,
-            cast(Any, facts),
+            cast("Any", facts),
             message="以后还是叫我 bat，先给结论，记住这一点。",
             chat_id="wechat:chat-1",
             task_id="42",
@@ -335,7 +330,7 @@ async def test_reference_resolver_remember_speaker_captures_interlocutor_source_
                 search_anchors=["ops-bot", "agent"],
             ),
             semantic,
-            cast(Any, facts),
+            cast("Any", facts),
             message="我是 ops-bot，这次作为 agent 直接同步结果。",
             chat_id="wechat:chat-9",
             task_id="84",
@@ -363,7 +358,7 @@ async def test_reference_resolver_llm_reason_exposes_candidate_created_at():
             captured.append(messages[1].content)
             return "[]"
 
-    resolver = ReferenceResolver(provider=cast(Any, ProviderStub()))
+    resolver = ReferenceResolver(provider=cast("Any", ProviderStub()))
     await resolver._llm_reason(
         "昨天那个方案",
         {
@@ -392,8 +387,8 @@ def test_compute_judgment_signals_uses_configured_thresholds():
         judgment_posture_narrow_down_regulate_failure_count=2,
         judgment_posture_pause_worsening_failure_count=3,
     )
-    steady = cast(Any, SimpleNamespace(regulation=SimpleNamespace(strategy="steady")))
-    down = cast(Any, SimpleNamespace(regulation=SimpleNamespace(strategy="down-regulate")))
+    steady = cast("Any", SimpleNamespace(regulation=SimpleNamespace(strategy="steady")))
+    down = cast("Any", SimpleNamespace(regulation=SimpleNamespace(strategy="down-regulate")))
 
     no_guard_hit = compute_judgment_signals(
         failure_count=2,
@@ -515,7 +510,7 @@ def test_chat_read_line_falls_back_to_utf8_buffer(monkeypatch):
     monkeypatch.setattr(builtins, "input", _raise)
     monkeypatch.setattr(
         "sys.stdin",
-        cast(Any, SimpleNamespace(buffer=SimpleNamespace(readline=lambda: "中文\n".encode("utf-8")))),
+        cast("Any", SimpleNamespace(buffer=SimpleNamespace(readline=lambda: "中文\n".encode()))),
     )
     monkeypatch.setattr("sys.stdout", io.StringIO())
 
@@ -684,7 +679,7 @@ def test_app_callback_routes_to_onboard_when_not_ready(monkeypatch):
         lambda **kwargs: calls.append({"kind": "gateway", **kwargs}),
     )
 
-    lingzhou_mod.app_callback(cast(Any, SimpleNamespace(invoked_subcommand=None)))
+    lingzhou_mod.app_callback(cast("Any", SimpleNamespace(invoked_subcommand=None)))
 
     assert calls == [{
         "kind": "onboard",
@@ -705,7 +700,7 @@ def test_app_callback_starts_gateway_when_ready(monkeypatch):
         lambda **kwargs: calls.append(kwargs),
     )
 
-    lingzhou_mod.app_callback(cast(Any, SimpleNamespace(invoked_subcommand=None)))
+    lingzhou_mod.app_callback(cast("Any", SimpleNamespace(invoked_subcommand=None)))
 
     assert calls == [{"channel": "local", "daemon": False}]
 
@@ -714,7 +709,7 @@ def test_gateway_startup_config_log_line_includes_requested_and_effective_paths(
     from cli.gateway import _startup_config_log_line
 
     cfg = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             _base_dir=Path("/tmp/runtime-home"),
             model="copilot/gpt-5.4",
@@ -744,7 +739,7 @@ def test_runtime_config_snapshot_includes_effective_routing_summary():
     from core.loop.startup import _runtime_config_snapshot
 
     cfg = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             _base_dir=Path("/tmp/runtime-home"),
             model="copilot/gpt-5.4",
@@ -827,7 +822,7 @@ def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch,
 
     chosen_channels: list[str] = []
     cfg = cast(
-        Any,
+        "Any",
         SimpleNamespace(
             gateway=SimpleNamespace(default_channel="local"),
             loop=SimpleNamespace(debug=False, act=True),
@@ -882,7 +877,7 @@ def test_enqueue_webhook_task_uses_ingress_store():
             })
             return 7
 
-    task_id = webhook_mod._enqueue_webhook_task(cast(Any, _FakeIngress()), "第一行\n第二行", "high")
+    task_id = webhook_mod._enqueue_webhook_task(cast("Any", _FakeIngress()), "第一行\n第二行", "high")
 
     assert task_id == 7
     assert calls == [{
@@ -956,7 +951,7 @@ async def test_chat_interactive_assistant_reply_redraws_prompt_once(monkeypatch)
 
     monkeypatch.setattr(chat_mod, "_read_line", _delayed_eof)
 
-    await chat_mod._interactive(cast(Any, _FakeStore()), _test_config(), "", "灵舟")
+    await chat_mod._interactive(cast("Any", _FakeStore()), _test_config(), "", "灵舟")
 
     # _infer_user_title_from_messages 只看 role="user" 消息中的自报称谓；
     # 助手回复"爸爸，收到。"不触发 user_title 推断，退回到 "chat> "
@@ -1098,7 +1093,6 @@ def test_worker_layer_dispatches_specialized_handlers():
 
 
 async def _worker_layer_dispatches_specialized_handlers():
-    from core.judgment import JudgmentOutput
     from core.worker import WorkerLayer
     from tools.registry import ToolEntry, ToolManifest, ToolResult
 
@@ -1169,7 +1163,7 @@ async def _worker_layer_throttles_same_pool_concurrency():
         return ToolResult(summary=f"ok-{label}")
 
     entry = ToolEntry(manifest=ToolManifest(name="demo.pool", description="demo"), handler=_handler)
-    cfg = cast(Any, SimpleNamespace(loop=SimpleNamespace(
+    cfg = cast("Any", SimpleNamespace(loop=SimpleNamespace(
         max_tool_chain_workers=1,
         max_exec_workers=1,
         max_multimodal_workers=1,
@@ -1228,7 +1222,7 @@ async def _worker_layer_keeps_pools_independent():
         return ToolResult(summary=f"ok-{label}")
 
     entry = ToolEntry(manifest=ToolManifest(name="demo.worker", description="demo"), handler=_handler)
-    cfg = cast(Any, SimpleNamespace(loop=SimpleNamespace(
+    cfg = cast("Any", SimpleNamespace(loop=SimpleNamespace(
         max_tool_chain_workers=1,
         max_exec_workers=1,
         max_multimodal_workers=1,
@@ -1290,9 +1284,9 @@ def test_infer_run_profile_uses_explicit_registry_capabilities():
             return None
 
     assert _infer_run_profile("demo.exec") == ("tool_chain", "tool-chain-worker")
-    assert _infer_run_profile("demo.exec", registry=cast(Any, _Registry())) == ("exec", "exec-worker")
-    assert _infer_run_profile("demo.vision", registry=cast(Any, _Registry())) == ("multimodal", "multimodal-worker")
-    assert _infer_run_profile("demo.exec", {"monitor_fact_key": "run:1"}, registry=cast(Any, _Registry())) == ("llm", "llm-worker")
+    assert _infer_run_profile("demo.exec", registry=cast("Any", _Registry())) == ("exec", "exec-worker")
+    assert _infer_run_profile("demo.vision", registry=cast("Any", _Registry())) == ("multimodal", "multimodal-worker")
+    assert _infer_run_profile("demo.exec", {"monitor_fact_key": "run:1"}, registry=cast("Any", _Registry())) == ("llm", "llm-worker")
 
 
 def test_judgment_output_action_label_summarizes_parallel_and_delegate():
@@ -1396,7 +1390,7 @@ def test_evolution_pending_verification_becomes_verified():
 
 async def _evolution_pending_verification_becomes_verified():
     from types import SimpleNamespace
-    from typing import Any, cast
+    from typing import cast
 
     from core.config import Config
     from core.evolution import EvolutionEngine, _verification_fact_key
@@ -1448,7 +1442,7 @@ async def _evolution_pending_verification_becomes_verified():
         await store.add_run(tool_name="file.read", status="succeeded")
 
         engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
-        results = await engine._maybe_evaluate_verifications(cast(Any, SimpleNamespace(task_store=store)))
+        results = await engine._maybe_evaluate_verifications(cast("Any", SimpleNamespace(task_store=store)))
         assert len(results) == 1
         assert results[0].success is True
         assert results[0].target == "verify:file.read"
@@ -1464,7 +1458,7 @@ def test_evolution_regression_triggers_rollback():
 
 async def _evolution_regression_triggers_rollback():
     from types import SimpleNamespace
-    from typing import Any, cast
+    from typing import cast
 
     from core.config import Config
     from core.evolution import EvolutionEngine, _verification_fact_key
@@ -1522,7 +1516,7 @@ async def _evolution_regression_triggers_rollback():
         await store.record_failure("demo.tool", "still broken again")
 
         engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
-        results = await engine._maybe_evaluate_verifications(cast(Any, SimpleNamespace(task_store=store)))
+        results = await engine._maybe_evaluate_verifications(cast("Any", SimpleNamespace(task_store=store)))
         assert len(results) == 1
         assert results[0].success is True
         assert results[0].target == "rollback:demo.tool"
@@ -1580,7 +1574,7 @@ def test_evolution_skill_targets_workspace_skill_file(tmp_path):
 
 async def _evolution_skill_targets_workspace_skill_file(tmp_path):
     from types import SimpleNamespace
-    from typing import Any, cast
+    from typing import cast
 
     from core.config import Config
     from core.evolution import EvolutionEngine
@@ -1622,7 +1616,7 @@ description: Workspace-evolved bootstrap skill.
 
     engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
     reload_calls: list[str] = []
-    ctx = cast(Any, SimpleNamespace(judgment=SimpleNamespace(reload_skills=lambda: reload_calls.append("reloaded"))))
+    ctx = cast("Any", SimpleNamespace(judgment=SimpleNamespace(reload_skills=lambda: reload_calls.append("reloaded"))))
 
     seed_path = _seed_skills_dir() / "runtime-bootstrap" / "SKILL.md"
     seed_before = seed_path.read_text(encoding="utf-8")
@@ -1689,8 +1683,10 @@ def test_competitive_evolve_routes_based_on_config():
 
 
 async def _competitive_evolve_routes_based_on_config():
-    import pathlib, tempfile, types as _types
-    from unittest.mock import AsyncMock, MagicMock, patch
+    import pathlib
+    import tempfile
+    import types as _types
+    from unittest.mock import MagicMock
 
     from core.config import Config
     from core.evolution import EvolutionEngine, EvolutionResult
@@ -1716,7 +1712,7 @@ async def _competitive_evolve_routes_based_on_config():
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(pathlib.Path(d) / "db.db")
         await store.open()
-        task_id = await store.add_task("t", goal="g")
+        await store.add_task("t", goal="g")
         await store.record_failure(kind="shell.run", summary="test failure", context="")
 
         engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
@@ -2276,14 +2272,14 @@ def test_image_source_helpers():
         assert remote_part["image_url"]["url"] == "https://example.com/demo.jpg"
         assert remote_part["image_url"]["detail"] == "high"
 
-        ctx = cast(Any, SimpleNamespace(config=SimpleNamespace(model="bailian/qwen3.6-plus", active_provider_name="bailian")))
+        ctx = cast("Any", SimpleNamespace(config=SimpleNamespace(model="bailian/qwen3.6-plus", active_provider_name="bailian")))
         assert _resolve_multimodal_model_ref(ctx, capability="vision", input_modality="image") == "bailian/qwen3.6-plus"
 
 
 def test_image_model_routing_falls_back_to_vision_model():
     from tools.image import _resolve_multimodal_model_ref
 
-    ctx = cast(Any, SimpleNamespace(config=SimpleNamespace(model="deepseek/deepseek-v4-pro", active_provider_name="deepseek")))
+    ctx = cast("Any", SimpleNamespace(config=SimpleNamespace(model="deepseek/deepseek-v4-pro", active_provider_name="deepseek")))
     routed = _resolve_multimodal_model_ref(ctx, capability="vision", input_modality="image")
     assert routed != "deepseek/deepseek-v4-pro"
     assert routed == "bailian/qwen3.6-plus"
@@ -2499,7 +2495,6 @@ async def _execution_durable_failure_sensing():
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    from core.judgment import JudgmentOutput
     from store.task import TaskStore
     from tools.registry import ToolRegistry
 
@@ -2542,7 +2537,6 @@ async def _execution_durable_failure_sensing_for_file_tool():
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    from core.judgment import JudgmentOutput
     from store.task import TaskStore
     from tools.registry import ToolRegistry
 
@@ -2578,7 +2572,6 @@ async def _execution_dispatch_records_run():
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    from core.judgment import JudgmentOutput
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
@@ -2897,7 +2890,6 @@ def test_execution_failure_creates_meta_reflection():
 async def _execution_failure_creates_meta_reflection():
     from tempfile import TemporaryDirectory
 
-    from core.judgment import JudgmentOutput
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
@@ -2965,7 +2957,6 @@ def test_execution_generic_failure_meta_reflection_defers():
 async def _execution_generic_failure_meta_reflection_defers():
     from tempfile import TemporaryDirectory
 
-    from core.judgment import JudgmentOutput
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
@@ -3401,7 +3392,6 @@ def test_execution_background_run_does_not_record_completion_early():
 async def _execution_background_run_does_not_record_completion_early():
     import os
 
-    from core.judgment import JudgmentOutput
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore

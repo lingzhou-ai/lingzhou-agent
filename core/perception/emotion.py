@@ -62,7 +62,7 @@ class EmotionState:
     regulation: Regulation = field(default_factory=Regulation)
 
     @classmethod
-    def from_config(cls, cfg: "Config") -> "EmotionState":
+    def from_config(cls, cfg: Config) -> EmotionState:
         return cls(
             valence=cfg.emotion.baseline_valence,
             arousal=cfg.emotion.baseline_arousal,
@@ -75,7 +75,7 @@ class EmotionState:
         wm_pressure: float,
         workspace_dirty: bool,
         alpha: float,
-        emotion_cfg: "EmotionConfig | None" = None,
+        emotion_cfg: EmotionConfig | None = None,
         *,
         high_error_streak: int = 0,
         replay_trend: str = "stable",

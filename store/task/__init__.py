@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiosqlite
 
@@ -42,15 +42,11 @@ from store.task.state import TaskStateStore, build_task_data, build_task_insert
 logger = logging.getLogger(__name__)
 
 
-def _task_similarity_score(query_text: str, task: Task) -> float:
-    from store.task.schema import _task_similarity_score as _score
-    return _score(query_text, task)
-
 
 class TaskStore:
     def __init__(self, db_path: Path) -> None:
         self._path = Path(db_path) if isinstance(db_path, str) else db_path
-        self._db_opt: Optional[aiosqlite.Connection] = None
+        self._db_opt: aiosqlite.Connection | None = None
         self._chat = ChatMessageStore(lambda: self._db)
         self._facts = FactStore(lambda: self._db)
         self._failures = FailureStore(lambda: self._db)
@@ -262,7 +258,7 @@ class TaskStore:
             async_job_id=async_job_id, model_tier=model_tier, extras=extras,
         )
 
-    async def get_task_by_id(self, task_id: int) -> Optional[Task]:
+    async def get_task_by_id(self, task_id: int) -> Task | None:
         return await self._tasks.get_task_by_id(task_id)
 
     async def list_runnable_tasks(self, limit: int = 20) -> list[Task]:
@@ -351,10 +347,10 @@ class TaskStore:
         )
         return scored[: int(limit)]
 
-    async def get_active(self) -> Optional[Task]:
+    async def get_active(self) -> Task | None:
         return await self._tasks.get_active()
 
-    async def list_tasks(self, status: Optional[str] = None, limit: int = 50) -> list[Task]:
+    async def list_tasks(self, status: str | None = None, limit: int = 50) -> list[Task]:
         return await self._tasks.list_tasks(status=status, limit=limit)
 
     async def update_status(
@@ -444,7 +440,7 @@ class TaskStore:
             model_tier=model_tier, progress=progress, extras=extras,
         )
 
-    async def get_run_by_id(self, run_id: int) -> Optional[Run]:
+    async def get_run_by_id(self, run_id: int) -> Run | None:
         return await self._runs.get_run_by_id(run_id)
 
     async def list_runs(
@@ -592,7 +588,7 @@ class TaskStore:
     async def has_pending_chat_message(self) -> bool:
         return await self._chat.has_pending_message()
 
-    async def pop_pending_chat_message(self) -> Optional[dict[str, Any]]:
+    async def pop_pending_chat_message(self) -> dict[str, Any] | None:
         return await self._chat.pop_pending_message()
 
     async def drain_pending_for_chat(self, chat_id: str, after_id: int) -> list[dict[str, Any]]:
@@ -619,29 +615,29 @@ class TaskStore:
 
 
 __all__ = [
-    "TaskStore",
-    "Task",
-    "Failure",
-    "Run",
-    "MetaReflection",
-    "ChatMessageStore",
-    "FactStore",
-    "FailureStore",
-    "IngressStore",
-    "IngressWriter",
-    "MetaReflectionStore",
-    "LedgerStore",
-    "RunStore",
-    "SignalStore",
-    "TaskStateStore",
-    "sanitize_chat_content",
-    "build_task_data",
-    "build_task_insert",
-    "build_fact_upsert",
-    "build_task_run_result_patch",
-    "build_task_similarity_query",
     "OPEN_TASK_STATUSES",
     "RUNNABLE_TASK_STATUSES",
     "TASK_DUPLICATE_REUSE_SCORE",
     "TASK_SIMILARITY_CONTEXT_SCORE",
+    "ChatMessageStore",
+    "FactStore",
+    "Failure",
+    "FailureStore",
+    "IngressStore",
+    "IngressWriter",
+    "LedgerStore",
+    "MetaReflection",
+    "MetaReflectionStore",
+    "Run",
+    "RunStore",
+    "SignalStore",
+    "Task",
+    "TaskStateStore",
+    "TaskStore",
+    "build_fact_upsert",
+    "build_task_data",
+    "build_task_insert",
+    "build_task_run_result_patch",
+    "build_task_similarity_query",
+    "sanitize_chat_content",
 ]

@@ -16,7 +16,8 @@ from importlib.machinery import SourceFileLoader
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Awaitable
+from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Awaitable
 
 from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
 
@@ -25,9 +26,6 @@ _log = logging.getLogger("lingzhou.registry")
 if TYPE_CHECKING:
     from core.config import Config
     from memory.working import WorkingMemory
-    from store.episodic import EpisodicMemory
-    from store.semantic import SemanticMemory
-    from store.task import TaskStore
     from core.perception import EmotionState
 
 
@@ -170,12 +168,12 @@ class ToolResult:
 @dataclass
 class ToolContext:
     """工具运行时上下文，工具通过 ctx 访问所有记忆层，无需直接依赖具体类。"""
-    config: "Config"
-    wm: "WorkingMemory"
+    config: Config
+    wm: WorkingMemory
     task_store: TaskStoreViewProtocol
     episodic: EpisodicViewProtocol
     semantic: SemanticViewProtocol
-    emotion: "EmotionState"
+    emotion: EmotionState
     probe_manager: Any = None  # ProbeManager，由 CognitionLoop._make_ctx() 注入
     judgment: Any = None       # JudgmentLayer，由 CognitionLoop._make_ctx() 注入
     execution: Any = None      # ExecutionLayer，由 CognitionLoop._make_ctx() 注入
@@ -204,7 +202,7 @@ _registry: dict[str, ToolEntry] = {}
 
 
 @lru_cache(maxsize=1)
-def default_tool_registry() -> "ToolRegistry":
+def default_tool_registry() -> ToolRegistry:
     reg = ToolRegistry()
     reg.discover(Path(__file__).resolve().parent)
     return reg
@@ -214,7 +212,7 @@ def manifest_has_capability(manifest: ToolManifest | None, capability: str) -> b
     return bool(manifest and capability and capability in manifest.capabilities)
 
 
-def tool_has_capability(registry: "ToolRegistry | None", tool_name: str, capability: str) -> bool:
+def tool_has_capability(registry: ToolRegistry | None, tool_name: str, capability: str) -> bool:
     if not tool_name or not capability:
         return False
     effective_registry = registry or default_tool_registry()

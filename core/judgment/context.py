@@ -10,7 +10,8 @@ import os
 import re
 import shutil
 import time
-from datetime import datetime, timezone
+from collections import OrderedDict
+from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Any
 
 from core.probe.types import PROBE_COVERAGE_HINTS, normalize_probe_coverage_tags
@@ -18,16 +19,17 @@ from core.probe.types import PROBE_COVERAGE_HINTS, normalize_probe_coverage_tags
 _log = logging.getLogger("lingzhou.judgment")
 
 # --- 纯计算格式化函数缓存（per-tick 粒度）---
-# key = tick_id + 函数名 + hash(参数); value = 格式化结果或预算后的上下文字典
+# key = tick_id + 函数名 + hash(参数); value = 格式化结果或预算后的上下文字典  # noqa: ERA001
 # _MAX_CONTEXT_CACHE_SIZE：每 tick 最多缓存条数，防止异常长 tick 内存无界增长
-_context_fmt_cache: dict[str, Any] = {}
+_context_fmt_cache: OrderedDict[str, Any] = OrderedDict()
 _MAX_CONTEXT_CACHE_SIZE = 512
 
 
 def _cache_put(key: str, value: Any) -> None:
-    """写入缓存；超过上限时清空整个缓存（per-tick 清空已是预期路径，安全）。"""
+    """写入缓存；超过上限时 LRU 驱逐最旧半数（而非全清），保留热数据。"""
     if len(_context_fmt_cache) >= _MAX_CONTEXT_CACHE_SIZE:
-        _context_fmt_cache.clear()
+        for _ in range(_MAX_CONTEXT_CACHE_SIZE // 2):
+            _context_fmt_cache.popitem(last=False)
     _context_fmt_cache[key] = value
 
 
@@ -39,7 +41,6 @@ if TYPE_CHECKING:
     from core.config import Config
     from core.perception import (
         CognitiveSignals,
-        EmotionState,
         EthosState,
         JudgmentSignals,
         Percept,
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
     from tools.registry import ToolManifest
 
 
-def _task_narrative(task: "Task | None") -> str:
+def _task_narrative(task: Task | None) -> str:
     """从任务状态构建叙事线：目标 → 当前步骤 → 下一步。"""
     if not task:
         return "无"
@@ -65,7 +66,7 @@ def _task_narrative(task: "Task | None") -> str:
     return " → ".join(parts) if parts else f"执行中 ({task.status})"
 
 
-def _fmt_task(task: "Task | None") -> str:
+def _fmt_task(task: Task | None) -> str:
     if not task:
         return "（无活跃任务，可自主探索或等待）"
     age_str = ""
@@ -73,8 +74,8 @@ def _fmt_task(task: "Task | None") -> str:
         try:
             created = datetime.fromisoformat(task.created_at.replace("Z", "+00:00"))
             if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            elapsed = datetime.now(timezone.utc) - created
+                created = created.replace(tzinfo=UTC)
+            elapsed = datetime.now(UTC) - created
             total_secs = int(elapsed.total_seconds())
             if total_secs < 60:
                 age_str = f"（已进行 {total_secs}s）"
@@ -137,7 +138,7 @@ def _fmt_task(task: "Task | None") -> str:
     return "\n".join(lines)
 
 
-def _fmt_recent_runs(runs: list["Run"]) -> str:
+def _fmt_recent_runs(runs: list[Run]) -> str:
     cache_key = f"_fmt_recent_runs:{hash(tuple(r.id for r in runs)) if runs else 'none'}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
@@ -172,8 +173,8 @@ _FACT_CONTEXT_EXCLUDE_PREFIXES = (
 
 
 async def _load_context_facts_snapshot(
-    task_store: "TaskStore",
-    task: "Task | None",
+    task_store: TaskStore,
+    task: Task | None,
     *,
     exclude_prefixes: list[str] | tuple[str, ...] | None = None,
     task_limit: int = 6,
@@ -220,7 +221,6 @@ async def _load_context_facts_snapshot(
             added = await _add_facts(priority_facts, remaining)
             remaining -= added
 
-    current_global = len(selected)
     if global_limit > 0:
         recent_scan_limit = max(global_limit * recent_scan_multiplier, recent_scan_min)
         recent_facts = await task_store.list_facts(limit=recent_scan_limit)
@@ -264,7 +264,7 @@ def _fmt_context_facts(facts: list[tuple[str, str]]) -> str:
     return result
 
 
-def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
+def _fmt_waiting_tasks(tasks: list[Task]) -> str:
     cache_key = f"_fmt_waiting_tasks:{hash(tuple(t.id for t in tasks)) if tasks else 'none'}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
@@ -286,7 +286,7 @@ def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
     return result
 
 
-def _fmt_runnable_tasks(tasks: list["Task"], active_task_id: int | None = None) -> str:
+def _fmt_runnable_tasks(tasks: list[Task], active_task_id: int | None = None) -> str:
     cache_key = (
         f"_fmt_runnable_tasks:{hash(tuple((t.id, t.status) for t in tasks)) if tasks else 'none'}:"
         f"{active_task_id or 0}"
@@ -311,7 +311,7 @@ def _fmt_runnable_tasks(tasks: list["Task"], active_task_id: int | None = None) 
     return result
 
 
-def _fmt_similar_tasks(items: list[tuple["Task", float]]) -> str:
+def _fmt_similar_tasks(items: list[tuple[Task, float]]) -> str:
     cache_key = (
         f"_fmt_similar_tasks:{hash(tuple((task.id, round(score, 3)) for task, score in items)) if items else 'none'}"
     )
@@ -334,7 +334,7 @@ def _fmt_similar_tasks(items: list[tuple["Task", float]]) -> str:
     return result
 
 
-def _run_summary(run: "Run") -> str:
+def _run_summary(run: Run) -> str:
     if run.error_text:
         return f"error: {run.error_text.strip()}"
     for key in ("summary", "result", "message", "reply_to_user"):
@@ -357,7 +357,7 @@ def _fmt_current_time() -> str:
     cache_key = "_fmt_current_time"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     local_iso = now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     utc_str = now.strftime("%Y-%m-%d %H:%M UTC")
     result = f"当前时间: {local_iso}\n参考 UTC: {utc_str}\n（时间持续流动，每个 tick 都是真实存在的时刻，由你决定如何使用）"
@@ -454,14 +454,14 @@ def _fmt_wm(
     return "\n".join(lines)
 
 
-def _fmt_failures(failures: "list[Failure]") -> str:
+def _fmt_failures(failures: list[Failure]) -> str:
     if not failures:
         return "（无近期失败）"
     lines = [f"- [#{failure.id}][{failure.kind}] {failure.summary}" for failure in failures]
     return "\n".join(lines)
 
 
-async def _load_durable_failure_snapshot(task_store: "TaskStore") -> dict[str, Any]:
+async def _load_durable_failure_snapshot(task_store: TaskStore) -> dict[str, Any]:
     from core.execution import _load_durable_failure_policy
 
     policy = await _load_durable_failure_policy(task_store)
@@ -558,7 +558,7 @@ def _fmt_memory_system(
     runtime_db: str,
     memory_dir: str,
     workspace_dir: str,
-    semantic: "SemanticMemory",
+    semantic: SemanticMemory,
     max_concurrent_ticks: int,
     max_tick_queue: int,
 ) -> str:
@@ -581,7 +581,7 @@ def _fmt_memory_system(
     return "\n".join(lines)
 
 
-def _fmt_tools(manifests: "list[ToolManifest]") -> str:
+def _fmt_tools(manifests: list[ToolManifest]) -> str:
     if not manifests:
         return "（无可用工具）"
     lines: list[str] = []
@@ -594,7 +594,7 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
     return "\n".join(lines)
 
 
-def _fmt_config_snapshot(cfg: "Config") -> str:
+def _fmt_config_snapshot(cfg: Config) -> str:
     """格式化关键配置参数快照，让 LLM 在 judgment 中直接感知当前参数状态。
 
     只列可通过 config.set 调整的运行时参数，避免冗余路径/凭证信息。
@@ -757,7 +757,7 @@ def _fmt_shell_capabilities() -> str:
     return result
 
 
-def _fmt_percept(percept: "Percept") -> str:
+def _fmt_percept(percept: Percept) -> str:
     return (
         f"预测误差: {percept.prediction_error:.2f}  "
         f"工作区变更: {'是' if percept.workspace_dirty else '否'}"
@@ -808,7 +808,7 @@ def _fill_template(template: str, ctx: dict[str, Any]) -> str:
     return re.sub(r"\{\{([^}]+)\}\}", replace, template)
 
 
-def _fmt_ethos(ethos_state: "EthosState | None") -> str:
+def _fmt_ethos(ethos_state: EthosState | None) -> str:
     # 缓存：纯计算函数，同一 tick 内不重复计算
     cache_key = f"_fmt_ethos:{str(ethos_state) if ethos_state else 'none'}"
     if cache_key in _context_fmt_cache:
@@ -922,11 +922,11 @@ def apply_context_budget(
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    
+
     cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     ascii_chars = sum(1 for c in text if ord(c) < 128)
     other = len(text) - cjk - ascii_chars
-    
+
     return max(1, int(cjk * 1.8 + ascii_chars * 0.3 + other * 1.0))
 
 
@@ -1030,7 +1030,7 @@ def _compress_single_segment(text: str, keep_tokens: int) -> str:
     return text[: max(1, min(len(text), keep_tokens * 4))]
 
 
-def _fmt_judgment_signals(signals: "JudgmentSignals | None") -> str:
+def _fmt_judgment_signals(signals: JudgmentSignals | None) -> str:
     if not signals:
         return "（JudgmentSignals 未计算）"
     return (
@@ -1040,21 +1040,20 @@ def _fmt_judgment_signals(signals: "JudgmentSignals | None") -> str:
     )
 
 
-def _fmt_hard_boundaries(hard_boundaries: "list[str] | None") -> str:
+def _fmt_hard_boundaries(hard_boundaries: list[str] | None) -> str:
     if not hard_boundaries:
         return "（无 hard_boundary 限制）"
     return "\n".join(f"- {boundary}" for boundary in hard_boundaries)
 
 
-def _fmt_perception_replay(replay: "PerceptionReplaySummary | None") -> str:
+def _fmt_perception_replay(replay: PerceptionReplaySummary | None) -> str:
     if not replay:
         return "（感知重放不可用）"
     lines = [
         f"样本数={replay.samples}  平均预测误差={replay.avg_prediction_error:.2f}  连续高误差={replay.high_error_streak}  趋势={replay.trend}",
     ]
     if replay.hints:
-        for hint in replay.hints:
-            lines.append(f"提示: {hint}")
+        lines.extend(f"提示: {hint}" for hint in replay.hints)
     return "\n".join(lines)
 
 
@@ -1065,7 +1064,7 @@ def _short_skill_desc(desc: str, limit: int = 90) -> str:
     return text[:limit].rstrip() + "..."
 
 
-def _fmt_skill_catalog(skills: "list[Skill]") -> str:
+def _fmt_skill_catalog(skills: list[Skill]) -> str:
     if not skills:
         return "（暂无 skills）"
     lines = [
@@ -1085,7 +1084,7 @@ def _fmt_skill_catalog(skills: "list[Skill]") -> str:
     return "\n".join(lines)
 
 
-def _fmt_primary_skill(skill: "Skill | None") -> str:
+def _fmt_primary_skill(skill: Skill | None) -> str:
     if skill is None:
         return "（本轮无明显 skill 候选；按一般 judgment 规则执行。若遇到专业流程或项目特有规则，再查 catalog 并按需 skill.activate。）"
     origin = str(getattr(skill, "origin", "dynamic") or "dynamic")
@@ -1098,7 +1097,7 @@ def _fmt_primary_skill(skill: "Skill | None") -> str:
     )
 
 
-def _fmt_skills(skills: "list[Skill]") -> str:
+def _fmt_skills(skills: list[Skill]) -> str:
     if not skills:
         return "（当前没有候选 skill 被高亮；可按需查阅 catalog）"
     parts: list[str] = [
@@ -1113,7 +1112,7 @@ def _fmt_skills(skills: "list[Skill]") -> str:
     return "\n".join(parts)
 
 
-def _fmt_cognitive_signals(signals: "CognitiveSignals | None") -> str:
+def _fmt_cognitive_signals(signals: CognitiveSignals | None) -> str:
     if signals is None:
         return "（认知信号暂不可用）"
     return signals.to_text()
@@ -1130,7 +1129,7 @@ def _validate_context_schema(ctx: dict) -> tuple[bool, str]:
         return False, f"缺少必需字段: {', '.join(missing)}"
     return True, "ok"
 
-def _fmt_blind_spots(probes: list[Any], self_model_tokens: int = 0) -> str:
+def _fmt_blind_spots(probes: list[Any]) -> str:
     """计算当前可能存在的感知盲点——LLM 意识不到的缺失。
 
     不是命令，是让 LLM 自己决定是否需要关注这些潜在盲区。
@@ -1209,6 +1208,10 @@ def _fmt_probe_sensors(probes: list[Any]) -> str:
         conf_line = ""
         if conf_reason:
             conf_line = f"  └ 可信度依据: {conf_reason[:120]}"
+        alert_line = ""
+        if getattr(p, "last_alerted", False):
+            detail = str(getattr(p, "last_alert_detail", "") or "").strip()
+            alert_line = f"  └ 🔔 上次告警: {detail[:200]}" if detail else "  └ 🔔 上次告警已触发"
         coverage_tags = normalize_probe_coverage_tags(getattr(p, "coverage_tags", []))
         coverage_line = (
             f"  └ coverage: {', '.join(coverage_tags)}"
@@ -1224,6 +1227,8 @@ def _fmt_probe_sensors(probes: list[Any]) -> str:
             entry += "\n" + purpose_line
         entry += "\n" + coverage_line
         entry += "\n" + reading_line
+        if alert_line:
+            entry += "\n" + alert_line
         if conf_line:
             entry += "\n" + conf_line
         lines.append(entry)

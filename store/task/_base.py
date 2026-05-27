@@ -1,7 +1,7 @@
 """store/memory/_base.py — 异步 Store 基类。"""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import aiosqlite
 

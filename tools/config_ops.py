@@ -115,7 +115,7 @@ def _duration_unit_family(key: str, field_desc: str) -> str | None:
         return "milliseconds"
     if "分钟" in desc or "minutes" in lowered:
         return "minutes"
-    if "秒" in desc or key.endswith("_secs") or key.endswith("_seconds"):
+    if "秒" in desc or key.endswith(("_secs", "_seconds")):
         return "seconds"
     return None
 

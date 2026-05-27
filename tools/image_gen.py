@@ -7,12 +7,9 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 import os
 import time
-from pathlib import Path
 from core.paths import generated_dir
 from typing import Any
 
@@ -64,7 +61,7 @@ async def _dashscope_generate(prompt: str, size: str, api_key: str) -> tuple[str
             if status == "SUCCEEDED":
                 url = result["output"]["results"][0]["url"]
                 return url, ""
-            elif status == "FAILED":
+            if status == "FAILED":
                 return "", result.get("output", {}).get("message", "未知错误")
 
         return "", "图片生成超时"

@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any
 
 import typer
 
 from cli._common import console, load_cfg, PROJECT_ROOT, DEFAULT_CONFIG_PATH
+from cli.diag import version, doctor
 from core.version import __version__, __codename__
 
 dev_app = typer.Typer(
@@ -272,7 +274,7 @@ def evolve(
 
 @dev_app.command("tools")
 def tools(
-    search: Annotated[Optional[str], typer.Argument(help="关键词过滤")] = None,
+    search: Annotated[str | None, typer.Argument(help="关键词过滤")] = None,
 ) -> None:
     """列出所有已注册的工具（支持关键词过滤）。"""
     from tools.registry import ToolRegistry
@@ -300,7 +302,7 @@ def tools(
 
 @dev_app.command("skills")
 def skills(
-    search: Annotated[Optional[str], typer.Argument(help="关键词过滤")] = None,
+    search: Annotated[str | None, typer.Argument(help="关键词过滤")] = None,
     disabled: Annotated[bool, typer.Option("--disabled", help="显示已禁用 skills，而不是 active skills")] = False,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
@@ -334,7 +336,7 @@ def skills(
 
 @dev_app.command("model")
 def model(
-    set_model: Annotated[Optional[str], typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
+    set_model: Annotated[str | None, typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     list_all: Annotated[bool, typer.Option("--list", "-l", help="列出所有可用模型")] = False,
     interactive: Annotated[bool, typer.Option("--interactive", "-i", help="交互式选择 provider 和模型")] = False,
@@ -382,9 +384,9 @@ def model(
     if interactive or (not set_model):
         console.print(f"当前模型: [bold cyan]{current}[/bold cyan]")
         if not interactive:
-            console.print(f"[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
-            console.print(f"[dim]交互切换: lingzhou dev model -i[/dim]")
-            console.print(f"[dim]查看全部: lingzhou model --list[/dim]")
+            console.print("[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
+            console.print("[dim]交互切换: lingzhou dev model -i[/dim]")
+            console.print("[dim]查看全部: lingzhou model --list[/dim]")
             return
 
         console.print("\n[bold]选择要设置的模型槽位[/bold]")
@@ -483,10 +485,10 @@ def model(
                 from store.auth import get_auth_profile, COPILOT_PROFILE_ID
                 existing_auth = get_auth_profile(COPILOT_PROFILE_ID)
                 if existing_auth and existing_auth.get("token"):
-                    console.print(f"\n[green]✓ 已检测到 Copilot 登录凭证[/green]  [dim](lingzhou auth login 已完成)[/dim]")
+                    console.print("\n[green]✓ 已检测到 Copilot 登录凭证[/green]  [dim](lingzhou auth login 已完成)[/dim]")
                 else:
-                    console.print(f"\n[yellow]Copilot 尚未登录[/yellow]")
-                    console.print(f"  请在切换后运行: [bold]lingzhou auth login[/bold]")
+                    console.print("\n[yellow]Copilot 尚未登录[/yellow]")
+                    console.print("  请在切换后运行: [bold]lingzhou auth login[/bold]")
             else:
                 # 其他 provider 需要手动输入 API key 或环境变量名
                 import re as _re
@@ -502,10 +504,8 @@ def model(
                     cred_file.parent.mkdir(parents=True, exist_ok=True)
                     creds: dict = {}
                     if cred_file.exists():
-                        try:
+                        with contextlib.suppress(Exception):
                             creds = _json.loads(cred_file.read_text(encoding="utf-8"))
-                        except Exception:
-                            pass
                     cred_key = f"{chosen_provider.upper()}_API_KEY"
                     creds[cred_key] = api_key_input.strip()
                     cred_file.write_text(_json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -645,9 +645,6 @@ def update() -> None:
         console.print(f"[red]依赖安装失败:[/red]\n{result.stderr.strip()}")
         raise typer.Exit(1)
 
-
-# 注册诊断命令
-from cli.diag import version, doctor  # noqa: E402
 
 dev_app.command("version")(version)
 dev_app.command("doctor")(doctor)

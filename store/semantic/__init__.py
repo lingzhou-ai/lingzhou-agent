@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import json
 import math
 import re
@@ -20,7 +20,8 @@ import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import logging as _log_sem
 from memory.quality_checker import evaluate_retrieval_quality
@@ -123,13 +124,13 @@ class MemoryNode:
         return asdict(self)  # type: ignore[return-value]
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "MemoryNode":
+    def from_dict(cls, d: dict[str, Any]) -> MemoryNode:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
-def effective_activation(node: "MemoryNode", decay_lambda: float) -> float:
+def effective_activation(node: MemoryNode, decay_lambda: float) -> float:
     """分级衰减：高重要性节点衰减更慢，并享有激活度保护下限。
-    
+
     衰减公式: activation × exp(-effective_lambda × days)
     effective_lambda = decay_lambda × (1 - importance)  — 重要性越高，衰减越慢
     保护机制: imp≥0.9 → 不低于 0.5; imp≥0.7 → 不低于 0.3
@@ -162,7 +163,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     """余弦相似度。"""
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(x * x for x in b) ** 0.5
     if norm_a == 0.0 or norm_b == 0.0:
@@ -302,10 +303,8 @@ class SemanticMemory:
         self._conn_ref = None
         self._session_depth = 0
         if conn is not None:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     # --- DB init & recovery ---------------------------------------------------
 
@@ -413,10 +412,8 @@ class SemanticMemory:
         with self._db_session():
             self._conn.execute("DELETE FROM nodes")
             if self._fts5_ok:
-                try:
+                with suppress(Exception):
                     self._conn.execute("DELETE FROM nodes_fts")
-                except Exception:
-                    pass
             self._conn.commit()
             for p in self._dir.glob("*.json"):
                 try:
@@ -471,10 +468,8 @@ class SemanticMemory:
                     tags_json=tags_json,
                 )
             except Exception as exc:
-                try:
+                with suppress(Exception):
                     self._conn.rollback()
-                except Exception:
-                    pass
                 self._fts5_ok = False
                 _log.warning("[semantic] FTS5 同步失败，降级为全表扫描: %s", exc)
 
@@ -612,10 +607,8 @@ class SemanticMemory:
         with self._db_session():
             query_vec: list[float] | None = None
             if self._embed_fn is not None:
-                try:
+                with suppress(Exception):
                     query_vec = self._embed_fn(query)
-                except Exception:
-                    pass
             candidate_ids = self._fts_candidates(query, limit=100 if any((kind, tag, task_id, path_prefix, id_prefix)) else 50)
             nodes = self._load_by_ids(candidate_ids) if candidate_ids else self._load_all()
             if any((kind, tag, source, task_id, path_prefix, id_prefix)):
@@ -733,10 +726,8 @@ class SemanticMemory:
                 # 有 embed_fn 时计算锚点向量，传入 _score 启用混合评分（与 retrieve() 对齐）
                 query_vec: list[float] | None = None
                 if self._embed_fn is not None:
-                    try:
+                    with suppress(Exception):
                         query_vec = self._embed_fn(anchor)
-                    except Exception:
-                        pass
                 for node in nodes:
                     s = self._score(anchor, node, query_vec=query_vec)
                     if s > 0:
@@ -837,10 +828,8 @@ class SemanticMemory:
         # Fallback: DB unavailable, scan json files (full recovery)
         nodes: list[MemoryNode] = []
         for p in self._dir.glob("*.json"):
-            try:
+            with suppress(Exception):
                 nodes.append(MemoryNode.from_dict(json.loads(p.read_text(encoding="utf-8"))))
-            except Exception:
-                pass
         return nodes
 
     @staticmethod
@@ -858,7 +847,7 @@ class SemanticMemory:
         self,
         query: str,
         node: MemoryNode,
-        query_vec: "list[float] | None" = None,
+        query_vec: list[float] | None = None,
     ) -> float:
         """Keyword overlap score + Ebbinghaus-decayed activation weighting.
 

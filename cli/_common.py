@@ -58,6 +58,6 @@ def resolve_config_path(config: Path) -> Path:
     return candidate
 
 
-def load_cfg(config: Path) -> "Config":
+def load_cfg(config: Path) -> Config:
     from core.config import Config
     return Config.load(find_config(config))

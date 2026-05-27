@@ -23,8 +23,14 @@ def __getattr__(name: str):  # type: ignore[return]
 
 
 __all__ = [
-    "WorkingMemory", "WMItem",
     "EpisodicMemory",
-    "SemanticMemory", "MemoryNode",
-    "TaskStore", "Task", "Failure", "Run", "MetaReflection",
+    "Failure",
+    "MemoryNode",
+    "MetaReflection",
+    "Run",
+    "SemanticMemory",
+    "Task",
+    "TaskStore",
+    "WMItem",
+    "WorkingMemory",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -27,7 +27,7 @@ def _latest_log() -> Path:
 def logs_tail(
     lines: Annotated[int, typer.Option("-n", "--lines", help="显示行数")] = 30,
     follow: Annotated[bool, typer.Option("-f", "--follow", help="持续监控（Ctrl-C 退出）")] = False,
-    filter_text: Annotated[Optional[str], typer.Option("-g", "--grep", help="过滤关键词")] = None,
+    filter_text: Annotated[str | None, typer.Option("-g", "--grep", help="过滤关键词")] = None,
 ) -> None:
     """查看最近日志（默认 30 行）。
 
@@ -66,7 +66,7 @@ def logs_tail(
     # 非 follow 模式
     lines_data = _read_tail(log_file, lines)
     if filter_text:
-        lines_data = [l for l in lines_data if filter_text in l]
+        lines_data = [ln for ln in lines_data if filter_text in ln]
     for line in lines_data:
         console.print(line, end="")
 
@@ -90,7 +90,7 @@ def logs_errors(
     pattern = re.compile("|".join(keywords))
 
     tail_lines = _read_tail(log_file, lines)
-    matched = [l for l in tail_lines if pattern.search(l)]
+    matched = [ln for ln in tail_lines if pattern.search(ln)]
     if not matched:
         console.print("[green]✅ 最近无错误[/green]")
         return
@@ -139,7 +139,7 @@ def logs_wechat(
         return
 
     tail_lines = _read_tail(log_file, lines)
-    wechat_lines = [l for l in tail_lines if "[wechat]" in l]
+    wechat_lines = [ln for ln in tail_lines if "[wechat]" in ln]
     if not wechat_lines:
         console.print("[dim]最近无微信活动[/dim]")
         return
@@ -209,4 +209,4 @@ def _read_tail(path: Path, n: int) -> list[str]:
 
         data = b"".join(reversed(blocks))
         all_lines = data.decode("utf-8", errors="replace").splitlines()
-        return [l + "\n" for l in all_lines[-n:]]
+        return [ln + "\n" for ln in all_lines[-n:]]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -101,11 +102,6 @@ def _truncate_text(text: str, limit: int) -> str:
     return text[: limit - 3] + "..."
 
 
-def _compact_summary_text(text: str, limit: int) -> str:
-    compact = " ".join(text.replace("\r", "\n").splitlines()).strip()
-    return _truncate_text(compact, limit)
-
-
 def _decode_output(data: bytes | None) -> str:
     if not data:
         return ""
@@ -200,20 +196,18 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         timed_out = True
         # 杀整个进程组（包括 git 派生的 ssh 等子进程），防止子进程持续占用管道
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 proc.kill()
-            except Exception:
-                pass
         # 洗残据输出，加短超时防止管道排水第二次挂起
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             stdout_b = b""
             stderr_b = b""
 

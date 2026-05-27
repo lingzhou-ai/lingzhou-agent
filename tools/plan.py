@@ -111,7 +111,6 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     await ctx.task_store.update_task_data(task.id, {"plan": clean_plan})
 
     # 生成摘要
-    active = next((s["step"] for s in clean_plan if s["status"] == "in_progress"), None)
     lines = [f"任务 #{task.id} 计划已更新: {len(clean_plan)} 步 ({done}✅ {in_progress_count}🔄 {pending}⏳)"]
     for i, s in enumerate(clean_plan, 1):
         icon = "✅" if s["status"] == "completed" else "🔄" if s["status"] == "in_progress" else "⏳"

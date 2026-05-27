@@ -19,7 +19,7 @@ _log = logging.getLogger("lingzhou.persona")
 class PersonaEngine:
     """人格器官：EMA ethos 基线 DB 访问 + SOUL.md 镜像同步。"""
 
-    def __init__(self, cfg: "Config", task_store: "TaskStore") -> None:
+    def __init__(self, cfg: Config, task_store: TaskStore) -> None:
         self._cfg = cfg
         self._task_store = task_store
 
@@ -50,7 +50,7 @@ class PersonaEngine:
             return list(self._cfg.soul.hard_axioms)
 
     @staticmethod
-    def _build_content(soul_name: str, ethos_values: "EthosValues", axioms: list[str] | None = None) -> str:
+    def _build_content(soul_name: str, ethos_values: EthosValues, axioms: list[str] | None = None) -> str:
         """生成 SOUL.md 文件内容（供 init_files 和 sync_md 共用）。
 
         ethos_values 为强类型 EthosValues，直接用属性访问（公理 A2 Mode 6）。

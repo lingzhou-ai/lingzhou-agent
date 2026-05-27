@@ -1,29 +1,18 @@
 """文件、进程、shell 工具测试"""
 import asyncio
-import builtins
-import io
 import json
-import logging
-import math
-import os
 import tempfile
 import time
-from functools import lru_cache
-from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import aiosqlite
 import pytest
 
 from conftest import (
     _proj_root,
     _test_config,
     _tool_ctx,
-    _execution_layer,
-    _tool_registry,
-    _judgment_output,
 )
 # ══════════════════════════════════════════════════════════════════════════════
 # 新增工具测试（file.edit / skill_ops / exec 覆盖）
@@ -277,11 +266,11 @@ async def _skill_evolve_uses_judgment_provider_and_registry(monkeypatch):
 
     ctx = ToolContext(
         config=_test_config(),
-        wm=cast(Any, None),
-        task_store=cast(Any, None),
-        episodic=cast(Any, None),
-        semantic=cast(Any, None),
-        emotion=cast(Any, None),
+        wm=cast("Any", None),
+        task_store=cast("Any", None),
+        episodic=cast("Any", None),
+        semantic=cast("Any", None),
+        emotion=cast("Any", None),
         judgment=SimpleNamespace(_provider=provider, _registry=registry),
     )
 
@@ -476,7 +465,7 @@ def test_tool_registry_reload_restores_previous_module_after_failure():
         registry = ToolRegistry()
         registry.discover(root)
         baseline = sys.modules[module_name]
-        assert getattr(baseline, "resolve_read_path")() == "ok"
+        assert baseline.resolve_read_path() == "ok"
 
         (root / f"{stem}.py").write_text(
             "PARTIAL = True\n"
@@ -491,7 +480,7 @@ def test_tool_registry_reload_restores_previous_module_after_failure():
 
         restored = sys.modules[module_name]
         assert restored is baseline
-        assert getattr(restored, "resolve_read_path")() == "ok"
+        assert restored.resolve_read_path() == "ok"
         sys.modules.pop(module_name, None)
 
 
@@ -539,7 +528,7 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
         try:
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -563,7 +552,7 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -572,7 +561,7 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
             result = await make_subagent_runner(
                 SubagentConfig(goal="恢复 registry", max_ticks=2, allowed_tools=["probe.raise_registry"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment()),
+                cast("Any", _FakeJudgment()),
                 execution,
                 registry,
             ).run()
@@ -616,7 +605,7 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
         try:
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -640,7 +629,7 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -649,7 +638,7 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
             result = await make_subagent_runner(
                 SubagentConfig(goal="检查子灵可见工具", max_ticks=1, allowed_tools=["task.list"]),
                 parent_ctx,
-                cast(Any, _RecordingJudgment()),
+                cast("Any", _RecordingJudgment()),
                 execution,
                 registry,
             ).run()
@@ -834,7 +823,7 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
             )
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -859,7 +848,7 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -868,7 +857,7 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
             result = await make_subagent_runner(
                 SubagentConfig(goal="隔离子灵 active task", max_ticks=2, allowed_tools=["probe.capture_active_task"]),
                 parent_ctx,
-                cast(Any, judgment),
+                cast("Any", judgment),
                 execution,
                 registry,
             ).run()
@@ -952,7 +941,7 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
             )
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -976,7 +965,7 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -985,7 +974,7 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
             result = await make_subagent_runner(
                 SubagentConfig(goal="列出子灵可见任务", max_ticks=2, allowed_tools=["task.list"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment()),
+                cast("Any", _FakeJudgment()),
                 execution,
                 registry,
             ).run()
@@ -1051,7 +1040,7 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
             )
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -1075,7 +1064,7 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -1084,7 +1073,7 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
             result = await make_subagent_runner(
                 SubagentConfig(goal="阻断显式 task_id 泄漏", max_ticks=2, allowed_tools=["probe.read_task_by_id"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment(parent_task_id)),
+                cast("Any", _FakeJudgment(parent_task_id)),
                 execution,
                 registry,
             ).run()
@@ -1159,7 +1148,7 @@ async def _subagent_run_history_does_not_expose_parent_runs():
             )
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -1183,7 +1172,7 @@ async def _subagent_run_history_does_not_expose_parent_runs():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -1192,7 +1181,7 @@ async def _subagent_run_history_does_not_expose_parent_runs():
             result = await make_subagent_runner(
                 SubagentConfig(goal="阻断 parent run 泄漏", max_ticks=2, allowed_tools=["probe.read_runs"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment(parent_run_id)),
+                cast("Any", _FakeJudgment(parent_run_id)),
                 execution,
                 registry,
             ).run()
@@ -1283,7 +1272,7 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
             )
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -1307,7 +1296,7 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -1316,7 +1305,7 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
             result = await make_subagent_runner(
                 SubagentConfig(goal="阻断 parent failure 泄漏", max_ticks=2, allowed_tools=["probe.read_failure_state"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment(parent_task_id)),
+                cast("Any", _FakeJudgment(parent_task_id)),
                 execution,
                 registry,
             ).run()
@@ -1351,8 +1340,8 @@ async def _subagent_runner_does_not_pollute_parent_store():
 
         async def decide(self, *args: Any, **kwargs: Any) -> Any:
             self._calls += 1
-            self._last_emotion = cast(EmotionState, args[5])
-            self._last_ethos = cast(EthosState | None, kwargs.get("ethos_state"))
+            self._last_emotion = cast("EmotionState", args[5])
+            self._last_ethos = cast("EthosState | None", kwargs.get("ethos_state"))
             if self._calls == 1:
                 return JudgmentOutput(
                     decision="act",
@@ -1367,7 +1356,7 @@ async def _subagent_runner_does_not_pollute_parent_store():
         store = TaskStore(root / "subagent.db")
         await store.open()
         try:
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.23, baseline_arousal=0.34),
@@ -1394,7 +1383,7 @@ async def _subagent_runner_does_not_pollute_parent_store():
                 task_store=store,
                 episodic=EpisodicMemory(root / "episodic"),
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -1403,7 +1392,7 @@ async def _subagent_runner_does_not_pollute_parent_store():
             runner = make_subagent_runner(
                 SubagentConfig(goal="只读检查", max_ticks=2),
                 parent_ctx,
-                cast(Any, judgment),
+                cast("Any", judgment),
                 execution,
                 registry,
             )
@@ -1470,7 +1459,7 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
         await store.open()
         try:
             episodic = EpisodicMemory(root / "episodic")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
@@ -1496,7 +1485,7 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
                 task_store=store,
                 episodic=episodic,
                 semantic=SemanticMemory(root / "semantic"),
-                emotion=cast(Any, SimpleNamespace()),
+                emotion=cast("Any", SimpleNamespace()),
                 judgment=None,
                 execution=execution,
                 registry=registry,
@@ -1505,7 +1494,7 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
             runner = make_subagent_runner(
                 SubagentConfig(goal="检查 shared memory episodic 只读", max_ticks=2, allowed_tools=["probe.ep_write"]),
                 parent_ctx,
-                cast(Any, _FakeJudgment()),
+                cast("Any", _FakeJudgment()),
                 execution,
                 registry,
             )
@@ -1620,7 +1609,7 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
         try:
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
-            cfg = cast(Any, SimpleNamespace(
+            cfg = cast("Any", SimpleNamespace(
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12, max_events=20),
                 memory_dir=root / "memory",
@@ -1644,10 +1633,10 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
                 config=cfg,
                 wm=WorkingMemory(12),
                 task_store=store,
-                episodic=cast(Any, SimpleNamespace(record=lambda *args, **kwargs: None, record_event=lambda *args, **kwargs: None)),
+                episodic=cast("Any", SimpleNamespace(record=lambda *args, **kwargs: None, record_event=lambda *args, **kwargs: None)),
                 semantic=parent_semantic,
-                emotion=cast(Any, SimpleNamespace()),
-                judgment=cast(Any, _FakeJudgment()),
+                emotion=cast("Any", SimpleNamespace()),
+                judgment=cast("Any", _FakeJudgment()),
                 execution=execution,
                 registry=registry,
             )
@@ -1875,7 +1864,7 @@ def test_process_kill():
 
 async def _process_kill():
     import json
-    from tools.exec import exec_run, process_kill, process_poll, process_list, _MANAGER
+    from tools.exec import exec_run, process_kill, process_poll, _MANAGER
 
     _MANAGER.clear()
     ctx = _tool_ctx()
