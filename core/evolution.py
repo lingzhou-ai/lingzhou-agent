@@ -254,6 +254,12 @@ class EvolutionEngine:
         except Exception:
             _registry_file = str((project_root / "tools" / "registry.py").resolve())
 
+        try:
+            import tools.view_protocols as _curr_vp_mod
+            _view_protocols_file = str(Path(_curr_vp_mod.__file__).resolve())
+        except Exception:
+            _view_protocols_file = str((project_root / "tools" / "view_protocols.py").resolve())
+
         staging_path = module_path.parent / f"_smoke_staging_{module_path.name}"
         try:
             staging_path.write_text(new_src, encoding="utf-8")
@@ -262,6 +268,19 @@ class EvolutionEngine:
 import sys
 sys.path.insert(0, {str(project_root)!r})
 import importlib.util as _ilu
+import types as _types
+# 注入 tools 包占位符，防止 exec_module(tools.registry) 触发 tools/__init__.py
+# 循环导入（tools/__init__.py 会反向 import tools.registry 尚未完成的导出）
+_tools_pkg = _types.ModuleType("tools")
+_tools_pkg.__path__ = [{str(project_root / "tools")!r}]
+_tools_pkg.__package__ = "tools"
+sys.modules.setdefault("tools", _tools_pkg)
+# 预装 tools.view_protocols（tools.registry 的直接依赖），避免 stub 包寻址失败
+_vp_spec = _ilu.spec_from_file_location("tools.view_protocols", {_view_protocols_file!r})
+_vp_mod = _ilu.module_from_spec(_vp_spec)
+_vp_mod.__package__ = "tools"
+sys.modules["tools.view_protocols"] = _vp_mod
+_vp_spec.loader.exec_module(_vp_mod)
 # 显式预装主进程使用的 tools.registry，防止磁盘版本落后导致 API 不匹配
 _reg_spec = _ilu.spec_from_file_location("tools.registry", {_registry_file!r})
 _reg_mod = _ilu.module_from_spec(_reg_spec)

@@ -102,6 +102,10 @@ class JudgmentLayer:
     def self_model(self) -> Any:
         return self._executor.self_model
 
+    @self_model.setter
+    def self_model(self, v: Any) -> None:
+        self._executor.self_model = v
+
     @property
     def last_call_meta(self) -> dict[str, Any]:
         return self._executor.last_call_meta
