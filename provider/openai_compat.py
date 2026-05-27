@@ -578,6 +578,11 @@ class OpenAICompatProvider:
 
     # ── chat ───────────────────────────────────────────────────────────────
 
+    def _ensure_client(self) -> None:
+        """若 AsyncClient 已关闭（如因取消/网络中断），自动重建。"""
+        if self._client.is_closed:
+            self._client = self._mode.build_async_client()
+
     async def chat(
         self,
         messages: list[Message],
@@ -585,6 +590,7 @@ class OpenAICompatProvider:
         temperature: float | None = None,
         thinking_override: str | None = None,
     ) -> str:
+        self._ensure_client()
         temp = temperature if temperature is not None else self._temperature
         level = thinking_override if thinking_override is not None else self._thinking_level
 
