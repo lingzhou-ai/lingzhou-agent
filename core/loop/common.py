@@ -9,7 +9,6 @@ from typing import Any
 from core.config import Config
 from core.judgment import JudgmentOutput, tool_tier
 from core.perception import PerceptionReplaySummary
-from core.task_runtime import VALID_MODEL_TIERS
 from store.task import Task
 from tools.registry import ToolResult
 
@@ -105,12 +104,7 @@ def _should_continue_within_tick(
     return not (user_message and has_active_task and tool_tier(action.chosen_action_id or "", registry) != "reader")
 
 
-def _preferred_continue_tier(
-    action: JudgmentOutput,
-    *,
-    user_message: str = "",
-    registry: Any | None = None,
-) -> str | None:
+def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
     return next_tier if next_tier in _JUDGMENT_TIERS else None
 
@@ -120,11 +114,6 @@ def _task_model_tier(task: Task | None) -> str | None:
         return None
     tier = (task.model_tier or "").strip()
     return tier if tier in _JUDGMENT_TIERS else None
-
-
-def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
-    next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    return next_tier if next_tier in _JUDGMENT_TIERS else None
 
 
 def _prefer_tier_for_task(

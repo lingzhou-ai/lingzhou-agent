@@ -14,7 +14,7 @@ from tools.registry import ToolResult
 
 from .common import (
     _maybe_reconcile_bootstrap,
-    _preferred_continue_tier,
+    _next_initial_tier_hint,
     _resolve_thinking_override,
     _should_continue_within_tick,
     _tool_history_entry,
@@ -79,11 +79,7 @@ async def _run_continue_phase(
         if len(tool_history) >= compact_threshold and len(tool_history) > keep_last:
             _compact_tool_history(tool_history, keep_last=keep_last)
 
-        next_tier = _preferred_continue_tier(
-            action,
-            user_message=user_message,
-            registry=loop._registry,
-        ) or ""
+        next_tier = _next_initial_tier_hint(action) or ""
         continue_thinking = _resolve_thinking_override(
             cfg,
             user_message=user_message,
