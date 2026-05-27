@@ -233,6 +233,7 @@ class JudgmentContextAssembler:
         elif key == "system":
             self._system_prompt = self._cfg.load_prompt("system")
 
+    @staticmethod
     def _skills_for_log(skills: list["Skill"]) -> str:
         if not skills:
             return "none"
