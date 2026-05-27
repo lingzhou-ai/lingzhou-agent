@@ -1,5 +1,6 @@
 {
-  "_doc": "所有运行时参数均在此处配置，代码中不应出现任何硬编码的阈值、路径或模型名。",
+  "$schema": "./lingzhou-schema.json",
+  "_doc": "所有运行时参数均在此处配置，代码中不应出现任何硬编码的阈值、路径或模型名。用 'lingzhou config schema -o lingzhou-schema.json' 生成 schema 以获得 IDE 自动补全。",
 
   "_doc_providers": [
     "providers 定义各 LLM 接入点（连接配置，与模型无关）。",

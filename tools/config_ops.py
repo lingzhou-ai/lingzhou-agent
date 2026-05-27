@@ -289,3 +289,100 @@ async def config_set(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         )
     except Exception as e:
         return ToolResult(summary=f"写入失败: {e}", error="ConfigError")
+
+
+# ── 分组元数据（与 cli/config.py 保持一致）──────────────────────────────────
+_CONFIG_GROUPS: dict[str, list[str]] = {
+    "model":      ["model", "routing", "model_fallbacks", "temperature", "timeout", "thinking"],
+    "providers":  ["providers"],
+    "loop":       ["loop"],
+    "memory":     ["memory"],
+    "emotion":    ["emotion"],
+    "evolution":  ["evolution"],
+    "soul":       ["soul"],
+    "thresholds": ["thresholds"],
+    "prompts":    ["prompts"],
+}
+
+
+@tool(ToolManifest(
+    name="config.list_keys",
+    description=(
+        "列出可调配置键（按分组），附带字段说明和当前默认值。\n"
+        "用于在调用 config.set 前发现可写入哪些字段及其语义。\n"
+        "可选 group 过滤：loop / memory / emotion / evolution / soul / model / thresholds / prompts / providers。\n"
+        "不传 group 则返回所有分组。\n"
+        "示例: group=loop → 返回所有 loop.* 调节键及其含义"
+    ),
+    progress_category="info",
+    params=[
+        ToolParam("group", "string", "可选 group 名（loop/memory/emotion/evolution/soul/model/thresholds/prompts/providers）", required=False),
+    ],
+))
+async def config_list_keys(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    group = (params.get("group") or "").strip().lower() or None
+
+    if group and group not in _CONFIG_GROUPS:
+        return ToolResult(
+            summary=f"未知 group '{group}'，可选：{', '.join(_CONFIG_GROUPS)}",
+            error="UnknownGroup",
+            skipped=True,
+        )
+
+    try:
+        from core.config import Config as _Config
+        schema = _Config.model_json_schema()
+        defs = schema.get("$defs", {})
+        top_props = schema.get("properties", {})
+
+        def _expand_section(top_key: str) -> list[tuple[str, str, Any]]:
+            """返回 [(path, description, default), ...]。"""
+            field_schema = top_props.get(top_key, {})
+            ref = field_schema.get("$ref", "") or (
+                (field_schema.get("anyOf") or [{}])[0].get("$ref", "")
+            )
+            if ref:
+                model_name = ref.rsplit("/", 1)[-1]
+                section_props = defs.get(model_name, {}).get("properties", {})
+                results = []
+                for fname, fschema in section_props.items():
+                    if fname.startswith("_"):
+                        continue
+                    path = f"{top_key}.{fname}"
+                    desc = fschema.get("description", "")
+                    default = fschema.get("default", None)
+                    results.append((path, desc, default))
+                return results
+            # 简单顶层字段
+            return [(top_key, field_schema.get("description", ""), field_schema.get("default", None))]
+
+        groups_to_show = (
+            {group: _CONFIG_GROUPS[group]}
+            if group
+            else _CONFIG_GROUPS
+        )
+
+        lines: list[str] = []
+        total = 0
+        for gname, top_keys in groups_to_show.items():
+            entries = []
+            for top_key in top_keys:
+                entries.extend(_expand_section(top_key))
+            total += len(entries)
+            lines.append(f"\n── {gname} ({'、'.join(top_keys)}) ──")
+            for path, desc, default in entries:
+                default_str = f"  [default={json.dumps(default, ensure_ascii=False)}]" if default is not None else ""
+                lines.append(f"  {path}{default_str}")
+                if desc:
+                    # 截断过长描述
+                    short_desc = desc[:120] + "…" if len(desc) > 120 else desc
+                    lines.append(f"    {short_desc}")
+
+        summary = "\n".join(lines)
+        return ToolResult(
+            summary=f"共 {total} 个可调键（group={group or 'all'}）：\n{summary}",
+            evidence=summary,
+            metadata={"total_keys": total, "group": group or "all"},
+        )
+    except Exception as e:
+        return ToolResult(summary=f"列举失败: {e}", error="ConfigError")
