@@ -567,6 +567,64 @@ print("SMOKE_OK")
 
         return results
 
+    async def evolve_model(self, new_model: str, reason: str, ctx: "ToolContext") -> EvolutionResult:
+        """升级协议：主脑模型切换的三器官联合确认（公理 A2 Phase 3）。
+
+        步骤：
+          1. 三器官预检（记忆 / 人格 / 灵魂联合验证）
+          2. 免疫器官：宪法完整性校验
+          3. 代谢器官：升级事件写入生命史账本
+          4. 写入候选模型 fact（soul:proposed_model），人类确认后生效
+        """
+        from core.immune.policy import three_organ_preflight
+        from core.immune.constitution import verify_constitution_integrity
+
+        # ── 步骤 1：三器官预检 ────────────────────────────────────────────
+        organ_failures = await three_organ_preflight(ctx.task_store)
+        if organ_failures:
+            block_msg = "升级协议-三器官预检失败：" + "；".join(organ_failures)
+            _log.warning("[evolution] %s", block_msg)
+            await ctx.metabolic.submit(StateProposal(
+                op="set_fact", key="soul:upgrade_blocked_reason",
+                value=block_msg, scope="system", source="evolution/upgrade",
+            ))
+            return EvolutionResult(success=False, target=f"model:{new_model}", reason=block_msg)
+
+        # ── 步骤 2：免疫器官宪法校验 ──────────────────────────────────────
+        constitution_status = verify_constitution_integrity()
+        if constitution_status not in ("ok", "uninitialized"):
+            block_msg = f"升级协议-免疫器官拒绝：宪法状态={constitution_status}"
+            _log.warning("[evolution] %s", block_msg)
+            return EvolutionResult(success=False, target=f"model:{new_model}", reason=block_msg)
+
+        # ── 步骤 3：代谢器官记录升级事件 ──────────────────────────────────
+        import time as _time
+        upgrade_record = json.dumps({
+            "new_model": new_model,
+            "reason": reason,
+            "ts": _time.time(),
+        }, ensure_ascii=False)
+        await ctx.metabolic.submit(StateProposal(
+            op="set_fact",
+            key=f"soul:upgrade_event:{int(_time.time())}",
+            value=upgrade_record,
+            scope="system",
+            source="evolution/upgrade",
+        ))
+
+        # ── 步骤 4：写入候选模型（soul:proposed_model），人类确认后生效 ────
+        await ctx.metabolic.submit(StateProposal(
+            op="set_fact", key="soul:proposed_model",
+            value=new_model, scope="system", source="evolution/upgrade",
+        ))
+
+        _log.info("[evolution] 升级协议通过，候选模型已记录: %r，原因: %s", new_model, reason)
+        return EvolutionResult(
+            success=True,
+            target=f"model:{new_model}",
+            reason=f"三器官联合确认通过，候选模型 {new_model!r} 已记录至 soul:proposed_model，重启后生效",
+        )
+
     async def evolve_ethos(self, ctx: "ToolContext") -> EvolutionResult:
         """根据近期经历主动调整 ethos_baseline（价值观基线）。
 

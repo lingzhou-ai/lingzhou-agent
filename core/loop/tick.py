@@ -16,6 +16,7 @@ from rich.console import Console
 
 from core.judgment import JudgmentOutput
 from core.perception import (
+    EthosValues,
     build_emotion_replay,
     build_perception_replay,
     compute_judgment_signals,
@@ -430,7 +431,12 @@ async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudg
     )
 
     ethos_baseline_json, _ = await loop._task_store.get_fact("soul:ethos_baseline")
-    ethos_baseline = json.loads(ethos_baseline_json) if ethos_baseline_json else None
+    ethos_baseline: EthosValues | None = None
+    if ethos_baseline_json:
+        try:
+            ethos_baseline = EthosValues.from_dict(json.loads(ethos_baseline_json))
+        except (ValueError, json.JSONDecodeError) as _ethos_exc:
+            _log.warning("[tick] ethos_baseline 解析失败，使用 config 默认值: %s", _ethos_exc)
     ethos_state = derive_ethos_state(
         failure_count=len(failures_recent),
         high_error_streak=perception_replay.high_error_streak,

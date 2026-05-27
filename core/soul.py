@@ -96,10 +96,15 @@ class SoulManager:
 
         soul_path = workspace / "SOUL.md"
         if not soul_path.exists():
-            ethos = await self._persona._ethos_from_db()
+            from core.perception.ethos import EthosValues
+            ethos_raw = await self._persona._ethos_from_db()
             axioms = await self._persona._axioms_from_db()
-            eb = self._cfg.soul.ethos.baseline
-            soul_path.write_text(self._persona._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
+            try:
+                ethos_values = EthosValues.from_dict(ethos_raw) if ethos_raw else EthosValues()
+            except ValueError as exc:
+                _log.warning("[soul] init_files ethos_baseline 解析失败，使用默认值: %s", exc)
+                ethos_values = EthosValues()
+            soul_path.write_text(self._persona._build_content(soul_name, ethos_values, axioms), encoding="utf-8")
             _log.info("Soul 初始化: 已写入 %s", soul_path)
 
         for fname, content in _WORKSPACE_FILES:

@@ -48,9 +48,13 @@ class JudgmentExecutor:
 
     def set_routing_providers(self, providers: dict[str, "Provider"]) -> None:
         """注入分层路由 providers（由 CognitionLoop.open() 调用）。"""
+        changed = set(providers.keys()) != set(self._routing_providers.keys())
         self._routing_providers = providers
         if providers:
-            _log.info("[judgment] 路由 providers 已设置: %s", list(providers.keys()))
+            if changed:
+                _log.info("[judgment] 路由 providers 已设置: %s", list(providers.keys()))
+            else:
+                _log.debug("[judgment] 路由 providers 刷新（无变化）: %s", list(providers.keys()))
 
     @property
     def last_call_meta(self) -> dict[str, Any]:

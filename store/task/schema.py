@@ -194,6 +194,23 @@ CREATE INDEX IF NOT EXISTS idx_meta_reflections_loop
     ON meta_reflections(loop_level, created_at DESC);
 """
 
+_CREATE_LIFE_LEDGER = """
+CREATE TABLE IF NOT EXISTS life_ledger (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT    NOT NULL DEFAULT (datetime('now')),  -- ISO8601 UTC
+    op         TEXT    NOT NULL,          -- StateProposal.op
+    key        TEXT    NOT NULL,          -- StateProposal.key
+    value      TEXT    NOT NULL DEFAULT '',
+    scope      TEXT    NOT NULL DEFAULT 'task',
+    source     TEXT    NOT NULL DEFAULT '',
+    accepted   INTEGER NOT NULL DEFAULT 1  -- 0=被免疫器官拒绝
+);
+CREATE INDEX IF NOT EXISTS idx_life_ledger_ts
+    ON life_ledger(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_life_ledger_key
+    ON life_ledger(key, ts DESC);
+"""
+
 _CREATE_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_tasks_status
     ON tasks(status);
@@ -213,5 +230,6 @@ FULL_DDL = (
     + _CREATE_CHAT
     + _CREATE_RUNS
     + _CREATE_META_REFLECTIONS
+    + _CREATE_LIFE_LEDGER
     + _CREATE_INDEXES
 )

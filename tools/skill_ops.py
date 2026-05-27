@@ -279,3 +279,57 @@ async def skill_synthesize(params: dict[str, Any], ctx: ToolContext) -> ToolResu
         resource_key=name,
         metadata={"skill": name, "target": result.target or ""},
     )
+
+
+@tool(ToolManifest(
+    name="model.upgrade",
+    description=(
+        "主脑升级协议：切换主脑模型前执行三器官联合确认（公理 A2 Phase 3）。\n"
+        "验证记忆 / 人格 / 灵魂三器官均能延续后，将候选模型写入 soul:proposed_model。\n"
+        "实际生效需重启系统并在 lingzhou.json 中确认 providers.*.model 字段。\n"
+        "拒绝条件：任一器官连续性无法保证，或宪法被篡改。"
+    ),
+    prefer_tier="reasoner",
+    progress_category="mutation",
+    params=[
+        ToolParam("new_model", "string", "候选主脑模型，格式 'provider/model-id'，如 'bailian/qwen3-plus'", required=True),
+        ToolParam("reason", "string", "升级原因（100 字以内）", required=True),
+    ],
+))
+async def model_upgrade(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    new_model = str(params.get("new_model") or "").strip()
+    reason = str(params.get("reason") or "").strip()
+    if not new_model:
+        return ToolResult(summary="new_model 不能为空", skipped=True)
+    if not reason:
+        return ToolResult(summary="reason 不能为空", skipped=True)
+
+    provider = getattr(ctx, "provider", None)
+    registry = getattr(ctx, "registry", None)
+    if not provider or not registry:
+        return ToolResult(
+            summary="model.upgrade 缺少 judgment provider/registry 上下文",
+            error="MissingEvolutionContext",
+        )
+
+    try:
+        from core.evolution import EvolutionEngine
+
+        engine = EvolutionEngine(ctx.config, provider, registry)
+        result = await engine.evolve_model(new_model, reason, ctx=ctx)
+    except Exception as exc:
+        return ToolResult(summary=f"model.upgrade 内部错误: {exc}", error="EvolutionError")
+
+    if not result.success:
+        return ToolResult(
+            summary=f"主脑升级协议被拒绝: {result.reason}",
+            error="UpgradeRejected",
+        )
+
+    return ToolResult(
+        summary=result.reason,
+        evidence=f"proposed_model={new_model}",
+        kind="model_upgrade",
+        priority=1.0,
+        metadata={"new_model": new_model, "reason": reason},
+    )

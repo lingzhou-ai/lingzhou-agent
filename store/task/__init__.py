@@ -18,6 +18,7 @@ from store.task.schema import (
     _CREATE_FACTS,
     _CREATE_FAILURES,
     _CREATE_INDEXES,
+    _CREATE_LIFE_LEDGER,
     _CREATE_META_REFLECTIONS,
     _CREATE_RUNS,
     _CREATE_SIGNALS,
@@ -32,6 +33,7 @@ from store.task.chat import ChatMessageStore, sanitize_chat_content
 from store.task.fact import FactStore, build_fact_upsert
 from store.task.failure import FailureStore
 from store.task.ingress import IngressStore, IngressWriter
+from store.task.ledger import LedgerStore
 from store.task.reflection import MetaReflectionStore
 from store.task.run import RunStore
 from store.task.signal import SignalStore
@@ -56,6 +58,7 @@ class TaskStore:
         self._tasks = TaskStateStore(lambda: self._db)
         self._runs = RunStore(lambda: self._db)
         self._meta_reflections = MetaReflectionStore(lambda: self._db)
+        self._ledger = LedgerStore(lambda: self._db)
 
     @property
     def _db(self) -> aiosqlite.Connection:
@@ -70,7 +73,8 @@ class TaskStore:
         await self._migrate()
         await self._db.executescript(
             _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS
-            + _CREATE_CHAT + _CREATE_RUNS + _CREATE_META_REFLECTIONS + _CREATE_INDEXES
+            + _CREATE_CHAT + _CREATE_RUNS + _CREATE_META_REFLECTIONS
+            + _CREATE_LIFE_LEDGER + _CREATE_INDEXES
         )
         await self._db.execute(
             "UPDATE chat_messages SET status='pending' WHERE role='user' AND status='processing'"
@@ -498,6 +502,28 @@ class TaskStore:
     async def list_meta_reflections(self, limit: int = 20, loop_level: str | None = None) -> list[MetaReflection]:
         return await self._meta_reflections.list_meta_reflections(limit=limit, loop_level=loop_level)
 
+    # ── 生命史账本 ────────────────────────────────────────────────────────
+
+    async def ledger_append(
+        self,
+        op: str,
+        key: str,
+        value: str,
+        *,
+        scope: str = "task",
+        source: str = "",
+        accepted: bool = True,
+    ) -> None:
+        await self._ledger.append(op, key, value, scope=scope, source=source, accepted=accepted)
+
+    async def ledger_recent(self, limit: int = 50) -> list[dict]:
+        """返回最近 N 条生命史记录，供 LLM 感知近期状态变化。"""
+        return await self._ledger.recent(limit=limit)
+
+    async def ledger_since(self, after_id: int, limit: int = 100) -> list[dict]:
+        """增量拉取，供 LLM 对比前后变化做决策。"""
+        return await self._ledger.since(after_id, limit=limit)
+
     async def enqueue_if_absent(
         self,
         title: str,
@@ -604,6 +630,7 @@ __all__ = [
     "IngressStore",
     "IngressWriter",
     "MetaReflectionStore",
+    "LedgerStore",
     "RunStore",
     "SignalStore",
     "TaskStateStore",

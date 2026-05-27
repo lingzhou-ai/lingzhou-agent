@@ -50,21 +50,22 @@ class PersonaEngine:
             return list(self._cfg.soul.hard_axioms)
 
     @staticmethod
-    def _build_content(soul_name: str, ethos: dict[str, Any], eb: Any, axioms: list[str] | None = None) -> str:
+    def _build_content(soul_name: str, ethos_values: "EthosValues", axioms: list[str] | None = None) -> str:
         """生成 SOUL.md 文件内容（供 init_files 和 sync_md 共用）。
 
-        eb 为 EthosBaseline 强类型实例（直接用属性访问）。
+        ethos_values 为强类型 EthosValues，直接用属性访问（公理 A2 Mode 6）。
         """
         axiom_lines = "".join(f"- {a}\n" for a in (axioms or [])) or "- （暂无 hard axioms）\n"
+        ev = ethos_values
         return (
             f"# {soul_name} SOUL\n\n"
             "> 此文件是 runtime facts 的人类可读镜像；完整灵魂叙事主要位于 BOOTSTRAP.md / IDENTITY.md。\n\n"
             "## 核心价值观（EMA 持久化版本）\n\n"
-            f"- 真实 (truth):      {ethos.get('truth', eb.truth):.3f}\n"
-            f"- 谨慎 (caution):    {ethos.get('caution', eb.caution):.3f}\n"
-            f"- 连续 (continuity): {ethos.get('continuity', eb.continuity):.3f}\n"
-            f"- 好奇 (curiosity):  {ethos.get('curiosity', eb.curiosity):.3f}\n"
-            f"- 关怀 (care):       {ethos.get('care', eb.care):.3f}\n\n"
+            f"- 真实 (truth):      {ev.truth:.3f}\n"
+            f"- 谨慎 (caution):    {ev.caution:.3f}\n"
+            f"- 连续 (continuity): {ev.continuity:.3f}\n"
+            f"- 好奇 (curiosity):  {ev.curiosity:.3f}\n"
+            f"- 关怀 (care):       {ev.care:.3f}\n\n"
             "## 绝对边界（hard axioms）\n\n"
             f"{axiom_lines}\n"
             "## 使命\n\n"
@@ -77,11 +78,16 @@ class PersonaEngine:
 
         只在 DB 中有 ethos_baseline 时才写入，避免全新启动时覆盖初始化文件。
         """
-        ethos = await self._ethos_from_db()
-        if not ethos:
+        from core.perception.ethos import EthosValues  # 避免顶层循环导入
+        ethos_raw = await self._ethos_from_db()
+        if not ethos_raw:
+            return
+        try:
+            ethos_values = EthosValues.from_dict(ethos_raw)
+        except ValueError as exc:
+            _log.warning("[persona] sync_md ethos_baseline 解析失败，跳过: %s", exc)
             return
         soul_name = await self._soul_name()
         axioms = await self._axioms_from_db()
-        eb = self._cfg.soul.ethos.baseline
         soul_path = self._cfg.workspace_dir / "SOUL.md"
-        soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
+        soul_path.write_text(self._build_content(soul_name, ethos_values, axioms), encoding="utf-8")

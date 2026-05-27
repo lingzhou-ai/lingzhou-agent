@@ -366,3 +366,70 @@ async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         evidence=f"wm_before={len(wm_items)} failures={len(failures)}",
         priority=0.4,  # snapshot 结果本身是低价值记录，不应积压 WM
     )
+
+
+@tool(ToolManifest(
+    name="memory.ledger_recent",
+    description=(
+        "读取生命史账本最近 N 条记录。\n"
+        "账本由代谢器官追加，记录每笔状态写入及免疫器官的接受/拒绝结论。\n"
+        "用途：感知近期状态变化历史，作为决策依据（如：某 key 是否被反复拒绝、\n"
+        "某源头是否写入异常频繁）。\n"
+        "返回：按时间倒序的账本条目列表。"
+    ),
+    prefer_tier="reader",
+    capabilities=("ask_evidence", *CAPS_EXEMPT),
+    params=[
+        ToolParam("limit", "number", "返回条数上限，默认 30，最大 100", required=False),
+    ],
+))
+async def memory_ledger_recent(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    limit = max(1, min(int(params.get("limit") or 30), 100))
+    rows = await ctx.task_store.ledger_recent(limit=limit)
+    if not rows:
+        return ToolResult(summary="生命史账本暂无记录", skipped=True)
+    lines = []
+    for r in rows:
+        tag = "✓" if r["accepted"] else "✗拒"
+        lines.append(
+            f"[{r['ts']}] {tag} op={r['op']} key={r['key'][:40]} "
+            f"src={r['source'][:20] or '-'}"
+        )
+    return ToolResult(
+        summary=f"生命史账本最近 {len(rows)} 条记录",
+        evidence="\n".join(lines),
+    )
+
+
+@tool(ToolManifest(
+    name="memory.ledger_since",
+    description=(
+        "增量读取生命史账本（id > after_id 的条目）。\n"
+        "用于两次决策之间对比状态变化，判断系统是否按预期演进。\n"
+        "首次调用传 after_id=0 可获取全部近期记录。"
+    ),
+    prefer_tier="reader",
+    capabilities=("ask_evidence", *CAPS_EXEMPT),
+    params=[
+        ToolParam("after_id", "number", "上次读取的最后一条 id（从 0 开始）", required=True),
+        ToolParam("limit", "number", "返回条数上限，默认 50，最大 200", required=False),
+    ],
+))
+async def memory_ledger_since(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    after_id = int(params.get("after_id") or 0)
+    limit = max(1, min(int(params.get("limit") or 50), 200))
+    rows = await ctx.task_store.ledger_since(after_id, limit=limit)
+    if not rows:
+        return ToolResult(summary=f"id > {after_id} 无新增账本记录", skipped=True)
+    lines = []
+    for r in rows:
+        tag = "✓" if r["accepted"] else "✗拒"
+        lines.append(
+            f"[{r['ts']}] {tag} op={r['op']} key={r['key'][:40]} "
+            f"src={r['source'][:20] or '-'}"
+        )
+    last_id = rows[-1]["id"]
+    return ToolResult(
+        summary=f"账本新增 {len(rows)} 条（after_id={after_id}，最新 id={last_id}）",
+        evidence="\n".join(lines),
+    )

@@ -93,3 +93,42 @@ def audit_evolution_target(module_name: str) -> str | None:
     if module_name in _IMMUNE_PROTECTED_MODULES:
         return f"模块 {module_name!r} 受宪法保护，不可进化（公理 A4）"
     return None
+
+
+async def three_organ_preflight(task_store: Any) -> list[str]:
+    """升级协议预检：三器官联合确认（公理 A2）。
+
+    验证记忆 / 人格 / 灵魂三器官在模型切换后能否维持生命连续性。
+    返回空列表 = 全部通过；返回非空列表 = 拒绝原因列表。
+    """
+    import json as _json
+    from core.perception.ethos import EthosValues
+
+    failures: list[str] = []
+
+    # ── 记忆器官：soul:born_at 必须存在 ───────────────────────────────────
+    born_val, born_found = await task_store.get_fact("soul:born_at")
+    if not born_found or not born_val:
+        failures.append("记忆器官：soul:born_at 缺失，无法确认生命起点（公理 A2）")
+
+    # ── 人格器官：soul:ethos_baseline 存在且可解析 ────────────────────────
+    ethos_json, ethos_found = await task_store.get_fact("soul:ethos_baseline")
+    if ethos_found and ethos_json:
+        try:
+            EthosValues.from_dict(_json.loads(ethos_json))
+        except Exception as exc:
+            failures.append(f"人格器官：soul:ethos_baseline 解析失败（{exc}），人格主干无法延续")
+    # ethos 未初始化时允许通过（全新系统）
+
+    # ── 灵魂器官：soul:hard_axioms 非空 ──────────────────────────────────
+    axioms_json, axioms_found = await task_store.get_fact("soul:hard_axioms")
+    if axioms_found and axioms_json:
+        try:
+            axioms = _json.loads(axioms_json)
+            if not isinstance(axioms, list) or len(axioms) == 0:
+                failures.append("灵魂器官：soul:hard_axioms 为空列表，灵魂取向丢失（公理 A4）")
+        except Exception as exc:
+            failures.append(f"灵魂器官：soul:hard_axioms 解析失败（{exc}），宪法无法验证")
+
+    return failures
+

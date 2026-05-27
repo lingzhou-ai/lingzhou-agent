@@ -24,6 +24,24 @@ class EthosValues:
     curiosity: float = 0.45     # 主动感知，不被动等待
     care: float = 0.55          # 对用户数据和状态负责
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "EthosValues":
+        """从 DB dict 转强类型。缺维度取默认值；值无法转 float 则显式 ValueError（公理 A2 Mode 6）。"""
+        defaults = cls()
+        kwargs: dict[str, float] = {}
+        for dim in ETHOS_DIMENSIONS:
+            raw = d.get(dim)
+            if raw is None:
+                kwargs[dim] = getattr(defaults, dim)
+            else:
+                try:
+                    kwargs[dim] = max(0.0, min(1.0, float(raw)))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"ethos_baseline[{dim!r}] 无法转换为 float: {raw!r}（公理 A2 Mode 6）"
+                    ) from exc
+        return cls(**kwargs)
+
 
 @dataclass
 class EthosBias:
@@ -58,22 +76,22 @@ def derive_ethos_state(
     perception_trend: str,
     emotion_down_regulate_streak: int,
     ethos_cfg: "EthosConfig",
-    baseline: dict[str, float] | None = None,
+    baseline: "EthosValues | None" = None,
 ) -> EthosState:
     """每 tick 从信号确定性推导 EthosState（含 EMA 基线混合）。
 
-    注：以下信号→价值映射系数是初始默认值，可通过 evolution 机制进化。
-    EMA 基线（soul:ethos_baseline）随每次经历缓慢漂移，是真正的"性格记忆"。
+    baseline 已是强类型 EthosValues（由调用方用 EthosValues.from_dict() 转换），
+    缺值使用 config seed 默认值（公理 A2 Mode 6）。
     """
     ec = ethos_cfg
-    seed = ec.baseline  # EthosBaseline（强类型，直接用属性访问）
-    # baseline 是 DB 读取的 dict（可能为 None）；seed 是 config 的强类型默认值
+    seed = ec.baseline  # EthosBaseline（pydantic，强类型）
+    b = baseline  # 简短别名
     v = EthosValues(
-        truth=float(baseline.get("truth", seed.truth) if baseline else seed.truth),
-        caution=float(baseline.get("caution", seed.caution) if baseline else seed.caution),
-        continuity=float(baseline.get("continuity", seed.continuity) if baseline else seed.continuity),
-        curiosity=float(baseline.get("curiosity", seed.curiosity) if baseline else seed.curiosity),
-        care=float(baseline.get("care", seed.care) if baseline else seed.care),
+        truth=b.truth if b else seed.truth,
+        caution=b.caution if b else seed.caution,
+        continuity=b.continuity if b else seed.continuity,
+        curiosity=b.curiosity if b else seed.curiosity,
+        care=b.care if b else seed.care,
     )
     if failure_count >= ec.failure_adjust_count:
         v.truth     = clamp01(v.truth     + ec.failure_truth_delta)
@@ -91,13 +109,13 @@ def derive_ethos_state(
     if perception_trend == "recovering":
         v.curiosity = clamp01(v.curiosity + ec.recovering_curiosity_delta)
         v.care      = clamp01(v.care      + ec.recovering_care_delta)
-    if baseline:
+    if b:
         a = ec.ema_alpha
-        v.truth      = clamp01(a * baseline.get("truth",      v.truth)      + (1 - a) * v.truth)
-        v.caution    = clamp01(a * baseline.get("caution",    v.caution)    + (1 - a) * v.caution)
-        v.continuity = clamp01(a * baseline.get("continuity", v.continuity) + (1 - a) * v.continuity)
-        v.curiosity  = clamp01(a * baseline.get("curiosity",  v.curiosity)  + (1 - a) * v.curiosity)
-        v.care       = clamp01(a * baseline.get("care",       v.care)       + (1 - a) * v.care)
+        v.truth      = clamp01(a * b.truth      + (1 - a) * v.truth)
+        v.caution    = clamp01(a * b.caution    + (1 - a) * v.caution)
+        v.continuity = clamp01(a * b.continuity + (1 - a) * v.continuity)
+        v.curiosity  = clamp01(a * b.curiosity  + (1 - a) * v.curiosity)
+        v.care       = clamp01(a * b.care       + (1 - a) * v.care)
     v.truth   = max(v.truth,   ec.floor_truth)
     v.caution = max(v.caution, ec.floor_caution)
 
