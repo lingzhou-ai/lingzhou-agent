@@ -208,6 +208,19 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     force = bool(params.get("force") or False)
     if not force and ctx.task_store is not None:
+        # 自驱任务：若曾收到用户 inbox 消息，要求先为用户消息创建任务或回复，
+        # 再完成自驱任务。确认已处理后可用 force=True 强制完成。
+        if getattr(task, "source", None) == "self_drive" and isinstance(task.extras, dict) and task.extras.get("had_user_inbox"):
+            return ToolResult(
+                summary=(
+                    f"任务 [{task.id}] 是自驱任务，但本轮收到过用户消息（inbox）。"
+                    "请先用 task.add 为用户消息创建任务，或回复用户后再完成此任务。"
+                    "若已处理，可传 force=True 强制完成。"
+                ),
+                error="UserInboxPending",
+                skipped=True,
+                metadata={"task_id": task.id},
+            )
         recent_runs = await ctx.task_store.list_runs(task_id=task.id, limit=12)
         recent_tools = [
             r.tool_name for r in recent_runs

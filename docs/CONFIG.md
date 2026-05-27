@@ -80,3 +80,44 @@ DASHSCOPE_API_KEY=sk-...    # 百炼/通义 API
 DEEPSEEK_API_KEY=sk-...     # DeepSeek API
 COPILOT_GITHUB_TOKEN=gho_... # GitHub Copilot
 ```
+
+## CLI 工具
+
+### 最小入门配置
+
+```bash
+cp lingzhou.min.json.example ~/.lingzhou/lingzhou.json
+# 然后填入模型名称即可起步，无需填写其他字段
+```
+
+`lingzhou.min.json.example` 只包含必填字段，所有其他值运行时自动使用模块默认。
+
+### 发现配置键
+
+```bash
+lingzhou config keys             # 列出所有分组
+ lingzhou config keys loop       # 列出 loop 分组的键与当前值
+lingzhou config keys memory      # 列出 memory 分组
+lingzhou config keys --defaults  # 增加默认列
+```
+
+### IDE 自动补全
+
+```bash
+lingzhou config schema -o lingzhou-schema.json
+```
+
+导出 JSON Schema 后，在 VS Code `settings.json` 中添加关联：
+
+```jsonc
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["lingzhou.json"],
+      "url": "./lingzhou-schema.json"
+    }
+  ]
+}
+```
+
+此后在 `lingzhou.json` 中就可得到字段验证和内联补全。

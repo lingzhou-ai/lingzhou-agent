@@ -368,7 +368,7 @@ async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ),
     prefer_tier="reader",
     progress_category="info",
-    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only", "result_streak_only"),
+    capabilities=("ask_evidence", *CAPS_EXEMPT, "completion_info_only", "result_streak_only", "completion_verify"),
     params=[
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("offset", "number", "起始行号（1-indexed），配合 limit 使用", required=False),

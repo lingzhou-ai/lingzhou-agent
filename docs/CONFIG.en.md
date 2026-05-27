@@ -80,4 +80,45 @@ DEEPSEEK_API_KEY=...
 COPILOT_GITHUB_TOKEN=...
 ```
 
+## CLI Helpers
+
+### Minimal starter config
+
+```bash
+cp lingzhou.min.json.example ~/.lingzhou/lingzhou.json
+# Fill in the model name; everything else uses built-in defaults.
+```
+
+`lingzhou.min.json.example` contains only the required fields; all other values are derived from module defaults at runtime.
+
+### Discover config keys
+
+```bash
+lingzhou config keys              # list all groups
+lingzhou config keys loop         # keys and current values for the loop group
+lingzhou config keys memory       # memory group
+lingzhou config keys --defaults   # include default column
+```
+
+### IDE autocomplete via JSON Schema
+
+```bash
+lingzhou config schema -o lingzhou-schema.json
+```
+
+Then wire it in VS Code `settings.json`:
+
+```jsonc
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["lingzhou.json"],
+      "url": "./lingzhou-schema.json"
+    }
+  ]
+}
+```
+
+Your `lingzhou.json` file will then have inline validation and completion.
+
 The example file [lingzhou.json.example](../lingzhou.json.example) contains a more complete configuration skeleton.

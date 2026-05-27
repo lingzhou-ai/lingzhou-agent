@@ -109,6 +109,10 @@ sudo systemctl enable --now lingzhou
 
 运行时可通过 `config.get` 和 `config.set` 工具读取或调整配置。详见 [docs/CONFIG.md](docs/CONFIG.md)。
 
+- **最小入门配置**：参考 `lingzhou.min.json.example`，仅需嵌入模型和一两个必要字段即可起步。
+- **配置发现**：`lingzhou config keys [group]` 列出指定分组（`loop`/`memory`/`evolution`…）的所有当前键与默认值。
+- **IDE 自动补全**：`lingzhou config schema -o lingzhou-schema.json` 导出 JSON Schema，在 VS Code settings 中关联后可内联校验和补全配置内容。
+
 ## 仓库结构
 
 ```text

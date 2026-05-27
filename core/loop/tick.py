@@ -167,9 +167,16 @@ async def _maybe_steer_active_task_from_user_message(
     if message in existing:
         return active_task
     existing = [*existing, message]
-    await task_store.update_task_data(active_task.id, {"inbox_messages": existing})
+    update: dict[str, Any] = {"inbox_messages": existing}
+    # 自驱任务收到用户消息时，打标记供 task.complete 作守卫
+    is_self_drive = getattr(active_task, "source", None) == "self_drive"
+    if is_self_drive:
+        update["had_user_inbox"] = True
+    await task_store.update_task_data(active_task.id, update)
     active_task.extras = dict(extras) if isinstance(extras, dict) else {}
     active_task.extras["inbox_messages"] = existing
+    if is_self_drive:
+        active_task.extras["had_user_inbox"] = True
     _log.info(
         "[task-inbox] active_task=%s queued new user instruction into inbox",
         active_task.id,

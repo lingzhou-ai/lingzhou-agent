@@ -109,6 +109,10 @@ See [docs/TOOLS.en.md](docs/TOOLS.en.md) for the grouped catalog and capability 
 
 The runtime can inspect and adjust config through `config.get` and `config.set`. Full details are in [docs/CONFIG.en.md](docs/CONFIG.en.md).
 
+- **Minimal starter config**: copy `lingzhou.min.json.example` and fill in only the model and any required fields.
+- **Key discovery**: `lingzhou config keys [group]` lists all current keys and defaults for a config group such as `loop`, `memory`, or `evolution`.
+- **IDE autocomplete**: `lingzhou config schema -o lingzhou-schema.json` exports a JSON Schema; link it in VS Code settings to get inline validation and completion for your config file.
+
 ## Repository Layout
 
 ```text
