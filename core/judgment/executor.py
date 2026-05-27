@@ -192,14 +192,36 @@ class JudgmentExecutor:
             self._override_providers[model_ref] = create_provider_with_model(self._cfg, model_ref)
         return self._override_providers[model_ref]
 
-    def _fallback_tiers(self, tier: str) -> tuple[str, ...]:
+    # 必须使用 reasoner 级别的 phase（不允许降级到 reader）
+    _REASONER_ONLY_PHASES = frozenset({"initial", "continue", "reply", "final"})
+
+    def _fallback_tiers(self, tier: str, *, exclude_reader: bool = False) -> tuple[str, ...]:
         if tier == "reasoner":
-            return ("reader", "repair")
+            return ("repair",) if exclude_reader else ("reader", "repair")
         if tier == "reader":
             return ("reasoner", "repair")
         if tier == "repair":
-            return ("reader", "reasoner")
-        return ("reader", "reasoner", "repair")
+            return ("reasoner",) if exclude_reader else ("reader", "reasoner")
+        return ("reasoner", "repair") if exclude_reader else ("reader", "reasoner", "repair")
+
+    def _least_bad_model(
+        self,
+        tier: str,
+        routing_overrides: dict[str, str] | None,
+        *,
+        exclude_reader: bool = False,
+    ) -> str | None:
+        """全部候选均在冷却时，选冷却最短（剩余等待时间最少）的模型作为兜底。"""
+        best_model: str | None = None
+        best_until = float("inf")
+        tiers = (tier, *self._fallback_tiers(tier, exclude_reader=exclude_reader))
+        for cand_tier in tiers:
+            for model_ref in self._tier_model_candidates(cand_tier, routing_overrides=routing_overrides):
+                until = self._get_health(model_ref).cooldown_until
+                if until < best_until:
+                    best_until = until
+                    best_model = model_ref
+        return best_model
 
     # ── provider 选择 ──────────────────────────────────────────────────────────
 
@@ -245,9 +267,12 @@ class JudgmentExecutor:
         provider: Provider = self._provider
         selected = False
 
+        # 判断 phase 不允许降级到 reader（人不能没有大脑）
+        exclude_reader = phase in self._REASONER_ONLY_PHASES and prefer_tier is None
+
         # 先试当前 tier，再按 tier fallback 试其他 tier。
         # 每个 tier 内按：override -> routing 主模型 -> model_fallbacks -> 顶层 model。
-        for cand_tier in (tier, *self._fallback_tiers(tier)):
+        for cand_tier in (tier, *self._fallback_tiers(tier, exclude_reader=exclude_reader)):
             for model_ref in self._tier_model_candidates(cand_tier, routing_overrides=routing_overrides):
                 if not self._is_model_available(model_ref):
                     continue
@@ -262,6 +287,19 @@ class JudgmentExecutor:
                     continue
             if selected:
                 break
+
+        # 全部候选冷却：不降级到 reader，选冷却最短的 reasoner/repair 模型（忽略冷却限制）
+        if not selected and exclude_reader:
+            fallback_ref = self._least_bad_model(tier, routing_overrides, exclude_reader=True)
+            if fallback_ref:
+                try:
+                    provider = self._find_or_create_provider(fallback_ref)
+                    chosen_tier = tier
+                    chosen_model = fallback_ref
+                    selected = True
+                    _log.info("[routing] 全部 reasoner 冷却，强制使用冷却最短模型: %s", fallback_ref)
+                except Exception as e:
+                    _log.warning("[routing] least-bad model %s 构建失败: %s", fallback_ref, e)
 
         thinking = thinking_override if thinking_override is not None else self._cfg.thinking
         return provider, ModelSelection(phase=phase, tier=chosen_tier, model_ref=chosen_model, thinking=thinking)
