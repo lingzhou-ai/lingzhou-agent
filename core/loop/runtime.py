@@ -381,7 +381,7 @@ class CognitionLoop:
                 token_budget=self._cfg.effective_wm_token_budget(),
                 item_max_tokens=self._cfg.memory.wm_item_max_tokens,
             ),
-            "_emotion": EmotionState.from_config(self._cfg),
+            "_emotion": copy.copy(self._emotion),  # 继承当前全局情绪，而非重置为 baseline
             "_perception": PerceptionLayer(self._cfg),
             "_behavior": BehaviorTracker(
                 wait_streak_notify=list(self._cfg.loop.wait_streak_notify),
@@ -422,6 +422,10 @@ class CognitionLoop:
         # 运行镜像：供 wait_after_cycle/state_snapshot 读取最近完成 tick 的状态
         for f in dataclasses.fields(ChainState):
             setattr(self, f.name, state[f.name])
+        # 情绪全局同步：将链的最新情绪回写全局，保证单心智情绪连续性
+        # view._emotion 与 state["_emotion"] 是同一对象（_mount_chain_view 直接赋引用），
+        # 此处用 copy.copy 避免后续链写入影响全局快照。
+        self._emotion = copy.copy(view._emotion)
 
     async def _run_dispatched_tick(self, job: TickJob) -> None:
         try:
