@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import logging
 import sys
+import traceback
 from importlib.machinery import SourceFileLoader
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -17,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
+
+_log = logging.getLogger("lingzhou.registry")
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -253,9 +257,12 @@ class ToolRegistry:
                 sys.modules[module_name] = mod
                 try:
                     spec.loader.exec_module(mod)
-                except Exception:
+                except Exception as e:
                     sys.modules.pop(module_name, None)
-                    raise
+                    _log.error(
+                        "[registry] 工具 %s 加载失败，已跳过: %s\n%s",
+                        stem, e, traceback.format_exc().rstrip(),
+                    )
 
     def reload_tool(self, tool_name: str, tools_dir: Path) -> bool:
         """热重载单个工具模块（EvolutionEngine 调用）。"""

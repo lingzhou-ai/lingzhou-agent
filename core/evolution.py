@@ -247,6 +247,13 @@ class EvolutionEngine:
         else:
             parent_imports_lines = ""
 
+        # 取主进程当前加载的 tools.registry 文件路径，注入到子进程，避免版本撕裂
+        try:
+            import tools.registry as _curr_registry_mod
+            _registry_file = str(Path(_curr_registry_mod.__file__).resolve())
+        except Exception:
+            _registry_file = str((project_root / "tools" / "registry.py").resolve())
+
         staging_path = module_path.parent / f"_smoke_staging_{module_path.name}"
         try:
             staging_path.write_text(new_src, encoding="utf-8")
@@ -254,8 +261,14 @@ class EvolutionEngine:
             probe = textwrap.dedent(f"""
 import sys
 sys.path.insert(0, {str(project_root)!r})
-{parent_imports_lines}
 import importlib.util as _ilu
+# 显式预装主进程使用的 tools.registry，防止磁盘版本落后导致 API 不匹配
+_reg_spec = _ilu.spec_from_file_location("tools.registry", {_registry_file!r})
+_reg_mod = _ilu.module_from_spec(_reg_spec)
+_reg_mod.__package__ = "tools"
+sys.modules["tools.registry"] = _reg_mod
+_reg_spec.loader.exec_module(_reg_mod)
+{parent_imports_lines}
 _spec = _ilu.spec_from_file_location({real_module_name!r}, {str(staging_path)!r})
 mod = _ilu.module_from_spec(_spec)
 mod.__package__ = {parent_pkg!r}

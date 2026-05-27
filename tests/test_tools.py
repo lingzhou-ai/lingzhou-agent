@@ -434,8 +434,8 @@ def test_tool_registry_discover_cleans_partial_module_after_import_failure():
         )
 
         registry = ToolRegistry()
-        with pytest.raises(RuntimeError, match="boom during import"):
-            registry.discover(root)
+        # discover() 应隔离失败：不抛异常，但 broken 模块不留在 sys.modules
+        registry.discover(root)
 
         assert broken_module_name not in sys.modules
 
