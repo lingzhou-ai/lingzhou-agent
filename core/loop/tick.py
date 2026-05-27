@@ -675,7 +675,10 @@ async def _finalize_tick_user_reply(
     """处理 reply_only、fallback reply 与聊天回复落库。"""
     reply_only = await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task)
 
-    if user_message and not action.reply_to_user and _should_use_fallback_user_reply(result, reply_only):
+    if user_message and not action.reply_to_user and (
+        _should_use_fallback_user_reply(result, reply_only)
+        or action.decision in {"wait", "pause"}  # wait/pause 有 rationale，必须告知用户
+    ):
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
 
     await _persist_tick_user_reply(loop, action, active_task, chat_id, user_message)
