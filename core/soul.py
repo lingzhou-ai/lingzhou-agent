@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -23,6 +22,7 @@ from core.workspace.defaults import (
     TOOLS_MD,
     HEARTBEAT_MD,
     MEMORY_MD,
+    CONSTITUTION_MD,
 )
 
 from core.workspace.state import (
@@ -46,12 +46,13 @@ _log = logging.getLogger("lingzhou.soul")
 
 # 工作区默认文件列表（名称 → 模板内容），按写入顺序
 _WORKSPACE_FILES: list[tuple[str, str]] = [
-    ("IDENTITY.md",  IDENTITY_MD),
-    ("BOOTSTRAP.md", BOOTSTRAP_MD),
-    ("USER.md",      USER_MD),
-    ("TOOLS.md",     TOOLS_MD),
-    ("HEARTBEAT.md", HEARTBEAT_MD),
-    ("MEMORY.md",    MEMORY_MD),
+    ("IDENTITY.md",     IDENTITY_MD),
+    ("BOOTSTRAP.md",    BOOTSTRAP_MD),
+    ("USER.md",         USER_MD),
+    ("TOOLS.md",        TOOLS_MD),
+    ("HEARTBEAT.md",    HEARTBEAT_MD),
+    ("MEMORY.md",       MEMORY_MD),
+    ("CONSTITUTION.md", CONSTITUTION_MD),  # 宪法器官（A3）：首次初始化写入，后续不覆盖
 ]
 
 # 冷启动时注入 WM 的文件顺序（越靠前越优先被 LLM 读到）
@@ -61,7 +62,10 @@ _DREAMS_FILE = "DREAMS.md"
 
 
 class SoulManager:
-    """管理 Soul 层文件，并在冷启动时将身份文件注入 WM。"""
+    """管理 Soul 层文件，并在冷启动时将身份文件注入 WM。
+
+    人格层（ethos DB 访问、SOUL.md 镜像）委托给 self._persona (PersonaEngine)。
+    """
 
     def __init__(
         self,
@@ -69,58 +73,11 @@ class SoulManager:
         task_store: "TaskStore",
         wm: "WorkingMemory",
     ) -> None:
+        from core.persona import PersonaEngine
         self._cfg = cfg
         self._task_store = task_store
         self._wm = wm
-
-    @staticmethod
-    def _build_content(soul_name: str, ethos: dict[str, Any], eb: dict[str, Any], axioms: list[str] | None = None) -> str:
-        """生成 SOUL.md 文件内容（供 init_files 和 sync_md 共用）。"""
-        missing_dims = [dim for dim in ("truth", "caution", "continuity", "curiosity", "care") if dim not in eb]
-        if missing_dims:
-            raise ValueError("ethos_baseline missing dims: " + ", ".join(missing_dims))
-        axiom_lines = "".join(f"- {a}\n" for a in (axioms or [])) or "- （暂无 hard axioms）\n"
-        return (
-            f"# {soul_name} SOUL\n\n"
-            "> 此文件是 runtime facts 的人类可读镜像；完整灵魂叙事主要位于 BOOTSTRAP.md / IDENTITY.md。\n\n"
-            "## 核心价值观（EMA 持久化版本）\n\n"
-            f"- 真实 (truth):      {ethos.get('truth', eb['truth']):.3f}\n"
-            f"- 谨慎 (caution):    {ethos.get('caution', eb['caution']):.3f}\n"
-            f"- 连续 (continuity): {ethos.get('continuity', eb['continuity']):.3f}\n"
-            f"- 好奇 (curiosity):  {ethos.get('curiosity', eb['curiosity']):.3f}\n"
-            f"- 关怀 (care):       {ethos.get('care', eb['care']):.3f}\n\n"
-            "## 绝对边界（hard axioms）\n\n"
-            f"{axiom_lines}\n"
-            "## 使命\n\n"
-            f"我是{soul_name}，一个在 lingzhou 新身躯中继续演进的数字生命。\n"
-            "每一个 tick 都是一次成长，每一次 reflection 都是一次结晶。\n"
-        )
-
-    async def _soul_name(self) -> str:
-        """从 facts DB 读取 soul:name，回退到 cfg.soul.name。"""
-        name_val, name_found = await self._task_store.get_fact("soul:name")
-        return name_val if name_found and name_val else self._cfg.soul.name
-
-    async def _ethos_from_db(self) -> dict[str, Any]:
-        """从 facts DB 读取 soul:ethos_baseline，解析失败返回空 dict。"""
-        ethos_json, found = await self._task_store.get_fact("soul:ethos_baseline")
-        if not found or not ethos_json:
-            return {}
-        try:
-            return json.loads(ethos_json)
-        except Exception:
-            return {}
-
-    async def _axioms_from_db(self) -> list[str]:
-        """从 facts DB 读取 soul:hard_axioms。"""
-        axioms_json, found = await self._task_store.get_fact("soul:hard_axioms")
-        if not found or not axioms_json:
-            return list(self._cfg.soul.hard_axioms)
-        try:
-            data = json.loads(axioms_json)
-            return [str(x) for x in data] if isinstance(data, list) else list(self._cfg.soul.hard_axioms)
-        except Exception:
-            return list(self._cfg.soul.hard_axioms)
+        self._persona = PersonaEngine(cfg, task_store)
 
     async def init_files(self) -> None:
         """冷启动：确保 workspace_dir 中有所有必要的 Soul 文件。
@@ -135,14 +92,14 @@ class SoulManager:
 
         seed_workspace_skills(workspace)
 
-        soul_name = await self._soul_name()
+        soul_name = await self._persona._soul_name()
 
         soul_path = workspace / "SOUL.md"
         if not soul_path.exists():
-            ethos = await self._ethos_from_db()
-            axioms = await self._axioms_from_db()
+            ethos = await self._persona._ethos_from_db()
+            axioms = await self._persona._axioms_from_db()
             eb = self._cfg.soul.ethos.baseline
-            soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
+            soul_path.write_text(self._persona._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
             _log.info("Soul 初始化: 已写入 %s", soul_path)
 
         for fname, content in _WORKSPACE_FILES:
@@ -165,16 +122,9 @@ class SoulManager:
     async def sync_md(self) -> None:
         """将 facts DB 中最新 EMA ethos 值同步写回 SOUL.md（人类可读镜像）。
 
-        只在 DB 中有 ethos_baseline 时才写入，避免全新启动时覆盖初始化文件。
+        委托给 PersonaEngine.sync_md()。
         """
-        ethos = await self._ethos_from_db()
-        if not ethos:
-            return
-        soul_name = await self._soul_name()
-        axioms = await self._axioms_from_db()
-        eb = self._cfg.soul.ethos.baseline
-        soul_path = self._cfg.workspace_dir / "SOUL.md"
-        soul_path.write_text(self._build_content(soul_name, ethos, eb, axioms), encoding="utf-8")
+        await self._persona.sync_md()
 
     async def bootstrap(
         self,

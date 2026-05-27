@@ -33,8 +33,28 @@ class ProbeManager:
     async def start(self, wm: Any, loop_ref: Any | None = None) -> None:
         """注入运行时依赖，启动所有调度任务。"""
         self._runner.attach(wm, loop_ref)
+        await self._ensure_builtin_probes(loop_ref)
         await self._runner.start_all()
         _log.info("[probe] ProbeManager started")
+
+    async def _ensure_builtin_probes(self, loop_ref: Any | None) -> None:
+        """确保内置探针已安装（每次启动检查，不重复安装）。"""
+        _CONSTITUTION_PROBE = "immune:constitution_integrity"
+        if await self._store.get(_CONSTITUTION_PROBE) is not None:
+            return  # 已安装，跳过
+
+        cfg = ProbeConfig(
+            name=_CONSTITUTION_PROBE,
+            kind="builtin",
+            spec="core.immune.constitution:verify_constitution_integrity",
+            trigger="interval:300",  # 每 5 分钟校验一次
+            purpose="定时校验 CONSTITUTION.md 哈希未被程序改写（公理 A3）",
+            data_back="none",
+            alert_expr="output in ('tampered', 'missing')",
+            alert_message="[免疫] 宪法文件异常（公理 A3 违规）：CONSTITUTION.md 状态={output}",
+        )
+        await self._store.upsert(cfg)
+        _log.info("[probe] 已自动注册内置探针: %s", _CONSTITUTION_PROBE)
 
     def stop(self) -> None:
         """取消所有调度 Task（shutdown 时调用）。"""

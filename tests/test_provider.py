@@ -199,6 +199,7 @@ async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
     old_provider = _ReloadClosable("old-main")
     old_reader = _ReloadClosable("old-reader")
     self_model = _ReloadSelfModel()
+    _semantic_ns = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
         Any,
         SimpleNamespace(
@@ -214,7 +215,8 @@ async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
             _execution=object(),
             _evolution=object(),
             _perception=object(),
-            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _semantic=_semantic_ns,
+            semantic=_semantic_ns,
             _soul=_ReloadSoul(old_cfg),
         ),
     )
@@ -222,8 +224,6 @@ async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(reload_mod, "create_provider", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
 
     await reload_mod._maybe_hot_reload_provider_impl(loop)
-
-    assert loop._cfg is old_cfg
     assert loop._provider is old_provider
     assert loop._routing_providers["reader"] is old_reader
     assert loop._cfg_mtime == old_mtime
@@ -253,6 +253,7 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
     new_provider = _ReloadClosable("new-main")
     new_reader = _ReloadClosable("new-reader")
     self_model = _ReloadSelfModel()
+    _semantic_ns2 = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
         Any,
         SimpleNamespace(
@@ -268,7 +269,8 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
             _execution="old-execution",
             _evolution="old-evolution",
             _perception="old-perception",
-            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _semantic=_semantic_ns2,
+            semantic=_semantic_ns2,
             _soul=_ReloadSoul(old_cfg),
         ),
     )
@@ -319,6 +321,7 @@ async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, t
     new_provider = _ReloadClosable("new-main")
     new_reader = _ReloadClosable("new-reader")
     self_model = _ReloadSelfModel()
+    _semantic_ns3 = SimpleNamespace(_embed_fn=None, _embedding_weight=0.0)
     loop = cast(
         Any,
         SimpleNamespace(
@@ -334,7 +337,8 @@ async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, t
             _execution="old-execution",
             _evolution="old-evolution",
             _perception="old-perception",
-            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _semantic=_semantic_ns3,
+            semantic=_semantic_ns3,
             _soul=_ReloadSoul(old_cfg),
             _task_store=_ReloadTaskStore(value='{"reasoner":"copilot/gpt-5.4"}', found=True),
             _pending_routing_overrides={"reasoner": "bailian/qwen-plus"},

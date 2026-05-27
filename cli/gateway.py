@@ -527,6 +527,10 @@ def gateway_start(
 
     # 启动 channel sidecar（loop 主线程仍是 asyncio）
     if channel != "local":
+        # 将 Config.gateway 的默认值注入 gw_conf（json 文件已有的 key 优先）
+        if channel == "webhook":
+            gw_conf.setdefault("host", cfg.gateway.webhook_host)
+            gw_conf.setdefault("port", cfg.gateway.webhook_port)
         _start_external_channel_runtime(channel, gw_conf, db_path=cfg.db_path)
 
     from core.loop import CognitionLoop

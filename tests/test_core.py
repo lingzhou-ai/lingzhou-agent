@@ -1063,13 +1063,13 @@ def test_judgment_error_classification_and_cooldown():
     })
 
     layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-    assert layer._classify_error_code("Client error '429 Too Many Requests'") == "429"
-    assert layer._classify_error_code("Client error '400 Bad Request'") == "400"
-    assert layer._classify_error_code("ReadTimeout('')") == "timeout"
+    assert layer._executor._classify_error_code("Client error '429 Too Many Requests'") == "429"
+    assert layer._executor._classify_error_code("Client error '400 Bad Request'") == "400"
+    assert layer._executor._classify_error_code("ReadTimeout('')") == "timeout"
 
-    assert layer._cooldown_seconds("429", 1) >= 30
-    assert layer._cooldown_seconds("429", 3) > layer._cooldown_seconds("429", 1)
-    assert layer._cooldown_seconds("400", 2) >= 90
+    assert layer._executor._cooldown_seconds("429", 1) >= 30
+    assert layer._executor._cooldown_seconds("429", 3) > layer._executor._cooldown_seconds("429", 1)
+    assert layer._executor._cooldown_seconds("400", 2) >= 90
 
 
 def test_evolution_verification_outcome():

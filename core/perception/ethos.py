@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from core.config import EthosConfig
 
 
-_ETHOS_DIMENSIONS = ("truth", "caution", "continuity", "curiosity", "care")
+ETHOS_DIMENSIONS = ("truth", "caution", "continuity", "curiosity", "care")
 
 
 @dataclass
@@ -66,14 +66,14 @@ def derive_ethos_state(
     EMA 基线（soul:ethos_baseline）随每次经历缓慢漂移，是真正的"性格记忆"。
     """
     ec = ethos_cfg
-    seed = ec.baseline
-    base = baseline or seed
+    seed = ec.baseline  # EthosBaseline（强类型，直接用属性访问）
+    # baseline 是 DB 读取的 dict（可能为 None）；seed 是 config 的强类型默认值
     v = EthosValues(
-        truth=float(base.get("truth", seed.get("truth", 0.5))),
-        caution=float(base.get("caution", seed.get("caution", 0.5))),
-        continuity=float(base.get("continuity", seed.get("continuity", 0.5))),
-        curiosity=float(base.get("curiosity", seed.get("curiosity", 0.5))),
-        care=float(base.get("care", seed.get("care", 0.5))),
+        truth=float(baseline.get("truth", seed.truth) if baseline else seed.truth),
+        caution=float(baseline.get("caution", seed.caution) if baseline else seed.caution),
+        continuity=float(baseline.get("continuity", seed.continuity) if baseline else seed.continuity),
+        curiosity=float(baseline.get("curiosity", seed.curiosity) if baseline else seed.curiosity),
+        care=float(baseline.get("care", seed.care) if baseline else seed.care),
     )
     if failure_count >= ec.failure_adjust_count:
         v.truth     = clamp01(v.truth     + ec.failure_truth_delta)

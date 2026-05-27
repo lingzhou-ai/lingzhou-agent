@@ -668,6 +668,43 @@ class OpenAICompatProvider:
         await self._client.aclose()
         self._sync_client.close()
 
+    async def ping(self, timeout: float = 8.0) -> tuple[bool, int, str | None]:
+        """连通性探测：根据模型 spec 选择正确端点，返回 (success, latency_ms, error_or_None)。"""
+        import time as _time
+        _t0 = _time.monotonic()
+        try:
+            headers = await self._request_headers()
+            if self._uses_responses_api():
+                target = self._resolve_url("/responses")
+                payload: dict[str, Any] = {
+                    "model": self._model,
+                    "input": "ping",
+                    "max_output_tokens": 1,
+                }
+            else:
+                target = self._resolve_url("/chat/completions")
+                payload = {
+                    "model": self._model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                }
+            resp = await self._client.post(
+                target,
+                content=json.dumps(payload),
+                headers=headers or None,
+                timeout=timeout,
+            )
+            _ms = int((_time.monotonic() - _t0) * 1000)
+            if resp.status_code in (200, 201):
+                return True, _ms, None
+            elif resp.status_code in (401, 403):
+                return False, _ms, f"认证失败 (HTTP {resp.status_code})"
+            else:
+                return False, _ms, f"HTTP {resp.status_code}"
+        except Exception as _e:
+            _ms = int((_time.monotonic() - _t0) * 1000)
+            return False, _ms, str(_e)
+
     def embed(self, text: str) -> list[float]:
         if not self._embed_model:
             raise RuntimeError("embedding_model not configured")

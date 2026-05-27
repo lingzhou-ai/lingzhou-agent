@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from core.execution import build_meta_reflection, record_meta_reflection_memory, record_run_outcome_memory
+from core.metabolic import StateProposal
 from store.episodic import EpisodicMemory
 from store.semantic import SemanticMemory
 from store.task import TaskStore, Run, build_task_run_result_patch
@@ -140,6 +141,7 @@ async def _refresh_run_via_fact_monitor(
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
     memory_cfg: Any | None = None,
+    metabolic: Any | None = None,
 ) -> dict[str, Any]:
     key = str(monitor.get("key") or "").strip()
     raw, found = await task_store.get_fact(key)
@@ -163,7 +165,13 @@ async def _refresh_run_via_fact_monitor(
         progress=progress,
     )
     if run.task_id and crystal:
-        await task_store.set_fact(f"task:{run.task_id}:progress", crystal[:800], scope="task")
+        if metabolic is None:
+            from core.metabolic import MetabolicEngine
+            metabolic = MetabolicEngine(task_store)
+        await metabolic.submit(StateProposal(
+            op="set_fact", key=f"task:{run.task_id}:progress",
+            value=crystal[:800], scope="task", source="run_refresh/monitor",
+        ))
     if status in {"succeeded", "failed", "cancelled"}:
         summary = progress or (str(payload.get("summary") or "") if isinstance(payload, dict) else raw) or f"run {status}"
         error = str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")
@@ -229,6 +237,7 @@ async def _refresh_run_via_process_monitor(
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
     memory_cfg: Any | None = None,
+    metabolic: Any | None = None,
 ) -> dict[str, Any]:
     session_id = str(monitor.get("session_id") or run.session_id or "").strip()
     if not session_id or manager is None:
@@ -254,7 +263,13 @@ async def _refresh_run_via_process_monitor(
                 extras={**run.extras, "last_crystal_chars": len(stdout_text), "run_monitor": monitor},
             )
             if run.task_id and crystal_excerpt:
-                await task_store.set_fact(f"task:{run.task_id}:progress", crystal_excerpt[:800], scope="task")
+                if metabolic is None:
+                    from core.metabolic import MetabolicEngine
+                    metabolic = MetabolicEngine(task_store)
+                await metabolic.submit(StateProposal(
+                    op="set_fact", key=f"task:{run.task_id}:progress",
+                    value=crystal_excerpt[:800], scope="task", source="run_refresh/progress",
+                ))
         return {
             "run_id": run.id,
             "task_id": run.task_id,
@@ -335,12 +350,17 @@ async def refresh_running_runs(
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
     memory_cfg: Any | None = None,
+    metabolic: Any | None = None,
 ) -> list[dict[str, Any]]:
     """刷新所有 running runs，优先走内建 exec 监控，其次走通用 fact-backed run_monitor 协议。"""
     try:
         from tools.exec import _MANAGER
     except Exception:
         _MANAGER = None
+
+    if metabolic is None:
+        from core.metabolic import MetabolicEngine
+        metabolic = MetabolicEngine(task_store)
 
     runs = await task_store.list_runs(status="running", limit=20)
     if runs:
@@ -351,16 +371,16 @@ async def refresh_running_runs(
         monitor = _run_monitor_config(run)
         if monitor is not None:
             if str(monitor.get("kind") or "") == "fact":
-                updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
+                updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg, metabolic=metabolic))
             elif str(monitor.get("kind") or "") == "process":
-                updates.append(await _refresh_run_via_process_monitor(task_store, run, monitor, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
+                updates.append(await _refresh_run_via_process_monitor(task_store, run, monitor, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg, metabolic=metabolic))
             else:
                 updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
         if run.worker_type != "exec-worker" or not run.session_id or _MANAGER is None:
             updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
-        updates.append(await _refresh_run_via_process_monitor(task_store, run, {"kind": "process", "session_id": run.session_id}, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg))
+        updates.append(await _refresh_run_via_process_monitor(task_store, run, {"kind": "process", "session_id": run.session_id}, manager=_MANAGER, episodic=episodic, semantic=semantic, memory_cfg=memory_cfg, metabolic=metabolic))
     if updates:
         terminal = sum(1 for item in updates if str(item.get("status") or "") in {"succeeded", "failed", "cancelled"})
         running = sum(1 for item in updates if str(item.get("status") or "") == "running")

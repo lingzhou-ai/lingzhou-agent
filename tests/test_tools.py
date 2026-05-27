@@ -550,6 +550,11 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -622,6 +627,11 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -835,6 +845,11 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             judgment = _FakeJudgment()
@@ -948,6 +963,11 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -1042,6 +1062,11 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -1145,6 +1170,11 @@ async def _subagent_run_history_does_not_expose_parent_runs():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -1264,6 +1294,11 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_ctx = ToolContext(
@@ -1343,6 +1378,11 @@ async def _subagent_runner_does_not_pollute_parent_store():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
@@ -1441,6 +1481,11 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             registry = ToolRegistry()
             registry.discover(_proj_root() / "tools")
@@ -1587,6 +1632,11 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
                     "curiosity": 0.61,
                     "care": 0.51,
                 }),
+                thresholds=SimpleNamespace(
+                    durable_failure_threshold=3,
+                    durable_failure_ttl_sec=7200,
+                    log_text_chars=240,
+                ),
             ))
             execution = ExecutionLayer(registry, cfg)
             parent_semantic = SemanticMemory(root / "semantic")

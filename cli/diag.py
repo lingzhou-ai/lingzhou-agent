@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.panel import Panel
@@ -20,6 +21,21 @@ from store.auth import (
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
+# ── Rich 标记常量 ──────────────────────────────────────────────────────────
+_OK   = "[bold green]✓[/bold green]"
+_FAIL = "[bold red]✗[/bold red]"
+_WARN = "[bold yellow]![/bold yellow]"
+
+
+@dataclass
+class _CheckResult:
+    """单项诊断结果。ok=True 表示通过；issue 非 None 时会加入汇总问题列表。"""
+    ok: bool
+    message: str        # 完整 Rich 格式化行，直接 console.print
+    issue: str | None = None
+
+
+# ── 工具函数 ──────────────────────────────────────────────────────────────
 
 def _mask_token(token: str) -> str:
     if len(token) <= 12:
@@ -54,143 +70,159 @@ def _resolve_openai_provider_api_key(provider: object) -> tuple[str | None, str 
     return None, None
 
 
-def version() -> None:
-    """显示版本信息。"""
+# ── 独立检查函数（可单独单元测试）────────────────────────────────────────
+
+def _check_python_version() -> _CheckResult:
     import sys
-    from core.version import __version__, __codename__, __min_python__
-    console.print(f"[bold]lingzhou[/bold] v{__version__}  代号: {__codename__}")
-    console.print(f"  Python {sys.version.split()[0]}  (要求 ≥ {'.'.join(str(x) for x in __min_python__)})")
-
-
-def doctor(
-    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
-) -> None:
-    """自检：诊断运行环境、配置、API key 和数据库状态。"""
-    import sys
-    import json as _json
-    import importlib
-    from core.version import __version__, __min_python__
-
-    ok_mark  = "[bold green]✓[/bold green]"
-    fail_mark = "[bold red]✗[/bold red]"
-    warn_mark = "[bold yellow]![/bold yellow]"
-    issues: list[str] = []
-
-    console.print(Panel(
-        f"[bold]lingzhou doctor[/bold]  v{__version__}",
-        border_style="cyan",
-    ))
-
-    # ── 1. Python 版本 ─────────────────────────────────────────────────
+    from core.version import __min_python__
     py = sys.version_info
     py_str = f"{py.major}.{py.minor}.{py.micro}"
     if py[:3] >= __min_python__:
-        console.print(f"  {ok_mark} Python {py_str}")
-    else:
-        need = ".".join(str(x) for x in __min_python__)
-        console.print(f"  {fail_mark} Python {py_str}  (需要 ≥ {need})")
-        issues.append(f"Python 版本过低: {py_str}")
+        return _CheckResult(ok=True, message=f"  {_OK} Python {py_str}")
+    need = ".".join(str(x) for x in __min_python__)
+    return _CheckResult(
+        ok=False,
+        message=f"  {_FAIL} Python {py_str}  (需要 ≥ {need})",
+        issue=f"Python 版本过低: {py_str}",
+    )
 
-    # ── 2. 必要依赖 ────────────────────────────────────────────────────
-    _DEPS = ["pydantic", "httpx", "aiosqlite", "typer", "rich"]
-    for dep in _DEPS:
+
+def _check_dependencies() -> list[_CheckResult]:
+    import importlib
+    results: list[_CheckResult] = []
+    for dep in ["pydantic", "httpx", "aiosqlite", "typer", "rich"]:
         try:
             importlib.import_module(dep)
-            console.print(f"  {ok_mark} {dep}")
+            results.append(_CheckResult(ok=True, message=f"  {_OK} {dep}"))
         except ImportError:
-            console.print(f"  {fail_mark} {dep}  [dim]未安装[/dim]")
-            issues.append(f"缺少依赖: {dep}")
+            results.append(_CheckResult(
+                ok=False,
+                message=f"  {_FAIL} {dep}  [dim]未安装[/dim]",
+                issue=f"缺少依赖: {dep}",
+            ))
+    return results
 
-    resolved_config = resolve_config_path(config)
 
-    # ── 3. 配置文件 ────────────────────────────────────────────────────
+def _check_config_file(resolved_config: Path) -> _CheckResult:
+    import json as _json
     if resolved_config.exists():
         try:
             _json.loads(resolved_config.read_text(encoding="utf-8"))
-            console.print(f"  {ok_mark} 配置文件: {resolved_config}")
+            return _CheckResult(ok=True, message=f"  {_OK} 配置文件: {resolved_config}")
         except Exception as e:
-            console.print(f"  {fail_mark} 配置文件解析失败: {e}")
-            issues.append(f"配置文件无效: {e}")
-    else:
-        console.print(f"  {warn_mark} 配置文件不存在: {resolved_config}  [dim]运行 lingzhou onboard[/dim]")
-        issues.append(f"配置文件缺失: {resolved_config}")
+            return _CheckResult(
+                ok=False,
+                message=f"  {_FAIL} 配置文件解析失败: {e}",
+                issue=f"配置文件无效: {e}",
+            )
+    return _CheckResult(
+        ok=False,
+        message=f"  {_WARN} 配置文件不存在: {resolved_config}  [dim]运行 lingzhou onboard[/dim]",
+        issue=f"配置文件缺失: {resolved_config}",
+    )
 
-    # ── 4. API Key ──────────────────────────────────────────────────────
+
+def _load_cfg_silently(config: Path) -> Any | None:
     try:
-        cfg = load_cfg(config) if resolved_config.exists() else None
+        return load_cfg(config)
     except Exception:
-        cfg = None
+        return None
 
-    if cfg is not None:
-        _api_key_env: str | None = None
-        _provider_name: str | None = None
-        try:
-            _provider_name = cfg.active_provider_name
-            _api_key_env = cfg.active_provider.api_key_env
-        except Exception:
-            pass
 
-        if _api_key_env:
-            if getattr(cfg.active_provider, 'mode', '') == 'copilot':
-                resolved = resolve_copilot_token(_api_key_env)
-                if resolved:
-                    if resolved.source.startswith('env:'):
-                        env_name = resolved.source.split(':', 1)[1]
-                        masked = _mask_token(resolved.token)
-                        console.print(f"  {ok_mark} Copilot token ({env_name}): {masked}")
-                    elif resolved.source == 'auth-profile':
-                        console.print(f"  {ok_mark} Copilot token: 来自 auth profile store  [dim]{AUTH_PROFILES_PATH}[/dim]")
-                    else:
-                        console.print(f"  {ok_mark} Copilot token: 来自 legacy credentials 文件")
-                else:
-                    console.print(f"  {fail_mark} Copilot token: 未设置")
-                    issues.append("Copilot token 未配置: lingzhou auth login-copilot")
+def _check_api_key(cfg: Any) -> list[_CheckResult]:
+    results: list[_CheckResult] = []
+    _api_key_env: str | None = None
+    _provider_name: str | None = None
+    try:
+        _provider_name = cfg.active_provider_name
+        _api_key_env = cfg.active_provider.api_key_env
+    except Exception:
+        pass
+
+    if not _api_key_env:
+        return results
+
+    if getattr(cfg.active_provider, 'mode', '') == 'copilot':
+        resolved = resolve_copilot_token(_api_key_env)
+        if resolved:
+            if resolved.source.startswith('env:'):
+                env_name = resolved.source.split(':', 1)[1]
+                masked = _mask_token(resolved.token)
+                results.append(_CheckResult(
+                    ok=True,
+                    message=f"  {_OK} Copilot token ({env_name}): {masked}",
+                ))
+            elif resolved.source == 'auth-profile':
+                results.append(_CheckResult(
+                    ok=True,
+                    message=f"  {_OK} Copilot token: 来自 auth profile store  [dim]{AUTH_PROFILES_PATH}[/dim]",
+                ))
             else:
-                _resolved_key, _resolved_source = _resolve_openai_provider_api_key(cfg.active_provider)
-                if _resolved_key:
-                    if _resolved_source == "literal":
-                        console.print(f"  {ok_mark} API key (literal): {_mask_token(_resolved_key)}")
-                    elif _resolved_source and _resolved_source.startswith("env:"):
-                        env_name = _resolved_source.split(":", 1)[1]
-                        console.print(f"  {ok_mark} API key ({env_name}): {_mask_token(_resolved_key)}")
-                    elif _resolved_source and _resolved_source.startswith("legacy-credentials:"):
-                        env_name = _resolved_source.split(":", 1)[1]
-                        console.print(f"  {ok_mark} API key ({env_name}): 来自 credentials 文件")
-                    elif _resolved_source and _resolved_source.startswith("auth-profile:"):
-                        profile_id = _resolved_source.split(":", 1)[1]
-                        console.print(f"  {ok_mark} API key ({_api_key_env}): 来自 auth profile  [dim]{profile_id}[/dim]")
-                    else:
-                        console.print(f"  {ok_mark} API key ({_api_key_env}): 已解析")
-                else:
-                    console.print(f"  {fail_mark} API key ({_api_key_env}): 未设置")
-                    if _ENV_VAR_NAME_RE.fullmatch(_api_key_env):
-                        _provider_hint = _provider_name or "<provider>"
-                        issues.append(
-                            f"API key 未配置: export {_api_key_env}=your_key 或 lingzhou auth set-token --provider {_provider_hint}"
-                        )
-                    else:
-                        issues.append("API key 未配置: lingzhou auth set-token --provider <provider>")
+                results.append(_CheckResult(
+                    ok=True,
+                    message=f"  {_OK} Copilot token: 来自 legacy credentials 文件",
+                ))
         else:
-            console.print(f"  {warn_mark} API key: 跳过（配置文件不可用）")
-
-    # ── 5. 数据库 ──────────────────────────────────────────────────────
-    if cfg is not None:
-        db_path = cfg.db_path
-        if db_path.exists():
-            try:
-                from store.task.ingress import IngressStore
-                tables = IngressStore(db_path).list_tables()
-                console.print(f"  {ok_mark} 数据库: {db_path}  [dim]表: {', '.join(tables) or '(空)'}[/dim]")
-            except Exception as e:
-                console.print(f"  {fail_mark} 数据库异常: {e}")
-                issues.append(f"DB 异常: {e}")
-        else:
-            console.print(f"  {warn_mark} 数据库未初始化: {db_path}  [dim]运行 lingzhou onboard[/dim]")
+            results.append(_CheckResult(
+                ok=False,
+                message=f"  {_FAIL} Copilot token: 未设置",
+                issue="Copilot token 未配置: lingzhou auth login-copilot",
+            ))
     else:
-        console.print(f"  {warn_mark} 数据库: 跳过（配置文件不可用）")
+        _resolved_key, _resolved_source = _resolve_openai_provider_api_key(cfg.active_provider)
+        if _resolved_key:
+            if _resolved_source == "literal":
+                msg = f"  {_OK} API key (literal): {_mask_token(_resolved_key)}"
+            elif _resolved_source and _resolved_source.startswith("env:"):
+                env_name = _resolved_source.split(":", 1)[1]
+                msg = f"  {_OK} API key ({env_name}): {_mask_token(_resolved_key)}"
+            elif _resolved_source and _resolved_source.startswith("legacy-credentials:"):
+                env_name = _resolved_source.split(":", 1)[1]
+                msg = f"  {_OK} API key ({env_name}): 来自 credentials 文件"
+            elif _resolved_source and _resolved_source.startswith("auth-profile:"):
+                profile_id = _resolved_source.split(":", 1)[1]
+                msg = f"  {_OK} API key ({_api_key_env}): 来自 auth profile  [dim]{profile_id}[/dim]"
+            else:
+                msg = f"  {_OK} API key ({_api_key_env}): 已解析"
+            results.append(_CheckResult(ok=True, message=msg))
+        else:
+            if _ENV_VAR_NAME_RE.fullmatch(_api_key_env):
+                _provider_hint = _provider_name or "<provider>"
+                issue = f"API key 未配置: export {_api_key_env}=your_key 或 lingzhou auth set-token --provider {_provider_hint}"
+            else:
+                issue = "API key 未配置: lingzhou auth set-token --provider <provider>"
+            results.append(_CheckResult(
+                ok=False,
+                message=f"  {_FAIL} API key ({_api_key_env}): 未设置",
+                issue=issue,
+            ))
+    return results
 
-    # ── 6 & 7. Config schema 兼容性（ThresholdsConfig + MemoryConfig）──────────
-    # 复用 core/loop/startup.py 的 patch 定义与逻辑，与运行时启动保持一致。
+
+def _check_database(cfg: Any) -> _CheckResult:
+    db_path = cfg.db_path
+    if db_path.exists():
+        try:
+            from store.task.ingress import IngressStore
+            tables = IngressStore(db_path).list_tables()
+            return _CheckResult(
+                ok=True,
+                message=f"  {_OK} 数据库: {db_path}  [dim]表: {', '.join(tables) or '(空)'}[/dim]",
+            )
+        except Exception as e:
+            return _CheckResult(
+                ok=False,
+                message=f"  {_FAIL} 数据库异常: {e}",
+                issue=f"DB 异常: {e}",
+            )
+    return _CheckResult(
+        ok=False,
+        message=f"  {_WARN} 数据库未初始化: {db_path}  [dim]运行 lingzhou onboard[/dim]",
+    )
+
+
+def _check_config_schema() -> list[_CheckResult]:
+    results: list[_CheckResult] = []
     try:
         from core.loop.startup import (
             _THRESHOLDS_FIELD_PATCHES,
@@ -208,9 +240,11 @@ def doctor(
         ]:
             _injected = _all_patched.get(_cls_name)
             if _injected:
-                console.print(f"  {warn_mark} {_cls_name} 缺少字段，已自动注入: {_injected}")
+                results.append(_CheckResult(
+                    ok=False,
+                    message=f"  {_WARN} {_cls_name} 缺少字段，已自动注入: {_injected}",
+                ))
             else:
-                # 注入未执行（字段已存在或注入失败），验证实际字段
                 try:
                     import importlib as _il
                     _mod = _il.import_module("core.config")
@@ -218,149 +252,236 @@ def doctor(
                     _inst = _cls()
                     _still_missing = [f for f in _patches if not hasattr(_inst, f)]
                     if _still_missing:
-                        console.print(f"  {fail_mark} {_cls_name} 缺少字段: {_still_missing}  [dim](自动注入失败，请手动 git pull)[/dim]")
-                        issues.append(f"core/config.py 版本过旧，{_cls_name} 缺少: {_still_missing}")
+                        results.append(_CheckResult(
+                            ok=False,
+                            message=f"  {_FAIL} {_cls_name} 缺少字段: {_still_missing}  [dim](自动注入失败，请手动 git pull)[/dim]",
+                            issue=f"core/config.py 版本过旧，{_cls_name} 缺少: {_still_missing}",
+                        ))
                     else:
-                        console.print(f"  {ok_mark} {_cls_name} schema 兼容  [dim]({len(_patches)} 个关键字段均存在)[/dim]")
+                        results.append(_CheckResult(
+                            ok=True,
+                            message=f"  {_OK} {_cls_name} schema 兼容  [dim]({len(_patches)} 个关键字段均存在)[/dim]",
+                        ))
                 except Exception as _e:
-                    console.print(f"  {fail_mark} {_cls_name} schema 检查失败: {_e}")
-                    issues.append(f"{_cls_name} 无法导入: {_e}")
+                    results.append(_CheckResult(
+                        ok=False,
+                        message=f"  {_FAIL} {_cls_name} schema 检查失败: {_e}",
+                        issue=f"{_cls_name} 无法导入: {_e}",
+                    ))
     except Exception as e:
-        console.print(f"  {fail_mark} Config schema 检查失败: {e}")
-        issues.append(f"Config schema 检查异常: {e}")
+        results.append(_CheckResult(
+            ok=False,
+            message=f"  {_FAIL} Config schema 检查失败: {e}",
+            issue=f"Config schema 检查异常: {e}",
+        ))
+    return results
 
-    # ── 8. 目录读写权限 ────────────────────────────────────────────────
-    if cfg is not None:
-        _dirs_to_check = [
-            ("memory_dir", cfg.memory_dir),
-            ("workspace_dir", cfg.workspace_dir),
-            ("db_parent", Path(cfg.db_path).parent),
-        ]
-        for _label, _dpath in _dirs_to_check:
-            _dpath = Path(_dpath).expanduser()
-            if not _dpath.exists():
-                try:
-                    _dpath.mkdir(parents=True, exist_ok=True)
-                    console.print(f"  {warn_mark} {_label}: {_dpath}  [dim]不存在，已创建[/dim]")
-                except Exception as _e:
-                    console.print(f"  {fail_mark} {_label}: {_dpath}  无法创建: {_e}")
-                    issues.append(f"{_label} 无法创建: {_e}")
-            else:
-                import tempfile
-                try:
-                    with tempfile.NamedTemporaryFile(dir=_dpath, delete=True):
-                        pass
-                    console.print(f"  {ok_mark} {_label}: {_dpath}  [dim]可写[/dim]")
-                except Exception:
-                    console.print(f"  {fail_mark} {_label}: {_dpath}  [dim]无写权限[/dim]")
-                    issues.append(f"{_label} 目录无写权限: {_dpath}")
-    else:
-        console.print(f"  {warn_mark} 目录权限: 跳过（配置文件不可用）")
 
-    # ── 9. DB schema 完整性 ────────────────────────────────────────────
+def _check_directories(cfg: Any) -> list[_CheckResult]:
+    import tempfile
+    results: list[_CheckResult] = []
+    _dirs_to_check = [
+        ("memory_dir", cfg.memory_dir),
+        ("workspace_dir", cfg.workspace_dir),
+        ("db_parent", Path(cfg.db_path).parent),
+    ]
+    for _label, _dpath in _dirs_to_check:
+        _dpath = Path(_dpath).expanduser()
+        if not _dpath.exists():
+            try:
+                _dpath.mkdir(parents=True, exist_ok=True)
+                results.append(_CheckResult(
+                    ok=False,
+                    message=f"  {_WARN} {_label}: {_dpath}  [dim]不存在，已创建[/dim]",
+                ))
+            except Exception as _e:
+                results.append(_CheckResult(
+                    ok=False,
+                    message=f"  {_FAIL} {_label}: {_dpath}  无法创建: {_e}",
+                    issue=f"{_label} 无法创建: {_e}",
+                ))
+        else:
+            try:
+                with tempfile.NamedTemporaryFile(dir=_dpath, delete=True):
+                    pass
+                results.append(_CheckResult(
+                    ok=True,
+                    message=f"  {_OK} {_label}: {_dpath}  [dim]可写[/dim]",
+                ))
+            except Exception:
+                results.append(_CheckResult(
+                    ok=False,
+                    message=f"  {_FAIL} {_label}: {_dpath}  [dim]无写权限[/dim]",
+                    issue=f"{_label} 目录无写权限: {_dpath}",
+                ))
+    return results
+
+
+def _check_db_schema(cfg: Any) -> _CheckResult:
     _REQUIRED_TABLES = {
-        "tasks",
-        "failures",
-        "facts",
-        "signals",
-        "chat_messages",
-        "runs",
-        "meta_reflections",
+        "tasks", "failures", "facts", "signals",
+        "chat_messages", "runs", "meta_reflections",
     }
-    if cfg is not None and Path(cfg.db_path).exists():
-        try:
-            from store.task.ingress import IngressStore
-            _tables = set(IngressStore(cfg.db_path).list_tables())
-            _missing_tables = _REQUIRED_TABLES - _tables
-            if _missing_tables:
-                console.print(f"  {warn_mark} DB schema: 缺少表 {sorted(_missing_tables)}  [dim]lingzhou run 首次启动时会自动建表[/dim]")
-            else:
-                console.print(f"  {ok_mark} DB schema: 关键表均存在  [dim]{sorted(_REQUIRED_TABLES)}[/dim]")
-        except Exception as _e:
-            console.print(f"  {fail_mark} DB schema 检查失败: {_e}")
-            issues.append(f"DB schema 异常: {_e}")
-    else:
-        console.print(f"  {warn_mark} DB schema: 跳过（数据库未初始化）")
+    if not Path(cfg.db_path).exists():
+        return _CheckResult(
+            ok=False,
+            message=f"  {_WARN} DB schema: 跳过（数据库未初始化）",
+        )
+    try:
+        from store.task.ingress import IngressStore
+        _tables = set(IngressStore(cfg.db_path).list_tables())
+        _missing = _REQUIRED_TABLES - _tables
+        if _missing:
+            return _CheckResult(
+                ok=False,
+                message=f"  {_WARN} DB schema: 缺少表 {sorted(_missing)}  [dim]lingzhou run 首次启动时会自动建表[/dim]",
+            )
+        return _CheckResult(
+            ok=True,
+            message=f"  {_OK} DB schema: 关键表均存在  [dim]{sorted(_REQUIRED_TABLES)}[/dim]",
+        )
+    except Exception as _e:
+        return _CheckResult(
+            ok=False,
+            message=f"  {_FAIL} DB schema 检查失败: {_e}",
+            issue=f"DB schema 异常: {_e}",
+        )
 
-    # ── 10. 插件状态 ───────────────────────────────────────────────────
+
+def _check_plugins() -> _CheckResult:
     try:
         from core.plugin import PluginManager
-        _plugins_dir = PROJECT_ROOT / "plugins"
-        _pm = PluginManager(Path(_plugins_dir).expanduser())
+        _pm = PluginManager(Path(PROJECT_ROOT / "plugins").expanduser())
         _pm.discover()
         _loaded = _pm.list_plugins()
         if _loaded:
-            console.print(f"  {ok_mark} 插件: {len(_loaded)} 个已发现  [dim]{', '.join(p['name'] for p in _loaded[:4])}{'...' if len(_loaded) > 4 else ''}[/dim]")
-        else:
-            console.print(f"  {ok_mark} 插件: 无已安装插件  [dim](plugins/ 目录为空)[/dim]")
+            names = ', '.join(p['name'] for p in _loaded[:4])
+            suffix = '...' if len(_loaded) > 4 else ''
+            return _CheckResult(
+                ok=True,
+                message=f"  {_OK} 插件: {len(_loaded)} 个已发现  [dim]{names}{suffix}[/dim]",
+            )
+        return _CheckResult(
+            ok=True,
+            message=f"  {_OK} 插件: 无已安装插件  [dim](plugins/ 目录为空)[/dim]",
+        )
     except Exception as _e:
-        console.print(f"  {warn_mark} 插件检查失败: {_e}")
+        return _CheckResult(ok=False, message=f"  {_WARN} 插件检查失败: {_e}")
 
-    # ── 11. 工具注册 ───────────────────────────────────────────────────
+
+def _check_tool_registry() -> _CheckResult:
     try:
         from tools.registry import ToolRegistry
         reg = ToolRegistry()
-        tools_dir = PROJECT_ROOT / "tools"
-        reg.discover(tools_dir)
-        manifests = reg.list_manifests()
-        tool_ids = [m.name for m in manifests]
-        console.print(f"  {ok_mark} 工具注册: {len(tool_ids)} 个  [dim]{', '.join(tool_ids[:6])}{'...' if len(tool_ids) > 6 else ''}[/dim]")
+        reg.discover(PROJECT_ROOT / "tools")
+        tool_ids = [m.name for m in reg.list_manifests()]
+        names = ', '.join(tool_ids[:6])
+        suffix = '...' if len(tool_ids) > 6 else ''
+        return _CheckResult(
+            ok=True,
+            message=f"  {_OK} 工具注册: {len(tool_ids)} 个  [dim]{names}{suffix}[/dim]",
+        )
     except Exception as e:
-        console.print(f"  {fail_mark} 工具注册失败: {e}")
-        issues.append(f"工具注册异常: {e}")
+        return _CheckResult(
+            ok=False,
+            message=f"  {_FAIL} 工具注册失败: {e}",
+            issue=f"工具注册异常: {e}",
+        )
 
-    # ── 12. 模型连通性探针 ─────────────────────────────────────────────
+
+def _probe_model(cfg: Any) -> _CheckResult:
+    try:
+        import asyncio as _asyncio
+        from provider import create_provider
+
+        async def _ping_and_close() -> tuple[bool, int, str | None]:
+            _prov_inst = create_provider(cfg)
+            try:
+                return await _prov_inst.ping()
+            finally:
+                await _prov_inst.close()
+
+        _model_id = cfg.active_model_id
+        _ok, _ms, _err = _asyncio.run(_ping_and_close())
+        if _ok:
+            return _CheckResult(ok=True, message=f"  {_OK} 模型探针: {_model_id} 响应 {_ms}ms")
+        elif _err and any(x in _err for x in ("认证", "401", "403")):
+            return _CheckResult(
+                ok=False,
+                message=f"  {_FAIL} 模型探针: {_model_id} {_err}",
+                issue=f"API key 认证失败: {_err}",
+            )
+        else:
+            return _CheckResult(
+                ok=False,
+                message=f"  {_WARN} 模型探针: {_model_id} {_err or 'unknown'} ({_ms}ms)",
+            )
+    except Exception as _e:
+        return _CheckResult(ok=False, message=f"  {_WARN} 模型探针: 跳过 ({_e})")
+
+
+# ── CLI 命令 ─────────────────────────────────────────────────────────────
+
+def version() -> None:
+    """显示版本信息。"""
+    import sys
+    from core.version import __version__, __codename__, __min_python__
+    console.print(f"[bold]lingzhou[/bold] v{__version__}  代号: {__codename__}")
+    console.print(f"  Python {sys.version.split()[0]}  (要求 ≥ {'.'.join(str(x) for x in __min_python__)})")
+
+
+def doctor(
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
+) -> None:
+    """自检：诊断运行环境、配置、API key 和数据库状态。"""
+    from core.version import __version__
+
+    issues: list[str] = []
+
+    def _emit(*results: _CheckResult) -> None:
+        for r in results:
+            console.print(r.message)
+            if r.issue:
+                issues.append(r.issue)
+
+    console.print(Panel(
+        f"[bold]lingzhou doctor[/bold]  v{__version__}",
+        border_style="cyan",
+    ))
+
+    _emit(_check_python_version())
+    _emit(*_check_dependencies())
+
+    resolved_config = resolve_config_path(config)
+    _emit(_check_config_file(resolved_config))
+
+    cfg = _load_cfg_silently(config) if resolved_config.exists() else None
+
     if cfg is not None:
-        try:
-            import time as _time
-            import httpx as _httpx
-
-            _prov = cfg.active_provider
-            _mode = getattr(_prov, "mode", "openai")
-            _base = _prov.base_url.rstrip("/")
-            _model_id = cfg.active_model_id
-
-            # 解析 API key
-            _ping_key: str | None = None
-            if _mode == "copilot":
-                _tok = resolve_copilot_token(_prov.api_key_env)
-                _ping_key = _tok.token if _tok else None
-            else:
-                _ping_key, _ = _resolve_openai_provider_api_key(_prov)
-
-            if not _ping_key:
-                console.print(f"  {warn_mark} 模型探针: 跳过（无 API key）")
-            else:
-                _headers = {
-                    "Authorization": f"Bearer {_ping_key}",
-                    "Content-Type": "application/json",
-                }
-                _payload = {
-                    "model": _model_id,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 1,
-                }
-                _t0 = _time.monotonic()
-                try:
-                    with _httpx.Client(timeout=8.0) as _hc:
-                        _resp = _hc.post(f"{_base}/chat/completions", headers=_headers, json=_payload)
-                    _ms = int((_time.monotonic() - _t0) * 1000)
-                    if _resp.status_code in (200, 201):
-                        console.print(f"  {ok_mark} 模型探针: {_model_id} 响应 {_ms}ms  [dim](HTTP {_resp.status_code})[/dim]")
-                    elif _resp.status_code in (401, 403):
-                        console.print(f"  {fail_mark} 模型探针: {_model_id} 认证失败 (HTTP {_resp.status_code})")
-                        issues.append(f"API key 认证失败: HTTP {_resp.status_code}")
-                    else:
-                        console.print(f"  {warn_mark} 模型探针: {_model_id} HTTP {_resp.status_code} ({_ms}ms)")
-                except _httpx.TimeoutException:
-                    _ms = int((_time.monotonic() - _t0) * 1000)
-                    console.print(f"  {warn_mark} 模型探针: {_model_id} 超时 ({_ms}ms)  [dim]网络或服务可能不可达[/dim]")
-                except Exception as _pe:
-                    console.print(f"  {warn_mark} 模型探针: 请求失败: {_pe}")
-        except Exception as _e:
-            console.print(f"  {warn_mark} 模型探针: 跳过 ({_e})")
+        api_key_results = _check_api_key(cfg)
+        if api_key_results:
+            _emit(*api_key_results)
+        _emit(_check_database(cfg))
     else:
-        console.print(f"  {warn_mark} 模型探针: 跳过（配置文件不可用）")
+        console.print(f"  {_WARN} API key: 跳过（配置文件不可用）")
+        console.print(f"  {_WARN} 数据库: 跳过（配置文件不可用）")
+
+    _emit(*_check_config_schema())
+
+    if cfg is not None:
+        _emit(*_check_directories(cfg))
+        _emit(_check_db_schema(cfg))
+    else:
+        console.print(f"  {_WARN} 目录权限: 跳过（配置文件不可用）")
+        console.print(f"  {_WARN} DB schema: 跳过（数据库未初始化）")
+
+    _emit(_check_plugins())
+    _emit(_check_tool_registry())
+
+    if cfg is not None:
+        _emit(_probe_model(cfg))
+    else:
+        console.print(f"  {_WARN} 模型探针: 跳过（配置文件不可用）")
 
     # ── 汇总 ────────────────────────────────────────────────────────────
     console.print("")
@@ -371,3 +492,4 @@ def doctor(
         for i, issue in enumerate(issues, 1):
             console.print(f"  {i}. {issue}")
         raise typer.Exit(1)
+

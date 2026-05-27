@@ -31,7 +31,7 @@ from store.task.schema import (
 from store.task.chat import ChatMessageStore, sanitize_chat_content
 from store.task.fact import FactStore, build_fact_upsert
 from store.task.failure import FailureStore
-from store.task.ingress import IngressStore
+from store.task.ingress import IngressStore, IngressWriter
 from store.task.reflection import MetaReflectionStore
 from store.task.run import RunStore
 from store.task.signal import SignalStore
@@ -602,6 +602,7 @@ __all__ = [
     "FactStore",
     "FailureStore",
     "IngressStore",
+    "IngressWriter",
     "MetaReflectionStore",
     "RunStore",
     "SignalStore",

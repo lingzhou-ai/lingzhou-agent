@@ -16,10 +16,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, CAPS_EXEMPT
-from core.probe.types import ProbeConfig, normalize_probe_coverage_tags
+from core.probe.types import ProbeConfig, ProbeDataBack, ProbeKind, normalize_probe_coverage_tags
 
 _log = logging.getLogger("lingzhou.probe")
 
@@ -61,8 +61,8 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="name 不能为空", error="InvalidParam", skipped=True)
 
     kind = str(params.get("kind") or "").strip().lower()
-    if kind not in ("shell", "http", "python"):
-        return ToolResult(summary=f"kind 无效: {kind}，可选 shell / http / python", error="InvalidParam", skipped=True)
+    if kind not in ("shell", "http", "python", "builtin"):
+        return ToolResult(summary=f"kind 无效: {kind}，可选 shell / http / python / builtin", error="InvalidParam", skipped=True)
 
     spec = str(params.get("spec") or "").strip()
     if not spec:
@@ -79,11 +79,11 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     cfg = ProbeConfig(
         name=name,
-        kind=kind,  # type: ignore[arg-type]
+        kind=cast(ProbeKind, kind),
         spec=spec,
         trigger=trigger,
         purpose=str(params.get("purpose") or "").strip(),
-        data_back=data_back_raw,  # type: ignore[arg-type]
+        data_back=cast(ProbeDataBack, data_back_raw),
         coverage_tags=coverage_tags,
         alert_expr=str(params.get("alert_expr") or "") or None,
         alert_message=str(params.get("alert_message") or "") or None,

@@ -6,6 +6,7 @@ from datetime import datetime, UTC
 from typing import Any
 
 from core.judgment import JudgmentOutput
+from core.metabolic import StateProposal
 from store.task import TaskStore, Task
 from memory.working import WorkingMemory, WMItem
 
@@ -30,8 +31,11 @@ def _meta_reflection_set_fact_instruction(key: str, value: Any, *, scope: str = 
     )
 
 
-async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: WorkingMemory) -> list[str]:
+async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: WorkingMemory, metabolic: Any | None = None) -> list[str]:
     injected: list[str] = []
+    if metabolic is None:
+        from core.metabolic import MetabolicEngine
+        metabolic = MetabolicEngine(task_store)
     for reflection in await task_store.list_meta_reflections(limit=10):
         if reflection.decision not in {"apply", "rollback"}:
             continue
@@ -61,9 +65,9 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 applied_change = (
                     f"queued durable failure policy hint threshold={policy['threshold']} ttl={policy['ttl_sec']}"
                 )
-            await task_store.set_fact(
-                "control:meta_reflection_hint:threshold",
-                json.dumps(
+            await metabolic.submit(StateProposal(
+                op="set_fact", key="control:meta_reflection_hint:threshold",
+                value=json.dumps(
                     {
                         "reflection_id": reflection.id,
                         "decision": reflection.decision,
@@ -73,17 +77,17 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                     },
                     ensure_ascii=False,
                 ),
-                scope="system",
-            )
+                scope="system", source="task_runtime/ingest",
+            ))
             followup = _meta_reflection_set_fact_instruction(
                 "control:durable_failure_policy",
                 policy,
                 scope="system",
             )
         elif reflection.target_kind == "task_split" and reflection.task_id:
-            await task_store.set_fact(
-                f"task:{reflection.task_id}:needs_replan",
-                json.dumps(
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"task:{reflection.task_id}:needs_replan",
+                value=json.dumps(
                     {
                         "reflection_id": reflection.id,
                         "decision": reflection.decision,
@@ -92,16 +96,16 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                     },
                     ensure_ascii=False,
                 ),
-                scope="task",
-            )
+                scope="task", source="task_runtime/ingest",
+            ))
             applied_change = "set task replan hint"
             followup = "该建议尚未自动写回任务。若认可，请调用 task.update 修改 next_step。"
         elif reflection.target_kind == "routing":
             preferred_tier = _suggest_tier_from_text(reflection.proposal)
             if reflection.task_id:
-                await task_store.set_fact(
-                    f"task:{reflection.task_id}:routing_guard",
-                    json.dumps(
+                await metabolic.submit(StateProposal(
+                    op="set_fact", key=f"task:{reflection.task_id}:routing_guard",
+                    value=json.dumps(
                         {
                             "reflection_id": reflection.id,
                             "decision": reflection.decision,
@@ -111,11 +115,11 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                         },
                         ensure_ascii=False,
                     ),
-                    scope="task",
-                )
-            await task_store.set_fact(
-                "control:meta_reflection_hint:routing",
-                json.dumps(
+                    scope="task", source="task_runtime/ingest",
+                ))
+            await metabolic.submit(StateProposal(
+                op="set_fact", key="control:meta_reflection_hint:routing",
+                value=json.dumps(
                     {
                         "reflection_id": reflection.id,
                         "decision": reflection.decision,
@@ -127,8 +131,8 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                     },
                     ensure_ascii=False,
                 ),
-                scope="system",
-            )
+                scope="system", source="task_runtime/ingest",
+            ))
             if reflection.task_id:
                 applied_change = "queued task routing guard"
                 followup = "该建议尚未自动改写 task.model_tier。若认可，请调用 task.update 修改 model_tier。"
@@ -139,9 +143,9 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 applied_change = "queued routing control hint"
                 followup = "该建议尚未自动改写全局路由。若认可，请调用 memory.set_fact 更新 pref:routing_overrides。"
         else:
-            await task_store.set_fact(
-                f"control:meta_reflection_hint:{reflection.target_kind}",
-                json.dumps(
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"control:meta_reflection_hint:{reflection.target_kind}",
+                value=json.dumps(
                     {
                         "reflection_id": reflection.id,
                         "decision": reflection.decision,
@@ -150,8 +154,8 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                     },
                     ensure_ascii=False,
                 ),
-                scope="system",
-            )
+                scope="system", source="task_runtime/ingest",
+            ))
             applied_change = f"queued {reflection.target_kind} control hint"
             followup = "该建议尚未自动生效。若认可，请调用 memory.set_fact 写入相应 control/pref 事实。"
         wm.add(WMItem(
@@ -167,9 +171,9 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
             priority=0.76 if reflection.decision == "rollback" else 0.72,
         ))
         if reflection.task_id:
-            await task_store.set_fact(
-                f"task:{reflection.task_id}:meta_reflection",
-                json.dumps(
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"task:{reflection.task_id}:meta_reflection",
+                value=json.dumps(
                     {
                         "reflection_id": reflection.id,
                         "decision": reflection.decision,
@@ -179,9 +183,13 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                     },
                     ensure_ascii=False,
                 ),
-                scope="task",
-            )
-        await task_store.set_fact(fact_key, datetime.now(UTC).isoformat(), scope="system")
+                scope="task", source="task_runtime/ingest",
+            ))
+        await metabolic.submit(StateProposal(
+            op="set_fact", key=fact_key,
+            value=datetime.now(UTC).isoformat(),
+            scope="system", source="task_runtime/ingest",
+        ))
         _log.info("[meta-reflection] surfaced reflection=%s target=%s change=%s", reflection.id, reflection.target_kind, applied_change)
         injected.append(reflection.id)
     return injected
@@ -191,6 +199,7 @@ async def _consume_task_runtime_hints(
     task_store: TaskStore,
     task: Task | None,
     wm: WorkingMemory,
+    metabolic: Any | None = None,
 ) -> Task | None:
     if task is None:
         return None

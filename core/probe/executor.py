@@ -31,6 +31,8 @@ async def execute_probe(cfg: "ProbeConfig", timeout: int = DEFAULT_TIMEOUT_SEC) 
             return await _run_http(cfg.spec, timeout)
         elif cfg.kind == "python":
             return await _run_python(cfg.spec, timeout)
+        elif cfg.kind == "builtin":
+            return await _run_builtin(cfg.spec)
         else:
             return "", f"未知探针类型: {cfg.kind}"
     except asyncio.TimeoutError:
@@ -72,6 +74,29 @@ async def _run_http(url: str, timeout: int) -> tuple[str, str | None]:
             return resp.text.strip()[:4096], None
     except httpx.HTTPError as exc:
         return "", str(exc)
+
+
+async def _run_builtin(spec: str) -> tuple[str, str | None]:
+    """执行内置探针（格式: 'module.path:func_name'，零参数，返回 str）。
+
+    函数在当前进程中运行（非沙盒），可访问进程内全局缓存。
+    通过 asyncio.to_thread 隔离文件 I/O。
+    """
+    def _blocking() -> tuple[str, str | None]:
+        try:
+            module_path, func_name = spec.rsplit(":", 1)
+        except ValueError:
+            return "", f"builtin spec 格式错误（需 'module:func'）: {spec!r}"
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            func = getattr(mod, func_name)
+            result = func()
+            return str(result) if result is not None else "", None
+        except Exception as exc:
+            return "", str(exc)
+
+    return await asyncio.to_thread(_blocking)
 
 
 async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:

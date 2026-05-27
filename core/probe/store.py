@@ -9,9 +9,9 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from .types import ProbeConfig, normalize_probe_coverage_tags
+from .types import ProbeConfig, ProbeDataBack, ProbeKind, normalize_probe_coverage_tags
 
 _log = logging.getLogger("lingzhou.probe")
 
@@ -53,14 +53,17 @@ def _from_dict(d: dict[str, Any]) -> ProbeConfig:
     # 兼容旧数据：chat 模式已废弃，降级为 wm
     if data_back_raw not in ("none", "wm"):
         data_back_raw = "wm"
+    kind_raw = str(d.get("kind") or "shell")
+    if kind_raw not in ("shell", "http", "python", "builtin"):
+        kind_raw = "shell"
     return ProbeConfig(
         id=int(d.get("id") or 0),
         name=str(d["name"]),
-        kind=d.get("kind", "shell"),  # type: ignore[arg-type]
+        kind=cast("ProbeKind", kind_raw),
         spec=str(d.get("spec", "")),
         trigger=str(d.get("trigger", "manual")),
         purpose=str(d.get("purpose") or ""),
-        data_back=data_back_raw,  # type: ignore[arg-type]
+        data_back=cast("ProbeDataBack", data_back_raw),
         coverage_tags=normalize_probe_coverage_tags(d.get("coverage_tags") or []),
         alert_expr=d.get("alert_expr") or None,
         alert_message=d.get("alert_message") or None,

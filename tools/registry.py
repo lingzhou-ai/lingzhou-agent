@@ -10,10 +10,13 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+from importlib.machinery import SourceFileLoader
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
+
+from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -165,14 +168,15 @@ class ToolContext:
     """工具运行时上下文，工具通过 ctx 访问所有记忆层，无需直接依赖具体类。"""
     config: "Config"
     wm: "WorkingMemory"
-    task_store: "TaskStore"
-    episodic: "EpisodicMemory"
-    semantic: "SemanticMemory"
+    task_store: TaskStoreViewProtocol
+    episodic: EpisodicViewProtocol
+    semantic: SemanticViewProtocol
     emotion: "EmotionState"
     probe_manager: Any = None  # ProbeManager，由 CognitionLoop._make_ctx() 注入
     judgment: Any = None       # JudgmentLayer，由 CognitionLoop._make_ctx() 注入
     execution: Any = None      # ExecutionLayer，由 CognitionLoop._make_ctx() 注入
     registry: Any = None       # ToolRegistry，由 CognitionLoop._make_ctx() 注入
+    metabolic: Any = None      # MetabolicEngine，由 CognitionLoop._make_ctx() 注入（公理 A5）
 
     @property
     def dry_run(self) -> bool:
@@ -244,11 +248,11 @@ class ToolRegistry:
             if module_name in sys.modules:
                 continue
             spec = importlib.util.spec_from_file_location(module_name, mod_file)
-            if spec and spec.loader:
+            if spec and isinstance(spec.loader, SourceFileLoader):
                 mod = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = mod
                 try:
-                    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                    spec.loader.exec_module(mod)
                 except Exception:
                     sys.modules.pop(module_name, None)
                     raise
@@ -262,13 +266,13 @@ class ToolRegistry:
         if not mod_file.exists():
             return False
         spec = importlib.util.spec_from_file_location(module_name, mod_file)
-        if not spec or not spec.loader:
+        if not spec or not isinstance(spec.loader, SourceFileLoader):
             return False
         mod = importlib.util.module_from_spec(spec)
         previous = sys.modules.get(module_name)
         sys.modules[module_name] = mod
         try:
-            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            spec.loader.exec_module(mod)
         except Exception:
             if previous is not None:
                 sys.modules[module_name] = previous

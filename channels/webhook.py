@@ -12,14 +12,10 @@ from store.task.ingress import IngressStore
 
 log = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8765
-
-
 @dataclass
 class WebhookConfig:
-    host: str = DEFAULT_HOST
-    port: int = DEFAULT_PORT
+    host: str = "0.0.0.0"   # 正式来源为 GatewayConfig.webhook_host
+    port: int = 8765        # 正式来源为 GatewayConfig.webhook_port
     secret: str = ""
 
 
@@ -99,8 +95,8 @@ class WebhookChannel:
 
 
 def describe_webhook_channel(wc_cfg: dict[str, Any]) -> str:
-    host = wc_cfg.get("host", DEFAULT_HOST)
-    port = int(wc_cfg.get("port", DEFAULT_PORT))
+    host = wc_cfg.get("host", "0.0.0.0")
+    port = int(wc_cfg.get("port", 8765))
     secret = wc_cfg.get("secret")
     return (
         f"Webhook 监听: http://{host}:{port}/message"
@@ -120,8 +116,8 @@ def _enqueue_webhook_task(ingress: IngressStore, message: str, priority: str) ->
 
 def start_webhook_channel(wc_cfg: dict[str, Any], db_path: str | Path) -> WebhookChannel:
     config = WebhookConfig(
-        host=str(wc_cfg.get("host", DEFAULT_HOST)),
-        port=int(wc_cfg.get("port", DEFAULT_PORT)),
+        host=str(wc_cfg.get("host", "0.0.0.0")),
+        port=int(wc_cfg.get("port", 8765)),
         secret=str(wc_cfg.get("secret", "") or ""),
     )
     channel = WebhookChannel(config, db_path)

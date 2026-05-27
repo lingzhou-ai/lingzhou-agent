@@ -31,12 +31,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from core.config import ThresholdsConfig
+from core.metabolic import StateProposal
 
 if TYPE_CHECKING:
     from store.semantic import SemanticMemory
     from store.episodic import EpisodicMemory
     from store.task import TaskStore
     from provider.base import Provider
+    from core.metabolic import MetabolicEngine
 
 _log = logging.getLogger("lingzhou.reference")
 
@@ -719,6 +721,7 @@ class ReferenceResolver:
         chat_id: str = "",
         task_id: str | int | None = None,
         source_hint: str = "",
+        metabolic: "MetabolicEngine | None" = None,
     ) -> None:
         if not speaker.node_id:
             return
@@ -769,19 +772,43 @@ class ReferenceResolver:
 
         if task_store is None:
             return
+        if metabolic is None:
+            from core.metabolic import MetabolicEngine
+            metabolic = MetabolicEngine(task_store)
         if chat_id:
-            await task_store.set_fact(f"chat:{chat_id}:interlocutor_profile_id", speaker.node_id, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"chat:{chat_id}:interlocutor_profile_id",
+                value=speaker.node_id, scope="profile", source="reference/speaker",
+            ))
         if task_id is not None:
-            await task_store.set_fact(f"task:{task_id}:interlocutor_profile_id", speaker.node_id, scope="profile")
-        await task_store.set_fact(f"interlocutor:{speaker.node_id}:display_name", speaker.title, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"task:{task_id}:interlocutor_profile_id",
+                value=speaker.node_id, scope="profile", source="reference/speaker",
+            ))
+        await metabolic.submit(StateProposal(
+            op="set_fact", key=f"interlocutor:{speaker.node_id}:display_name",
+            value=speaker.title, scope="profile", source="reference/speaker",
+        ))
         if chat_id:
-            await task_store.set_fact(f"interlocutor:{speaker.node_id}:handle:{_digest_text(chat_id)}", chat_id, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"interlocutor:{speaker.node_id}:handle:{_digest_text(chat_id)}",
+                value=chat_id, scope="profile", source="reference/speaker",
+            ))
         for pref in cues.get("preferences", [])[:3]:
-            await task_store.set_fact(f"interlocutor:{speaker.node_id}:preference:{_digest_text(pref)}", pref, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"interlocutor:{speaker.node_id}:preference:{_digest_text(pref)}",
+                value=pref, scope="profile", source="reference/speaker",
+            ))
         for explicit in cues.get("explicit", [])[:3]:
-            await task_store.set_fact(f"interlocutor:{speaker.node_id}:explicit:{_digest_text(explicit)}", explicit, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"interlocutor:{speaker.node_id}:explicit:{_digest_text(explicit)}",
+                value=explicit, scope="profile", source="reference/speaker",
+            ))
         for trait in cues.get("source_traits", [])[:5]:
-            await task_store.set_fact(f"interlocutor:{speaker.node_id}:source_trait:{_digest_text(trait)}", trait, scope="profile")
+            await metabolic.submit(StateProposal(
+                op="set_fact", key=f"interlocutor:{speaker.node_id}:source_trait:{_digest_text(trait)}",
+                value=trait, scope="profile", source="reference/speaker",
+            ))
 
     # ── 主入口（异步）───────────────────────────────────────────────────────
 

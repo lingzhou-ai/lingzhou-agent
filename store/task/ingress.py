@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -10,8 +9,8 @@ from .fact import build_fact_upsert
 from .state import build_task_data, build_task_insert
 
 
-class IngressStore:
-    """同步入口仓储：给 channel/webhook 这类线程侧入口统一写入 runtime DB。"""
+class _IngressBase:
+    """sqlite3 连接基础设施（内部共享）。"""
 
     def __init__(self, db_path: str | Path) -> None:
         self._path = Path(db_path).expanduser()
@@ -20,6 +19,18 @@ class IngressStore:
         conn = sqlite3.connect(str(self._path))
         conn.row_factory = sqlite3.Row
         return conn
+
+
+class IngressWriter(_IngressBase):
+    """只写入口：channel/webhook 线程侧写入操作。
+
+    并发说明
+    --------
+    本类（及其子类 IngressStore）使用同步 sqlite3，供线程侧（channel/webhook）
+    写入任务和消息。Runtime 内部的读写通过独立的 aiosqlite 异步路径
+    （store/task/_base.py + TaskStore 等）完成。两条路径共享同一个 SQLite 文件，
+    SQLite WAL 模式保证写者互不阻塞、读写并发安全。不应在同一调用栈混用两条路径。
+    """
 
     def add_chat_message(
         self,
@@ -46,20 +57,6 @@ class IngressStore:
         sql, params = build_fact_upsert(key, value, scope=scope)
         with self._connect() as conn:
             conn.execute(sql, params)
-
-    def get_fact(self, key: str) -> tuple[str, bool]:
-        with self._connect() as conn:
-            row = conn.execute("SELECT value FROM facts WHERE key=?", (key,)).fetchone()
-        if row is None:
-            return "", False
-        return str(row[0] or ""), True
-
-    def list_tables(self) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()
-        return [str(row[0]) for row in rows]
 
     def ingest_user_message(
         self,
@@ -88,40 +85,6 @@ class IngressStore:
                 sql, params = build_fact_upsert(key, value, scope=scope)
                 conn.execute(sql, params)
             return message_id
-
-    def list_pending_assistant_messages(
-        self,
-        *,
-        chat_prefix: str = "",
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        params: tuple[Any, ...]
-        if chat_prefix:
-            sql = (
-                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
-                "WHERE role='assistant' AND session_id LIKE ? "
-                "AND status IN ('pending','processed') "
-                "ORDER BY id ASC LIMIT ?"
-            )
-            params = (f"{chat_prefix}%", limit)
-        else:
-            sql = (
-                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
-                "WHERE role='assistant' AND status IN ('pending','processed') "
-                "ORDER BY id ASC LIMIT ?"
-            )
-            params = (limit,)
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [
-            {
-                "id": int(row["id"]),
-                "content": str(row["content"] or ""),
-                "chat_id": str(row["chat_id"] or ""),
-                "created_at": str(row["created_at"] or ""),
-            }
-            for row in rows
-        ]
 
     def mark_chat_message_delivered(self, message_id: int) -> None:
         with self._connect() as conn:
@@ -159,3 +122,58 @@ class IngressStore:
                 insert_args,
             )
             return int(cur.lastrowid or 0)
+
+
+class IngressStore(IngressWriter):
+    """读写完整入口（向后兼容）：在 IngressWriter 写能力基础上追加读查询。
+
+    channel 侧同时需要读写时使用此类；纯写入侧可改用 IngressWriter。
+    """
+
+    def get_fact(self, key: str) -> tuple[str, bool]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM facts WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return "", False
+        return str(row[0] or ""), True
+
+    def list_tables(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def list_pending_assistant_messages(
+        self,
+        *,
+        chat_prefix: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        params: tuple[Any, ...]
+        if chat_prefix:
+            sql = (
+                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
+                "WHERE role='assistant' AND session_id LIKE ? "
+                "AND status IN ('pending','processed') "
+                "ORDER BY id ASC LIMIT ?"
+            )
+            params = (f"{chat_prefix}%", limit)
+        else:
+            sql = (
+                "SELECT id, content, session_id AS chat_id, created_at FROM chat_messages "
+                "WHERE role='assistant' AND status IN ('pending','processed') "
+                "ORDER BY id ASC LIMIT ?"
+            )
+            params = (limit,)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "content": str(row["content"] or ""),
+                "chat_id": str(row["chat_id"] or ""),
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in rows
+        ]

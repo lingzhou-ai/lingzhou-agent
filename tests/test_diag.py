@@ -37,27 +37,21 @@ def _write_doctor_config(
     )
 
 
-class _DoctorProbeResponse:
-    status_code = 200
+class _FakeProvider:
+    """最小化 Provider stub，ping 立即返回成功。"""
 
+    model_ref = "deepseek/deepseek-chat"
 
-class _DoctorProbeClient:
-    def __init__(self, *args, **kwargs) -> None:
+    async def ping(self, timeout: float = 8.0) -> tuple[bool, int, str | None]:
+        return True, 5, None
+
+    async def close(self) -> None:
         pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
-
-    def post(self, *args, **kwargs):
-        return _DoctorProbeResponse()
 
 
 def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
-    import httpx
     import store.auth as auth_mod
+    import provider as provider_mod
 
     from cli.main import app
     from store.auth import set_token_profile
@@ -77,7 +71,7 @@ def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", auth_path)
-    monkeypatch.setattr(httpx, "Client", _DoctorProbeClient)
+    monkeypatch.setattr(provider_mod, "create_provider", lambda _cfg: _FakeProvider())
 
     runner = CliRunner()
     result = runner.invoke(app, ["dev", "doctor", "--config", str(cfg_path)])
@@ -88,14 +82,14 @@ def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
 
 
 def test_dev_doctor_accepts_literal_api_key(monkeypatch, tmp_path):
-    import httpx
+    import provider as provider_mod
 
     from cli.main import app
 
     cfg_path = tmp_path / "lingzhou.json"
     _write_doctor_config(cfg_path, api_key_env="sk-direct-literal-key-123456")
 
-    monkeypatch.setattr(httpx, "Client", _DoctorProbeClient)
+    monkeypatch.setattr(provider_mod, "create_provider", lambda _cfg: _FakeProvider())
 
     runner = CliRunner()
     result = runner.invoke(app, ["dev", "doctor", "--config", str(cfg_path)])
@@ -106,8 +100,8 @@ def test_dev_doctor_accepts_literal_api_key(monkeypatch, tmp_path):
 
 
 def test_dev_doctor_db_schema_matches_current_runtime_tables(monkeypatch, tmp_path):
-    import httpx
     import sqlite3
+    import provider as provider_mod
 
     from cli.main import app
 
@@ -133,7 +127,7 @@ def test_dev_doctor_db_schema_matches_current_runtime_tables(monkeypatch, tmp_pa
     finally:
         conn.close()
 
-    monkeypatch.setattr(httpx, "Client", _DoctorProbeClient)
+    monkeypatch.setattr(provider_mod, "create_provider", lambda _cfg: _FakeProvider())
 
     runner = CliRunner()
     result = runner.invoke(app, ["dev", "doctor", "--config", str(cfg_path)])

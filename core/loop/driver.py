@@ -36,7 +36,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
     # arousal 调制系数：高唤醒→更短间隔（最多缩 20%），低唤醒→更长间隔（最多扩 20%）
     # 不干预 LLM 主动设置的 _pending_idle_gap，只影响配置兜底值
     _arousal = float(getattr(getattr(loop, "_emotion", None), "arousal", 0.5))
-    _arousal_factor = max(0.8, 1.0 - 0.4 * (_arousal - 0.5))  # [0.8, 1.2]
+    _arousal_factor = max(cfg.loop.arousal_min_factor, 1.0 - cfg.loop.arousal_sensitivity * (_arousal - cfg.loop.arousal_neutral))
 
     dispatcher = getattr(loop, "_tick_dispatcher", None)
     if dispatcher is not None and dispatcher.enabled:

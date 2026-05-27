@@ -10,6 +10,7 @@ import ast
 import asyncio
 import importlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import os
 import sys
@@ -20,7 +21,9 @@ from pathlib import Path
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.perception.ethos import ETHOS_DIMENSIONS
 from core.skill import ensure_workspace_skill_file, _split_frontmatter, workspace_skill_file
+from core.metabolic import StateProposal
 
 _log = logging.getLogger("lingzhou.evolution")
 
@@ -37,6 +40,17 @@ class EvolutionResult:
     target: str = ""       # 工具名或模块名
     reason: str = ""
     new_code: str = ""
+
+
+@dataclass
+class EvolutionProposal:
+    """进化提案（三审协议传递载体）——变更范围、预期效果、回滚路径。"""
+    tool_name: str
+    tool_path: Path
+    new_src: str
+    current_src: str   # 回滚路径（为空则连续性审查拒绝）
+    feedback: str
+    attempt: int = 0
 
 
 def _verification_fact_key(target: str) -> str:
@@ -180,12 +194,12 @@ class EvolutionEngine:
 
     def _reload_module_from_path(self, module_name: str, path: Path) -> None:
         spec = importlib.util.spec_from_file_location(module_name, path)
-        if not spec or not spec.loader:
+        if not spec or not isinstance(spec.loader, SourceFileLoader):
             raise RuntimeError(f"无法加载模块: {module_name}")
         mod = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = mod
         try:
-            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+            spec.loader.exec_module(mod)
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error("Failed to reload module %s from %s: %s", module_name, path, e)
@@ -195,7 +209,7 @@ class EvolutionEngine:
         path.write_text(previous_src, encoding="utf-8")
 
     @staticmethod
-    def _smoke_test_module(new_src: str, module_path: Path, project_root: Path) -> str | None:
+    def _smoke_test_module(new_src: str, module_path: Path, project_root: Path, *, timeout: float = 15.0) -> str | None:
         """在独立子进程中验证 staged 模块。
 
         流程：
@@ -255,7 +269,7 @@ print("SMOKE_OK")
                 [sys.executable, "-c", probe],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=timeout,
                 cwd=str(project_root),
             )
             if result.returncode != 0 or "SMOKE_OK" not in result.stdout:
@@ -287,11 +301,11 @@ print("SMOKE_OK")
             return None
         except subprocess.TimeoutExpired:
             detail = "\n\n".join([
-                "timeout=15s",
+                f"timeout={timeout:.0f}s",
                 f"module={rel_path}",
                 f"real_module={real_module_name}",
                 f"staging_path={staging_path}",
-                "[output]\nsmoke test timed out (>15s)",
+                f"[output]\nsmoke test timed out (>{timeout:.0f}s)",
             ])
             saved_source, saved_log = _persist_smoke_failure_artifacts(module_path, new_src, detail)
             return _format_smoke_failure_message(
@@ -372,11 +386,12 @@ print("SMOKE_OK")
             "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
             "baseline": baseline,
         }
-        await ctx.task_store.set_fact(
-            _verification_fact_key(target),
-            json.dumps(payload, ensure_ascii=False),
-            scope="system",
-        )
+        await ctx.metabolic.submit(StateProposal(
+            op="set_fact",
+            key=_verification_fact_key(target),
+            value=json.dumps(payload, ensure_ascii=False),
+            scope="system", source="evolution/verify_setup",
+        ))
 
     async def _maybe_evaluate_verifications(self, ctx: "ToolContext") -> list[EvolutionResult]:
         facts = await ctx.task_store.list_facts(prefix="evolution:verify:", limit=50)
@@ -539,7 +554,7 @@ print("SMOKE_OK")
         from provider.base import Message
         import json
 
-        _dims = ("truth", "caution", "continuity", "curiosity", "care")
+        _dims = ETHOS_DIMENSIONS
         baseline_seed = self._cfg.soul.ethos.baseline
 
         # 读取当前 ethos_baseline
@@ -549,7 +564,7 @@ print("SMOKE_OK")
             current_raw = {}
         missing_dims = [dim for dim in _dims if dim not in current_raw]
         current_baseline: dict[str, float] = {
-            dim: float(current_raw.get(dim, baseline_seed[dim]))
+            dim: float(current_raw.get(dim, getattr(baseline_seed, dim)))
             for dim in _dims
         }
         if current_json and missing_dims:
@@ -608,7 +623,7 @@ print("SMOKE_OK")
             return EvolutionResult(success=False, target="ethos_baseline", reason=str(exc))
 
         # ── 校验：维度完整性 + 值域 + 变化幅度 ──────────────────────────────────
-        _DIMS = ("truth", "caution", "continuity", "curiosity", "care")
+        _DIMS = ETHOS_DIMENSIONS
         _max_delta = self._cfg.evolution.ethos_max_delta
         validated: dict[str, float] = {}
         clamped_dims: list[str] = []
@@ -631,7 +646,11 @@ print("SMOKE_OK")
                 new_val = old_val  # 保持不降
             validated[dim] = round(max(0.0, min(1.0, new_val)), 4)
 
-        await ctx.task_store.set_fact("soul:ethos_baseline", json.dumps(validated))
+        await ctx.metabolic.submit(StateProposal(
+            op="set_fact", key="soul:ethos_baseline",
+            value=json.dumps(validated),
+            source="evolution/ethos",
+        ))
         if clamped_dims:
             _log.info("[evolution] ethos_baseline 夹幅修正（超过 ±%.2f）: %s", _max_delta, clamped_dims)
         _log.info("[evolution] ethos_baseline 已更新: %s", validated)
@@ -836,6 +855,25 @@ print("SMOKE_OK")
     async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: ToolContext | None = None) -> EvolutionResult:
         """根据反馈重写工具，热替换。"""
         current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+
+        # 三审-审一（免疫器官）：目标模块是否受宪法保护？
+        from core.immune.policy import audit_evolution_target
+        _module_name = f"tools.{tool_path.stem}"
+        _block = audit_evolution_target(_module_name)
+        if _block:
+            _log.warning("[evolution] 三审-审一拒绝 %r: %s", tool_name, _block)
+            result = EvolutionResult(success=False, target=tool_name, reason=_block)
+            await self._record_evolution_history(tool_name, success=False, reason=_block, ctx=ctx)
+            return result
+
+        # 三审-审二（生命连续性层）：确认有可回滚版本
+        if not current_src:
+            _reason = f"生命连续性层拒绝：{tool_name} 无可回滚的当前版本（公理 A9）"
+            _log.warning("[evolution] 三审-审二拒绝: %s", _reason)
+            result = EvolutionResult(success=False, target=tool_name, reason=_reason)
+            await self._record_evolution_history(tool_name, success=False, reason=_reason, ctx=ctx)
+            return result
+
         new_src = ""  # 保证在 SyntaxError 重试分支中始终有定义
         evolution_template = self._cfg.load_prompt("evolution")
 
@@ -865,8 +903,8 @@ print("SMOKE_OK")
                     backup_path.write_text(
                         previous_src, encoding="utf-8"
                     )
-                    # 自动清理旧备份（保留最新 3 个）
-                    _clean_old_backups(tool_path)
+                    # 自动清理旧备份
+                    _clean_old_backups(tool_path, keep=self._cfg.evolution.backup_keep)
 
                 # 写回前：AST 二次确认 + 子进程 smoke test
                 try:
@@ -875,7 +913,7 @@ print("SMOKE_OK")
                     raise ValueError(f'Syntax error in generated tool source: {e}') from e
 
                 _project_root = Path(__file__).parent.parent
-                smoke_err = self._smoke_test_module(new_src, tool_path, _project_root)
+                smoke_err = self._smoke_test_module(new_src, tool_path, _project_root, timeout=self._cfg.evolution.smoke_timeout)
                 if smoke_err:
                     smoke_summary = _smoke_failure_summary(smoke_err)
                     _log.warning(
@@ -931,6 +969,7 @@ print("SMOKE_OK")
                         backup_path=backup_path,
                     )
                 await self._update_dreams(f"习得改进能力：{tool_name} 工具已根据失败反馈重写并热加载。", ctx=ctx)
+                await self._record_evolution_history(tool_name, success=True, reason="", ctx=ctx)
                 return EvolutionResult(success=True, target=tool_name, new_code=new_src)
 
             except SyntaxError as exc:
@@ -946,12 +985,15 @@ print("SMOKE_OK")
                     except Exception:
                         pass
                 reason = traceback.format_exc(limit=3)
+                await self._record_evolution_history(tool_name, success=False, reason=reason[:300], ctx=ctx)
                 return EvolutionResult(success=False, target=tool_name, reason=reason)
 
+        _final_reason = f"超过最大重试次数 {self._cfg.evolution.max_attempts}"
+        await self._record_evolution_history(tool_name, success=False, reason=_final_reason, ctx=ctx)
         return EvolutionResult(
             success=False,
             target=tool_name,
-            reason=f"超过最大重试次数 {self._cfg.evolution.max_attempts}",
+            reason=_final_reason,
         )
 
     async def synthesize_tool(self, description: str, name_hint: str = "") -> EvolutionResult:
@@ -1090,7 +1132,7 @@ print("SMOKE_OK")
                 _log.debug("[competitive_evolve] 候选 %d 生成空代码，跳过", idx)
                 continue
 
-            smoke_err = self._smoke_test_module(code, tool_path, _project_root)
+            smoke_err = self._smoke_test_module(code, tool_path, _project_root, timeout=self._cfg.evolution.smoke_timeout)
             if smoke_err:
                 _log.debug(
                     "[competitive_evolve] 候选 %d smoke 失败: %s",
@@ -1132,7 +1174,7 @@ print("SMOKE_OK")
         backup_path = tool_path.with_suffix(".py.bak")
         if self._cfg.evolution.backup and tool_path.exists():
             backup_path.write_text(current_src, encoding="utf-8")
-            _clean_old_backups(tool_path)
+            _clean_old_backups(tool_path, keep=self._cfg.evolution.backup_keep)
 
         tool_path.write_text(code, encoding="utf-8")
 
@@ -1205,12 +1247,44 @@ print("SMOKE_OK")
                         "aspiration": aspiration[:120],
                         "at": datetime.now(timezone.utc).isoformat(),
                     }, ensure_ascii=False)
-                    await ctx.task_store.set_fact(_fact_key, _fact_val, scope="system")
+                    await ctx.metabolic.submit(StateProposal(
+                        op="set_fact", key=_fact_key, value=_fact_val,
+                        scope="system", source="evolution/history",
+                    ))
                     _log.debug("[evolution] 历史 fact 已写入: %s", _fact_key)
                 except Exception as _fe:
                     _log.debug("[evolution] 历史 fact 写入跳过: %s", _fe)
         except Exception as exc:
             _log.debug("[evolution] DREAMS.md 更新跳过: %s", exc)
+
+    async def _record_evolution_history(
+        self,
+        tool_name: str,
+        *,
+        success: bool,
+        reason: str,
+        ctx: "ToolContext | None",
+    ) -> None:
+        """生命史账本：每次进化结果（成功/失败均记录）写入持久 fact（公理 A9）。"""
+        if ctx is None:
+            return
+        from datetime import timezone as _tz
+        try:
+            _ts = datetime.now(_tz.utc).strftime("%Y%m%d%H%M%S%f")[:17]
+            _key = f"evolution:history:{_ts}"
+            _val = json.dumps({
+                "tool": tool_name,
+                "success": success,
+                "reason": reason[:300] if reason else "",
+                "at": datetime.now(_tz.utc).isoformat(),
+            }, ensure_ascii=False)
+            await ctx.metabolic.submit(StateProposal(
+                op="set_fact", key=_key, value=_val,
+                scope="system", source="evolution/history",
+            ))
+            _log.debug("[evolution] 生命史账本写入: %s success=%s", _key, success)
+        except Exception as _e:
+            _log.debug("[evolution] 生命史账本写入跳过: %s", _e)
 
 
 def _score_candidate(code: str) -> int:

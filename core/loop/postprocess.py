@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from core.judgment import JudgmentOutput
 from store.task import Task, TaskStore
 from tools.registry import ToolResult, tool_has_capability
+from core.metabolic import StateProposal
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -32,6 +34,7 @@ async def _write_success_stall_meta_reflection(
     *,
     streak: int,
     cycle: int,
+    metabolic: Any = None,
 ) -> None:
     tool_name = action.chosen_action_id or "unknown"
     summary = " ".join((result.summary or "").split())
@@ -52,9 +55,13 @@ async def _write_success_stall_meta_reflection(
         "tool_name": tool_name,
         "recent_summary": summary,
     }
-    await task_store.set_fact(
-        f"task:{task.id}:meta_reflection",
-        json.dumps(payload, ensure_ascii=False),
-        scope="task",
-    )
+    if metabolic is None:
+        from core.metabolic import MetabolicEngine
+        metabolic = MetabolicEngine(task_store)
+    await metabolic.submit(StateProposal(
+        op="set_fact",
+        key=f"task:{task.id}:meta_reflection",
+        value=json.dumps(payload, ensure_ascii=False),
+        scope="task", source="loop/postprocess/stall",
+    ))
     _log.info("[stall-reflection] task=%s tool=%s streak=%d", task.id, tool_name, streak)

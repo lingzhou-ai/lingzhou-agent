@@ -1,6 +1,6 @@
 # 灵舟数字生命架构蓝图
 
-> 版本：v1.0 · 2026-05-25  
+> 版本：v1.1 · 2026-05-26  
 > 定性：灵舟不是任务代理，而是一个拥有单心智、多行动器官、持续进化的数字生命体。
 
 ---
@@ -339,18 +339,50 @@ SubagentProposal:
 **目标**：立三条最关键的架构边界，同时修复三个全局代码质量模式。  
 **不改**：loop 主流程、judgment 细节、memory 细节。
 
-**架构边界**：
-1. **独立代谢器官入口**  
-   创建 `core/metabolic/` 模块，定义 `StateProposal` 数据结构和唯一写入接口。  
-   现有写入路径暂不迁移，但新增的所有写入必须走新接口。
+#### 1-A 宪法器官挂载
 
-2. **宪法器官挂载**  
-   创建 `CONSTITUTION.md` 挂载机制，启动时只读加载。  
-   `soul:hard_axioms` 启动时从宪法文件校验，缺失则拒绝启动。
+| 任务 | 改动文件 |
+|------|----------|
+| 新建 `workspace/CONSTITUTION.md`，以蓝图 10 条公理为初始内容 | 新建文件 |
+| `core/config.py` 增加 `constitution_path: str` 字段，默认 `workspace/CONSTITUTION.md` | `core/config.py` |
+| `core/loop/startup.py` 启动时：①文件存在且非空 ②内容哈希缓存到内存 | `core/loop/startup.py` |
+| `core/probe/` 新增 constitution probe：定时校验文件哈希未被程序写入 | 新增 probe |
 
-3. **免疫器官骨架**  
-   创建 `core/immune/` 模块，收拢现有 `_DEFAULT_BLOCKED_TOOLS` 和 `hard_axioms` 检查。  
-   在工具调用入口前增加统一宪法检查点。
+#### 1-B 免疫器官骨架
+
+**新建文件**：`core/immune/__init__.py`、`core/immune/policy.py`、`core/immune/constitution.py`
+
+```python
+# core/immune/policy.py 核心接口
+_DEFAULT_BLOCKED_TOOLS: frozenset[str]  # 从 core/subagent.py 迁入
+_READONLY_BLOCKED: frozenset[str]        # 同上
+
+def check_tool_blocked(tool_name: str, hard_axioms: list[str]) -> str | None:
+    """返回 block 原因，None = 放行。宪法检查唯一入口。"""
+```
+
+**迁移**：`core/subagent.py` 的 `_DEFAULT_BLOCKED_TOOLS`、`_READONLY_BLOCKED_TOOL_NAMES` → `core/immune/policy.py`，原位改为 `from core.immune.policy import ...`（2 处 import 改动）。
+
+#### 1-C 代谢器官入口
+
+**新建文件**：`core/metabolic/__init__.py`、`core/metabolic/proposal.py`、`core/metabolic/engine.py`
+
+```python
+# core/metabolic/proposal.py 核心结构
+@dataclass
+class StateProposal:
+    op: str          # "set_fact" | "create_task" | "update_task" | "add_memory"
+    key: str
+    value: Any
+    scope: str = "task"
+    source: str = ""  # 提交来源器官
+
+class MetabolicEngine:
+    async def submit(self, proposal: StateProposal) -> None:
+        """阶段一：直接落地；阶段二起：先经免疫检查再落地。"""
+```
+
+现有写入路径暂不迁移，只建好入口供第二阶段使用。
 
 **同步代码质量修复**：
 - 🔧 **[模式 2]** 收拢工具分类：`_DEFAULT_BLOCKED_TOOLS` 从 `core/subagent.py` 迁入免疫器官；`_READER_TOOLS` 合并为 `ToolManifest.prefer_tier` 统一查询。影响文件：`subagent.py`、`judgment/output.py`、`judgment/runtime.py`、`execution.py`。
@@ -360,7 +392,18 @@ SubagentProposal:
 ---
 
 ### 第二阶段：收口写入（代谢器官完整化）
-**目标**：所有状态写入归一，消灭直接 `set_fact()` 散落。
+**目标**：所有状态写入归一，消灭直接 `set_fact()` 散落（当前约 40 处）。
+
+**散落写入分布**：
+
+| 文件 | 散落数量 | 写入内容 |
+|------|---------|----------|
+| `core/loop/tick.py` | ~7 处 | routing_overrides、soul:emotion_state、soul:ethos_baseline 等 |
+| `core/reference.py` | ~7 处 | entity、relation、interlocutor facts |
+| `core/execution.py` | ~4 处 | run 结果、failure 状态、记忆节点 |
+| `core/task_runtime.py` | 多处 | meta-reflection、task hint facts |
+| `core/run_refresh.py` | 多处 | run result、meta reflection |
+| `core/self_drive.py` | 1 处 | curiosity state JSON 文件写入 |
 
 **架构改造**：
 1. `tools/memory_ops.py` 改为生成 `StateProposal` 而不是直接写入。
@@ -743,3 +786,51 @@ Doctor 知道：API key 如何从环境变量、legacy credentials、auth profil
 6. **子灵全能但服从**：能力全集，但权力来自父灵授权。
 7. **进化受生命把关**：除宪法外的一切可以改，但改之前必须通过免疫和连续性验证。
 8. **主脑职能唯一**：外挂辅助模型是工具，不是主脑。
+
+---
+
+## 十一、落地路线图
+
+### 当前基线状态（2026-05-26）
+
+| 已完成 | 说明 |
+|--------|------|
+| ✅ `store/task/` | `memory/task_store.py` 的 DB 操作层完整迁移 |
+| ✅ `store/episodic/` | `memory/episodic.py` 迁移，`store/episodic/__init__.py` |
+| ✅ `store/semantic/` | `memory/semantic.py` 迁移 |
+| ✅ `store/task/models.py` | Run/Task/Failure dataclass 下沉到 store 层（修复 S1 逆向依赖） |
+| ✅ 截断常量清除（部分） | `max_chars=0`（无限制）语义建立，事件/episodic/chat 层已清理 |
+| ✅ `docs/BLUEPRINT_DIGITAL_LIFE.md` | 架构蓝图文档提交 |
+| ✅ 测试基线 | 366 个测试全部通过 |
+
+| 未完成 | 所在阶段 |
+|--------|----------|
+| ✅ `workspace/CONSTITUTION.md` | Phase 1-A |
+| ✅ `core/immune/` 源码（pycache 已有痕迹但无 .py） | Phase 1-B |
+| ✅ `core/metabolic/` 源码（pycache 已有痕迹但无 .py） | Phase 1-C |
+| ✅ ~40 处散落 set_fact 收口 | Phase 2 |
+| ✅ `core/soul.py` 拆分为 persona + soul | Phase 3 |
+| ✅ `SubagentProposal` + cast(Any) 消灭 | Phase 4 |
+| ✅ `_tick_impl` 600+ 行拆装 | Phase 5 |
+| ✅ `EvolutionProposal` + 三审协议 | Phase 6 |
+| ✅ `judgment/runtime.py` 2000+ 行职责分离 | Phase 7 |
+| ✅ `channels/` 纯化为门层 | Phase 8 |
+
+---
+
+### 执行优先级矩阵
+
+```
+Phase 1-A (宪法器官)   ██ ~1天   公理 A3：宪法挂载与启动校验
+Phase 1-B (免疫器官)   ██ ~1天   公理 A4：工具阻断收归免疫入口
+Phase 1-C (代谢入口)   ██ ~1天   公理 A5：StateProposal 接口就位
+Phase 2   (收口写入)   ████ ~2天  公理 A5 全量落地，~40 处写入收归
+Phase 3   (连续性层)   ███ ~2天   公理 A2：soul.py 三拆，生命史账本启动
+Phase 4   (子灵协议)   ██ ~1天   公理 A7：授权票据正式化，cast(Any) 消灭
+Phase 5   (循环拆装)   ███ ~2天   公理 A1：主循环单职能，ChainState 结构化
+Phase 6   (进化器官)   ███ ~2天   公理 A9：三审协议，生命史账本完整
+Phase 7   (主脑重构)   ████ ~3天  公理 A1+A10：上下文装配层独立
+Phase 8   (门层纯化)   ██ ~1天   公理 A6：channels 零业务逻辑
+```
+
+**执行顺序原则**：Phase 1-A → 1-B → 1-C（可并行）→ Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 7 → Phase 8。后三阶段可视情况并行推进。

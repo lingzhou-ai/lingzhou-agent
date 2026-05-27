@@ -24,7 +24,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from store.task import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
 
@@ -358,7 +358,7 @@ async def run_tasks_parallel(
     finder = getattr(loop._task_store, "find_similar_open_tasks", None)
     for spec in valid_specs:
         if callable(finder):
-            similar_tasks = await cast(Any, finder)(
+            similar_tasks = await finder(
                 build_task_similarity_query(spec.get("goal")),
                 limit=1,
                 min_score=TASK_DUPLICATE_REUSE_SCORE,

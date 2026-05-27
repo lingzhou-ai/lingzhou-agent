@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from core.config import Config
 from core.evolution import EvolutionEngine
@@ -68,9 +68,9 @@ async def _close_provider_stack(provider: Any, routing_providers: dict[str, Any]
 
 
 def _refresh_semantic_embed_runtime(loop: "CognitionLoop") -> None:
-    semantic = cast(Any, loop._semantic)
-    semantic._embed_fn = loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None
-    semantic._embedding_weight = loop._cfg.memory.embedding_weight
+    semantic = loop.semantic  # CognitionLoop 公开属性
+    setattr(semantic, "_embed_fn", loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None)
+    setattr(semantic, "_embedding_weight", loop._cfg.memory.embedding_weight)
 
 
 async def _refresh_runtime_routing_overrides(loop: "CognitionLoop") -> None:

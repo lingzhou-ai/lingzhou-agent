@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import Config
+from core.metabolic import StateProposal
 from core.self_model import SelfModel
 from provider import create_provider_with_model
 from provider.models_gen import ensure_models_json
@@ -140,6 +141,7 @@ def _startup_health_check(cfg: Config, project_root: Path) -> None:
 
     1. 确保 memory_dir / workspace_dir / db_parent 目录存在
     2. Config schema 兼容性 patch（MemoryConfig + ThresholdsConfig，单次 I/O）
+    3. 宪法器官校验（A3）：加载 CONSTITUTION.md 并缓存哈希
     """
     # 1. 目录自动创建
     for label, raw_path in [
@@ -161,6 +163,17 @@ def _startup_health_check(cfg: Config, project_root: Path) -> None:
     })
     for class_name, fields in patched.items():
         _log.warning("[startup] %s schema 版本过旧，已自动注入缺失字段: %s", class_name, fields)
+
+    # 3. 宪法器官校验（公理 A3 / A4）
+    from core.immune.constitution import load_constitution
+    constitution_text = load_constitution(cfg.constitution_path)
+    if not constitution_text:
+        _log.warning(
+            "[immune] 宪法文件缺失或为空，免疫器官将在无宪法状态下运行。"
+            "请完成 workspace 初始化（`lingzhou init`）以生成 CONSTITUTION.md。"
+            "路径: %s",
+            cfg.constitution_path,
+        )
 
 
 def _build_routing_providers(cfg: Config) -> dict[str, Any]:
@@ -293,7 +306,10 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
             pass
     else:
         _born_ts = _time.time()
-        await loop._task_store.set_fact("soul:born_at", str(_born_ts), scope="system")
+        await loop._metabolic.submit(StateProposal(
+            op="set_fact", key="soul:born_at", value=str(_born_ts),
+            scope="system", source="loop/startup/born_at",
+        ))
         loop._judgment.self_model.born_at = _born_ts
         _log.info("[startup] soul:born_at 首次写入: %.0f", _born_ts)
 

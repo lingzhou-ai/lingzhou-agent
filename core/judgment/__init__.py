@@ -7,11 +7,15 @@ from .output import (
     tool_tier,
 )
 from .runtime import JudgmentLayer, CognitionFrame
+from .executor import JudgmentExecutor
+from .assembler import JudgmentContextAssembler
 from .context import apply_context_budget
 
 __all__ = [
     "CognitionFrame",
     "JudgmentLayer",
+    "JudgmentExecutor",
+    "JudgmentContextAssembler",
     "JudgmentOutput",
     "ModelHealth",
     "ModelSelection",

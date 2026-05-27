@@ -148,16 +148,16 @@ def test_model_health_circuit_breaker_blocks_and_clears():
     layer = JudgmentLayer(_Dummy(), ToolRegistry(), cfg)
 
     # 初始状态：模型可用
-    assert layer._is_model_available("bailian/qwen3.6-plus") is True
+    assert layer._executor._is_model_available("bailian/qwen3.6-plus") is True
 
     # 标记 429 错误 → 进入冷却
-    layer._mark_model_failure("bailian/qwen3.6-plus", "Client error '429 Too Many Requests'")
-    assert layer._is_model_available("bailian/qwen3.6-plus") is False
+    layer._executor._mark_model_failure("bailian/qwen3.6-plus", "Client error '429 Too Many Requests'")
+    assert layer._executor._is_model_available("bailian/qwen3.6-plus") is False
 
     # recover → 可用
-    health = layer._get_health("bailian/qwen3.6-plus")
+    health = layer._executor._get_health("bailian/qwen3.6-plus")
     health.cooldown_until = time.time() - 1  # 手动过期
-    assert layer._is_model_available("bailian/qwen3.6-plus") is True
+    assert layer._executor._is_model_available("bailian/qwen3.6-plus") is True
 
 
 def test_select_tier_logic():
@@ -187,23 +187,23 @@ def test_select_tier_logic():
     layer = JudgmentLayer(_Dummy(), ToolRegistry(), cfg)
 
     # initial phase → reasoner
-    assert layer._select_tier(phase="initial", user_message="hello") == "reasoner"
+    assert layer._executor._select_tier(phase="initial", user_message="hello") == "reasoner"
 
     # repair phase → repair
-    assert layer._select_tier(phase="repair", user_message="") == "repair"
+    assert layer._executor._select_tier(phase="repair", user_message="") == "repair"
 
     # prefer_tier 优先
-    assert layer._select_tier(phase="initial", user_message="", prefer_tier="reader") == "reader"
+    assert layer._executor._select_tier(phase="initial", user_message="", prefer_tier="reader") == "reader"
 
     # continue 默认不再因 reader 工具而隐式降到 reader
-    tier = layer._select_tier(
+    tier = layer._executor._select_tier(
         phase="continue", user_message="",
         current_action="file.read", tool_history=[],
     )
     assert tier == "reasoner"
 
     # continue + reasoner tool → reasoner
-    tier2 = layer._select_tier(
+    tier2 = layer._executor._select_tier(
         phase="continue", user_message="",
         current_action="shell.run", tool_history=[],
     )
@@ -356,11 +356,11 @@ def test_skill_registry_logs_selected_skills(caplog):
 
 
 def test_judgment_skills_for_log_formats_selected_names():
-    from core.judgment import JudgmentLayer
+    from core.judgment.assembler import JudgmentContextAssembler
     from core.skill import Skill
 
-    assert JudgmentLayer._skills_for_log([]) == "none"
-    assert JudgmentLayer._skills_for_log([
+    assert JudgmentContextAssembler._skills_for_log([]) == "none"
+    assert JudgmentContextAssembler._skills_for_log([
         Skill(name="runtime-bootstrap", description="", guidance=""),
         Skill(name="task-continuity", description="", guidance=""),
     ]) == "runtime-bootstrap,task-continuity"
@@ -597,7 +597,7 @@ def test_model_routing_section_uses_effective_thinking():
     })
 
     layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="initial",
         user_message="继续",
         current_action="",
@@ -656,7 +656,7 @@ def test_select_provider_matches_routing_provider_by_public_model_ref():
     layer = JudgmentLayer(main_provider, ToolRegistry(), cfg)
     layer.set_routing_providers({"reader": reader_provider})
 
-    provider, selection = layer._select_provider(
+    provider, selection = layer._executor._select_provider(
         phase="initial",
         user_message="先读取配置",
         prefer_tier="reader",
@@ -951,11 +951,11 @@ async def test_reference_failure_is_exposed_in_model_routing_section():
     })
 
     layer = JudgmentLayer(_FailingProvider(), ToolRegistry(), cfg)
-    await layer._ref_resolver._llm_reason(
+    await layer._assembler._ref_resolver._llm_reason(
         "继续上次的话题",
         {"n1": {"kind": "task", "title": "旧任务", "body": "body"}},
     )
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="initial",
         user_message="继续上次的话题",
         current_action="",
@@ -995,7 +995,7 @@ def test_model_routing_section_no_longer_exposes_implicit_reader_default():
     })
 
     layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="file.read",
@@ -1039,7 +1039,7 @@ def test_model_routing_section_uses_configured_idle_bounds_and_defaults():
     })
 
     layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="继续分析",
         current_action="file.read",
@@ -1077,7 +1077,7 @@ def test_model_routing_section_counts_exploration_budget_by_capability():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="memory.search",
@@ -1124,7 +1124,7 @@ def test_model_routing_section_uses_configured_explore_converge_threshold():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="memory.search",
@@ -1166,7 +1166,7 @@ def test_model_routing_section_repeat_counts_only_trailing_streak():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="file.read",
@@ -1181,7 +1181,7 @@ def test_model_routing_section_repeat_counts_only_trailing_streak():
     assert payload["budget_state"]["repeat_action_count"] == 1
     assert payload["budget_state"]["repeat_read_count"] == 1
 
-    trailing = json.loads(layer._build_model_routing_section(
+    trailing = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="file.read",
@@ -1222,7 +1222,7 @@ def test_model_routing_section_repeat_action_count_uses_action_key_signature():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="memory.search",
@@ -1235,7 +1235,7 @@ def test_model_routing_section_repeat_action_count_uses_action_key_signature():
 
     assert payload["budget_state"]["repeat_action_count"] == 1
 
-    trailing = json.loads(layer._build_model_routing_section(
+    trailing = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="memory.search",
@@ -1277,7 +1277,7 @@ def test_model_routing_section_exposes_continue_phase_task_plan_policy():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="task.plan",
@@ -1319,7 +1319,7 @@ def test_model_routing_section_marks_task_plan_blocked_when_limit_reached():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="task.plan",
@@ -1362,7 +1362,7 @@ def test_model_routing_section_exposes_tool_history_compaction_policy():
     })
 
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    payload = json.loads(layer._build_model_routing_section(
+    payload = json.loads(layer._assembler._build_model_routing_section(
         phase="continue",
         user_message="",
         current_action="memory.search",
@@ -1480,7 +1480,7 @@ async def test_decide_continue_uses_passed_thinking_override():
 
     provider = _DummyProvider()
     layer = JudgmentLayer(provider, ToolRegistry(), cfg)
-    layer._last_context_text = "cached context"
+    layer._assembler._last_context_text = "cached context"
 
     out = await layer.decide_continue(
         [{"tool": "file.list", "params": {"path": "/tmp"}, "result": "ok"}],
@@ -1526,8 +1526,8 @@ async def test_decide_continue_updates_last_call_meta_after_fallback():
     })
 
     layer = JudgmentLayer(_FailingProvider(), _tool_registry(), cfg)
-    layer._last_context_text = "cached context"
-    layer._last_call_meta["skills"] = "cached-skill"
+    layer._assembler._last_context_text = "cached context"
+    layer._executor._last_call_meta["skills"] = "cached-skill"
     fallback_provider = _FallbackProvider()
 
     def _fake_select_provider(**kwargs):
@@ -1539,14 +1539,14 @@ async def test_decide_continue_updates_last_call_meta_after_fallback():
                 model_ref="bailian/qwen-reasoner-fallback",
                 thinking="high",
             )
-        return layer._provider, ModelSelection(
+        return layer._executor._provider, ModelSelection(
             phase="continue",
             tier="reader",
             model_ref="bailian/qwen-reader-primary",
             thinking="off",
         )
 
-    layer._select_provider = _fake_select_provider  # type: ignore[method-assign]
+    layer._executor._select_provider = _fake_select_provider  # type: ignore[method-assign]
 
     out = await layer.decide_continue(
         [{"tool": "file.list", "params": {"path": "/tmp"}, "result": "ok"}],
@@ -1979,7 +1979,7 @@ async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
 
     provider = _DummyProvider()
     layer = JudgmentLayer(provider, _tool_registry(), cfg)
-    layer._last_context_text = "cached context"
+    layer._assembler._last_context_text = "cached context"
 
     out = await layer.decide_continue(
         [{"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"}],
@@ -2027,7 +2027,7 @@ async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime
 
     provider = _DummyProvider()
     layer = JudgmentLayer(provider, _tool_registry(), cfg)
-    layer._last_context_text = "cached context"
+    layer._assembler._last_context_text = "cached context"
 
     out = await layer.decide_continue(
         [{"tool": "task.list", "params": {"status": "all"}, "result": "命中 3 条任务"}],
@@ -2073,7 +2073,7 @@ async def test_decide_continue_includes_structured_tool_history_window():
 
     provider = _DummyProvider()
     layer = JudgmentLayer(provider, _tool_registry(), cfg)
-    layer._last_context_text = "cached context"
+    layer._assembler._last_context_text = "cached context"
 
     out = await layer.decide_continue(
         [{
@@ -2136,7 +2136,7 @@ async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
         goal="逐一排查 chat 回复链路",
     )
     layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
-    layer._last_context_text = "cached context"
+    layer._assembler._last_context_text = "cached context"
 
     out = await layer.decide_continue(
         [{"tool": "memory.search", "params": {"query": "chat 回复"}, "result": "命中 2 条相关记忆"}],
@@ -2643,7 +2643,7 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -2705,7 +2705,7 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
             layer._probe_manager = None
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -2787,7 +2787,7 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            await layer._assemble_context(
+            await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -2881,7 +2881,7 @@ async def _assemble_context_consumes_parallel_fetch_exceptions():
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
 
             with pytest.raises(RuntimeError, match="recent runs boom"):
-                await layer._assemble_context(
+                await layer._assembler._assemble_context(
                     CognitionFrame(
                         percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                         wm=WorkingMemory(capacity=20),
@@ -2946,7 +2946,7 @@ async def _assemble_context_registry_override_limits_tools_section():
             filtered = _FilteredRegistry(registry, {"task.list"}, set(_DEFAULT_BLOCKED_TOOLS))
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), registry, cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -3013,6 +3013,9 @@ async def _assemble_context_includes_recent_daily_continuity():
         "thinking": "low",
         "temperature": 0.7,
         "timeout": 60.0,
+        # 提高语义阈值，避免 remember_speaker 写入的 interlocutor 节点
+        # (score≈0.57) 误触发 long_term_primary，掩盖 daily_gap_fill 路径
+        "memory": {"daily_recall_semantic_score_threshold": 0.9},
     })
 
     with tempfile.TemporaryDirectory() as d:
@@ -3024,7 +3027,7 @@ async def _assemble_context_includes_recent_daily_continuity():
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -3100,7 +3103,7 @@ async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -3180,7 +3183,7 @@ async def _assemble_context_includes_chat_scoped_memory_layers():
 
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),
@@ -3270,7 +3273,7 @@ async def _assemble_context_includes_current_interlocutor_sections():
             await store.set_fact("chat:wechat:chat-1:interlocutor_profile_id", "interlocutor-bat", scope="profile")
 
             layer = JudgmentLayer(_SpeakerProvider(), ToolRegistry(), cfg)
-            text = await layer._assemble_context(
+            text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
                     wm=WorkingMemory(capacity=20),

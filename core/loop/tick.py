@@ -22,6 +22,7 @@ from core.perception import (
     derive_ethos_state,
 )
 from core.run_refresh import refresh_running_runs
+from core.metabolic import StateProposal
 from core.task_runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
@@ -71,6 +72,15 @@ from .progress import (
 
 console = Console()
 _log = logging.getLogger("lingzhou.loop")
+
+
+def _loop_metabolic(loop: Any) -> Any:
+    """获取 loop 的 metabolic 实例；若不存在则创建临时实例（兼容测试 mock）。"""
+    m = getattr(loop, "_metabolic", None)
+    if m is None:
+        from core.metabolic import MetabolicEngine
+        m = MetabolicEngine(loop._task_store)
+    return m
 
 _LLM_WAKE_WM_KINDS = {
     "heartbeat",
@@ -220,8 +230,8 @@ def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
 async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: str | None) -> Any:
     """在进入 perception/judgment 前，完成活跃任务与用户消息 inbox 的准备。"""
     active_task = await loop._task_store.get_active()
-    await _ingest_actionable_meta_reflections(loop._task_store, loop._wm)
-    active_task = await _consume_task_runtime_hints(loop._task_store, active_task, loop._wm)
+    await _ingest_actionable_meta_reflections(loop._task_store, loop._wm, metabolic=_loop_metabolic(loop))
+    active_task = await _consume_task_runtime_hints(loop._task_store, active_task, loop._wm, metabolic=_loop_metabolic(loop))
     active_task = await _maybe_steer_active_task_from_user_message(
         loop._task_store,
         active_task,
@@ -845,7 +855,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     loop._maybe_inject_budget_warning()
 
-    running_updates = await refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic)
+    running_updates = await refresh_running_runs(loop._task_store, episodic=loop._episodic, semantic=loop._semantic, metabolic=_loop_metabolic(loop))
     active_task = await _prepare_active_task_for_tick(loop, user_message, chat_id)
     await _inject_tick_side_signals(loop, running_updates)
     prep = await _prepare_tick_judgment_state(loop, active_task)
@@ -1041,7 +1051,10 @@ async def _apply_tick_model_strategy(
     if isinstance(raw_overrides, dict):
         if not raw_overrides:
             loop._pending_routing_overrides = None
-            await loop._task_store.set_fact("pref:routing_overrides", "", scope="system")
+            await _loop_metabolic(loop).submit(StateProposal(
+                op="set_fact", key="pref:routing_overrides", value="",
+                scope="system", source="loop/tick/routing",
+            ))
         else:
             valid = {
                 key: value for key, value in raw_overrides.items()
@@ -1049,10 +1062,16 @@ async def _apply_tick_model_strategy(
             }
             if valid:
                 loop._pending_routing_overrides = valid
-                await loop._task_store.set_fact("pref:routing_overrides", json.dumps(valid), scope="system")
+                await _loop_metabolic(loop).submit(StateProposal(
+                    op="set_fact", key="pref:routing_overrides", value=json.dumps(valid),
+                    scope="system", source="loop/tick/routing",
+                ))
             else:
                 loop._pending_routing_overrides = None
-                await loop._task_store.set_fact("pref:routing_overrides", "", scope="system")
+                await _loop_metabolic(loop).submit(StateProposal(
+                    op="set_fact", key="pref:routing_overrides", value="",
+                    scope="system", source="loop/tick/routing",
+                ))
 
     loop._pending_thinking_override = _next_thinking_override(strategy)
     return active_task
@@ -1065,20 +1084,28 @@ async def _persist_tick_post_state(
     cycle: int,
     ethos_state: Any = None,
 ) -> None:
-    await loop._task_store.set_fact("soul:emotion_state", json.dumps({
-        "valence": round(loop._emotion.valence, 4),
-        "arousal": round(loop._emotion.arousal, 4),
-        "dominance": round(loop._emotion.dominance, 4),
-    }))
+    await _loop_metabolic(loop).submit(StateProposal(
+        op="set_fact", key="soul:emotion_state",
+        value=json.dumps({
+            "valence": round(loop._emotion.valence, 4),
+            "arousal": round(loop._emotion.arousal, 4),
+            "dominance": round(loop._emotion.dominance, 4),
+        }),
+        source="loop/tick/post_state",
+    ))
 
     if ethos_state is not None:
-        await loop._task_store.set_fact("soul:ethos_baseline", json.dumps({
-            "truth": ethos_state.values.truth,
-            "caution": ethos_state.values.caution,
-            "continuity": ethos_state.values.continuity,
-            "curiosity": ethos_state.values.curiosity,
-            "care": ethos_state.values.care,
-        }))
+        await _loop_metabolic(loop).submit(StateProposal(
+            op="set_fact", key="soul:ethos_baseline",
+            value=json.dumps({
+                "truth": ethos_state.values.truth,
+                "caution": ethos_state.values.caution,
+                "continuity": ethos_state.values.continuity,
+                "curiosity": ethos_state.values.curiosity,
+                "care": ethos_state.values.care,
+            }),
+            source="loop/tick/post_state",
+        ))
 
     _write_survival_snapshot(loop, action, active_task, cycle)
 
@@ -1208,11 +1235,155 @@ async def _maybe_record_success_stall_reflection_impl(
         result,
         streak=loop._success_stall_streak,
         cycle=cycle,
+        metabolic=getattr(loop, "_metabolic", None),
     )
 
 
-async def _post_tick_memory_impl(
+async def _crystallize_task_done_to_semantic(loop: Any, active_task: Any) -> None:
+    """任务首次完成/失败时，将 episodic 叙事结晶到 semantic 长期记忆（幂等）。"""
+    if not (active_task and active_task.status not in ("done", "failed")):
+        return
+    refreshed = await loop._task_store.get_task_by_id(active_task.id)
+    if not (refreshed and refreshed.status in ("done", "failed")):
+        return
+    marker = f"crystallized:{refreshed.id}"
+    _, already = await loop._task_store.get_fact(marker)
+    if already:
+        return
+    narrative = loop._episodic.load_for_context(str(refreshed.id))
+    if narrative.strip():
+        loop._semantic.upsert(MemoryNode(
+            id=f"task_summary_{refreshed.id}",
+            kind="task_summary",
+            title=f"[{refreshed.status}] task#{refreshed.id} {refreshed.title[:60]}",
+            body=narrative,
+            activation=0.9 if refreshed.status == "done" else 0.7,
+            valence=loop._emotion.valence,
+            tags=["task_summary", refreshed.status, f"task_{refreshed.id}"],
+        ))
+    await _loop_metabolic(loop).submit(StateProposal(
+        op="set_fact", key=marker, value="1",
+        scope="system", source="loop/tick/run_done",
+    ))
+
+
+async def _crystallize_reflection_to_semantic(
     loop: Any,
+    action: JudgmentOutput,
+    active_task: Any,
+    resolved_chat_id: str | None,
+    clean_reflection: str,
+) -> None:
+    """将本轮反思写入 semantic insight 节点，调节情感，并按阈值结晶任务事件摘要。"""
+    if not clean_reflection:
+        return
+    node_id = f"insight_{hashlib.md5(clean_reflection.encode()).hexdigest()[:10]}"
+    loop._semantic.upsert(MemoryNode(
+        id=node_id,
+        kind="learned_insight",
+        title=_format_insight_title(clean_reflection, node_id),
+        body=clean_reflection,
+        activation=0.9,
+        valence=loop._emotion.valence,
+        tags=["reflection", active_task.title[:_SEM_TAG_TASK_CHARS] if active_task else "free"],
+    ))
+    ref_valence = _infer_valence_from_text(clean_reflection, loop._emotion.valence, loop._cfg.emotion)
+    delta = ref_valence - loop._emotion.valence
+    if abs(delta) > 0.01:
+        loop._emotion.valence = round(
+            loop._emotion.valence + min(max(delta, -0.05), 0.05),
+            4,
+        )
+    if not active_task:
+        return
+    turns_key = f"task:{active_task.id}:reflection_turns"
+    turns_val, _ = await loop._task_store.get_fact(turns_key)
+    turns = int(turns_val or "0") + 1
+    await _loop_metabolic(loop).submit(StateProposal(
+        op="set_fact", key=turns_key, value=str(turns),
+        scope="system", source="loop/tick/reflection_turns",
+    ))
+    crystallize_every = loop._cfg.memory.chat_crystallize_every
+    if turns % crystallize_every == 0:
+        ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+        evt_id = f"event-task{active_task.id}-{ts_label}"
+        existing = loop._semantic.get(evt_id)
+        if existing:
+            existing.body = existing.body + f"\n- {clean_reflection}"
+            existing.activation = min(1.0, existing.activation + 0.05)
+            loop._semantic.upsert(existing)
+        else:
+            tags = ["event", ts_label]
+            if resolved_chat_id:
+                tags.append(f"chat:{resolved_chat_id}")
+            loop._semantic.upsert(MemoryNode(
+                id=evt_id,
+                kind="event",
+                title=f"[{ts_label}] task#{active_task.id} {active_task.title[:_EVENT_TITLE_CHARS]}",
+                body=clean_reflection,
+                activation=0.85,
+                valence=loop._emotion.valence,
+                tags=tags,
+            ))
+
+
+async def _crystallize_chat_to_semantic(
+    loop: Any,
+    action: JudgmentOutput,
+    active_task: Any,
+    user_message: str,
+    resolved_chat_id: str | None,
+    clean_reflection: str,
+) -> None:
+    """按轮次阈值，将本轮对话摘要结晶到 semantic chat_summary 节点。"""
+    if not (resolved_chat_id and (user_message or action.reply_to_user or clean_reflection)):
+        return
+    turns_key = f"chat:{resolved_chat_id}:turns"
+    turns_val, _ = await loop._task_store.get_fact(turns_key)
+    turns = int(turns_val or "0") + 1
+    await _loop_metabolic(loop).submit(StateProposal(
+        op="set_fact", key=turns_key, value=str(turns),
+        scope="system", source="loop/tick/chat_turns",
+    ))
+    crystallize_every = loop._cfg.memory.chat_crystallize_every
+    if turns % crystallize_every != 0:
+        return
+    ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
+    summary_id = _chat_summary_node_id(resolved_chat_id, ts_label)
+    summary_entry = _build_chat_summary_entry(
+        user_message,
+        _strip_memory_context(action.reply_to_user or ""),
+        clean_reflection,
+    )
+    if not summary_entry and active_task is not None:
+        summary_entry = f"任务: {active_task.title}"
+    existing = loop._semantic.get(summary_id)
+    if existing is not None:
+        if summary_entry:
+            existing.body = existing.body + f"\n- {summary_entry}"
+        existing.activation = min(1.0, existing.activation + 0.05)
+        existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
+        loop._semantic.upsert(existing)
+    else:
+        digest = hashlib.md5(resolved_chat_id.encode("utf-8")).hexdigest()[:6]
+        title_seed = active_task.title if active_task is not None else resolved_chat_id
+        tags = ["chat_summary", ts_label, f"chat:{resolved_chat_id}"]
+        if active_task is not None:
+            tags.append(f"task:{active_task.id}")
+        loop._semantic.upsert(MemoryNode(
+            id=summary_id,
+            kind="chat_summary",
+            title=f"[{ts_label}] chat[{digest}] {title_seed[:_EVENT_TITLE_CHARS]}",
+            body=summary_entry or "对话结晶",
+            activation=0.85,
+            valence=loop._emotion.valence,
+            importance=0.5,
+            tags=tags,
+            source="chat_summary",
+        ))
+
+
+async def _post_tick_memory_impl(    loop: Any,
     action: JudgmentOutput,
     result: Any,
     active_task: Any,
@@ -1220,25 +1391,7 @@ async def _post_tick_memory_impl(
     user_message: str,
     chat_id: str | None = None,
 ) -> None:
-    if active_task and active_task.status not in ("done", "failed"):
-        refreshed = await loop._task_store.get_task_by_id(active_task.id)
-        if refreshed and refreshed.status in ("done", "failed"):
-            marker = f"crystallized:{refreshed.id}"
-            _, already = await loop._task_store.get_fact(marker)
-            if not already:
-                narrative = loop._episodic.load_for_context(str(refreshed.id))
-                if narrative.strip():
-                    node_id = f"task_summary_{refreshed.id}"
-                    loop._semantic.upsert(MemoryNode(
-                        id=node_id,
-                        kind="task_summary",
-                        title=f"[{refreshed.status}] task#{refreshed.id} {refreshed.title[:60]}",
-                        body=narrative,
-                        activation=0.9 if refreshed.status == "done" else 0.7,
-                        valence=loop._emotion.valence,
-                        tags=["task_summary", refreshed.status, f"task_{refreshed.id}"],
-                    ))
-                await loop._task_store.set_fact(marker, "1", scope="system")
+    await _crystallize_task_done_to_semantic(loop, active_task)
 
     if result.summary and (not result.skipped or result.error):
         tool_id = action.chosen_action_id or ""
@@ -1272,94 +1425,8 @@ async def _post_tick_memory_impl(
             interlocutor_id=resolved_interlocutor_id or None,
         )
 
-    if clean_reflection:
-        node_id = f"insight_{hashlib.md5(clean_reflection.encode()).hexdigest()[:10]}"
-        loop._semantic.upsert(MemoryNode(
-            id=node_id,
-            kind="learned_insight",
-            title=_format_insight_title(clean_reflection, node_id),
-            body=clean_reflection,
-            activation=0.9,
-            valence=loop._emotion.valence,
-            tags=["reflection", active_task.title[:_SEM_TAG_TASK_CHARS] if active_task else "free"],
-        ))
-        ref_valence = _infer_valence_from_text(clean_reflection, loop._emotion.valence, loop._cfg.emotion)
-        delta = ref_valence - loop._emotion.valence
-        if abs(delta) > 0.01:
-            loop._emotion.valence = round(
-                loop._emotion.valence + min(max(delta, -0.05), 0.05),
-                4,
-            )
-
-        if active_task:
-            turns_key = f"task:{active_task.id}:reflection_turns"
-            turns_val, _ = await loop._task_store.get_fact(turns_key)
-            turns = int(turns_val or "0") + 1
-            await loop._task_store.set_fact(turns_key, str(turns), scope="system")
-            crystallize_every = loop._cfg.memory.chat_crystallize_every
-            if turns % crystallize_every == 0:
-                ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
-                evt_id = f"event-task{active_task.id}-{ts_label}"
-                existing = loop._semantic.get(evt_id)
-                if existing:
-                    existing.body = existing.body + f"\n- {clean_reflection}"
-                    existing.activation = min(1.0, existing.activation + 0.05)
-                    loop._semantic.upsert(existing)
-                else:
-                    tags = ["event", ts_label]
-                    if resolved_chat_id:
-                        tags.append(f"chat:{resolved_chat_id}")
-                    loop._semantic.upsert(MemoryNode(
-                        id=evt_id,
-                        kind="event",
-                        title=f"[{ts_label}] task#{active_task.id} {active_task.title[:_EVENT_TITLE_CHARS]}",
-                        body=clean_reflection,
-                        activation=0.85,
-                        valence=loop._emotion.valence,
-                        tags=tags,
-                    ))
-
-    if resolved_chat_id and (user_message or action.reply_to_user or clean_reflection):
-        turns_key = f"chat:{resolved_chat_id}:turns"
-        turns_val, _ = await loop._task_store.get_fact(turns_key)
-        turns = int(turns_val or "0") + 1
-        await loop._task_store.set_fact(turns_key, str(turns), scope="system")
-
-        crystallize_every = loop._cfg.memory.chat_crystallize_every
-        if turns % crystallize_every == 0:
-            ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
-            summary_id = _chat_summary_node_id(resolved_chat_id, ts_label)
-            summary_entry = _build_chat_summary_entry(
-                user_message,
-                _strip_memory_context(action.reply_to_user or ""),
-                clean_reflection,
-            )
-            if not summary_entry and active_task is not None:
-                summary_entry = f"任务: {active_task.title}"
-            existing = loop._semantic.get(summary_id)
-            if existing is not None:
-                if summary_entry:
-                    existing.body = existing.body + f"\n- {summary_entry}"
-                existing.activation = min(1.0, existing.activation + 0.05)
-                existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
-                loop._semantic.upsert(existing)
-            else:
-                digest = hashlib.md5(resolved_chat_id.encode("utf-8")).hexdigest()[:6]
-                title_seed = active_task.title if active_task is not None else resolved_chat_id
-                tags = ["chat_summary", ts_label, f"chat:{resolved_chat_id}"]
-                if active_task is not None:
-                    tags.append(f"task:{active_task.id}")
-                loop._semantic.upsert(MemoryNode(
-                    id=summary_id,
-                    kind="chat_summary",
-                    title=f"[{ts_label}] chat[{digest}] {title_seed[:_EVENT_TITLE_CHARS]}",
-                    body=summary_entry or "对话结晶",
-                    activation=0.85,
-                    valence=loop._emotion.valence,
-                    importance=0.5,
-                    tags=tags,
-                    source="chat_summary",
-                ))
+    await _crystallize_reflection_to_semantic(loop, action, active_task, resolved_chat_id, clean_reflection)
+    await _crystallize_chat_to_semantic(loop, action, active_task, user_message, resolved_chat_id, clean_reflection)
 
     if user_message:
         loop._episodic.record(

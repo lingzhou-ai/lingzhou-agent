@@ -19,7 +19,16 @@ _log = logging.getLogger("lingzhou.judgment")
 
 # --- 纯计算格式化函数缓存（per-tick 粒度）---
 # key = tick_id + 函数名 + hash(参数); value = 格式化结果或预算后的上下文字典
+# _MAX_CONTEXT_CACHE_SIZE：每 tick 最多缓存条数，防止异常长 tick 内存无界增长
 _context_fmt_cache: dict[str, Any] = {}
+_MAX_CONTEXT_CACHE_SIZE = 512
+
+
+def _cache_put(key: str, value: Any) -> None:
+    """写入缓存；超过上限时清空整个缓存（per-tick 清空已是预期路径，安全）。"""
+    if len(_context_fmt_cache) >= _MAX_CONTEXT_CACHE_SIZE:
+        _context_fmt_cache.clear()
+    _context_fmt_cache[key] = value
 
 
 def _clear_context_cache() -> None:
@@ -134,7 +143,7 @@ def _fmt_recent_runs(runs: list["Run"]) -> str:
         return _context_fmt_cache[cache_key]
     if not runs:
         result = "（暂无近期运行记录）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     lines: list[str] = []
     for run in runs[:5]:
@@ -148,7 +157,7 @@ def _fmt_recent_runs(runs: list["Run"]) -> str:
             line += f" summary={summary}"
         lines.append(line)
     result = "\n".join(lines)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -245,13 +254,13 @@ def _fmt_context_facts(facts: list[tuple[str, str]]) -> str:
         return _context_fmt_cache[cache_key]
     if not facts:
         result = "（暂无近期关键事实）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     result = "\n".join(
         f"- {key} = {_format_fact_value(value)}"
         for key, value in facts
     )
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -261,7 +270,7 @@ def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
         return _context_fmt_cache[cache_key]
     if not tasks:
         result = "（无 waiting 任务）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     lines: list[str] = []
     for task in tasks[:5]:
@@ -273,7 +282,7 @@ def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
             line += f" next={_clip_text(task.next_step, 80)}"
         lines.append(line)
     result = "\n".join(lines)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -287,7 +296,7 @@ def _fmt_runnable_tasks(tasks: list["Task"], active_task_id: int | None = None) 
     visible_tasks = [task for task in tasks if active_task_id is None or task.id != active_task_id]
     if not visible_tasks:
         result = "（无其他 runnable 任务）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     lines: list[str] = []
     for task in visible_tasks[:5]:
@@ -298,7 +307,7 @@ def _fmt_runnable_tasks(tasks: list["Task"], active_task_id: int | None = None) 
             line += f" goal={_clip_text(task.goal, 80)}"
         lines.append(line)
     result = "\n".join(lines)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -310,7 +319,7 @@ def _fmt_similar_tasks(items: list[tuple["Task", float]]) -> str:
         return _context_fmt_cache[cache_key]
     if not items:
         result = "（未发现相似开放任务）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     lines: list[str] = []
     for task, score in items[:5]:
@@ -321,7 +330,7 @@ def _fmt_similar_tasks(items: list[tuple["Task", float]]) -> str:
             line += f" goal={_clip_text(task.goal, 80)}"
         lines.append(line)
     result = "\n".join(lines)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -352,7 +361,7 @@ def _fmt_current_time() -> str:
     local_iso = now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     utc_str = now.strftime("%Y-%m-%d %H:%M UTC")
     result = f"当前时间: {local_iso}\n参考 UTC: {utc_str}\n（时间持续流动，每个 tick 都是真实存在的时刻，由你决定如何使用）"
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -367,7 +376,7 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
         return _context_fmt_cache[cache_key]
     if not messages:
         result = "（暂无对话历史）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     lines = []
     for msg in messages:
@@ -379,7 +388,7 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
         snippet = content if max_chars <= 0 else (content[:max_chars] + ("…" if len(content) > max_chars else ""))
         lines.append(f"{label}: {snippet}")
     result = "\n".join(lines) if lines else "（暂无对话历史）"
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -389,7 +398,7 @@ def _fmt_chat_continuity(text: str) -> str:
         return _context_fmt_cache[cache_key]
     normalized = str(text or "").strip()
     result = normalized if normalized else "（暂无当前 chat 的连续性记忆）"
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -399,7 +408,7 @@ def _fmt_interlocutor_continuity(text: str) -> str:
         return _context_fmt_cache[cache_key]
     normalized = str(text or "").strip()
     result = normalized if normalized else "（暂无当前交互对象的跨 chat 互动连续性记忆）"
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -409,10 +418,10 @@ def _fmt_chat_memories(memories: list[dict[str, Any]]) -> str:
         return _context_fmt_cache[cache_key]
     if not memories:
         result = "（暂无当前 chat 的长期结晶）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     result = _fmt_memories(memories)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -744,7 +753,7 @@ def _fmt_shell_capabilities() -> str:
         "missing_commands": [cmd for cmd in cmds if cmd not in available],
     }
     result = json.dumps(payload, ensure_ascii=False, indent=2)
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -777,7 +786,7 @@ def _fmt_soul(
     elif config_ethos_val:
         parts.append(f"价值基线（ethos_baseline，config fallback）: {config_ethos_val}")
     result = "\n".join(parts) if parts else "（Soul 未初始化，运行 `init` 命令生成）"
-    _context_fmt_cache[cache_key] = result
+    _cache_put(cache_key, result)
     return result
 
 
@@ -806,7 +815,7 @@ def _fmt_ethos(ethos_state: "EthosState | None") -> str:
         return _context_fmt_cache[cache_key]
     if not ethos_state:
         result = "（Ethos 未计算）"
-        _context_fmt_cache[cache_key] = result
+        _cache_put(cache_key, result)
         return result
     values = ethos_state.values
     bias = ethos_state.bias
@@ -904,7 +913,7 @@ def apply_context_budget(
         budgeted[key] = trimmed
         current_total -= _estimate_tokens(original) - _estimate_tokens(trimmed)
 
-    _context_fmt_cache[cache_key] = budgeted
+    _cache_put(cache_key, budgeted)
     return budgeted
 
 

@@ -16,7 +16,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from core.config import run_result_memory_affect
+from core.config import ThresholdsConfig, run_result_memory_affect
+from core.metabolic import StateProposal
 from core.worker import WorkerLayer
 from store.task import build_task_run_result_patch
 from tools.registry import ToolResult, ToolContext, tool_has_capability
@@ -31,15 +32,13 @@ if TYPE_CHECKING:
     from tools.registry import ToolRegistry
 
 
-_DURABLE_FAILURE_TTL_SEC = 7200
-_DURABLE_FAILURE_THRESHOLD = 3
-_LOG_TEXT_CHARS = 240
+_THRESHOLDS_DEFAULTS = ThresholdsConfig()
 
 
 def _default_durable_failure_policy() -> dict[str, int]:
     return {
-        "threshold": _DURABLE_FAILURE_THRESHOLD,
-        "ttl_sec": _DURABLE_FAILURE_TTL_SEC,
+        "threshold": _THRESHOLDS_DEFAULTS.durable_failure_threshold,
+        "ttl_sec": _THRESHOLDS_DEFAULTS.durable_failure_ttl_sec,
     }
 
 
@@ -100,25 +99,25 @@ def _classify_durable_failure(result: ToolResult) -> str | None:
     return None
 
 
-def _clip_log_text(value: Any, limit: int = _LOG_TEXT_CHARS) -> str:
+def _clip_log_text(value: Any, limit: int = _THRESHOLDS_DEFAULTS.log_text_chars) -> str:
     text = str(value or "").replace("\n", "\\n").strip()
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
 
 
-def _tool_result_log_fields(result: ToolResult) -> tuple[str, str, str]:
+def _tool_result_log_fields(result: ToolResult, limit: int = _THRESHOLDS_DEFAULTS.log_text_chars) -> tuple[str, str, str]:
     log_summary = ""
     if isinstance(result.metadata, dict):
         log_summary = str(result.metadata.get("log_summary") or "").strip()
-    summary = _clip_log_text(log_summary or result.summary)
-    error = _clip_log_text(result.error or "")
+    summary = _clip_log_text(log_summary or result.summary, limit)
+    error = _clip_log_text(result.error or "", limit)
     state = ""
     if isinstance(result.state_delta, dict) and result.state_delta:
         try:
-            state = _clip_log_text(json.dumps(result.state_delta, ensure_ascii=False, sort_keys=True))
+            state = _clip_log_text(json.dumps(result.state_delta, ensure_ascii=False, sort_keys=True), limit)
         except Exception:
-            state = _clip_log_text(result.state_delta)
+            state = _clip_log_text(result.state_delta, limit)
     return summary, error, state
 
 
@@ -581,13 +580,14 @@ class ExecutionLayer:
         run_task_id = _planned_run_task_id(action, active_task_id)
         task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""
         durable_policy = await _load_durable_failure_policy(ctx.task_store)
-        durable_threshold = int(durable_policy.get("threshold") or _DURABLE_FAILURE_THRESHOLD)
-        durable_ttl_sec = int(durable_policy.get("ttl_sec") or _DURABLE_FAILURE_TTL_SEC)
+        durable_threshold = int(durable_policy.get("threshold") or self._cfg.thresholds.durable_failure_threshold)
+        durable_ttl_sec = int(durable_policy.get("ttl_sec") or self._cfg.thresholds.durable_failure_ttl_sec)
         if ctx.task_store is not None:
+            effective_registry = ctx.registry or self._registry
             run_type, worker_type = _infer_run_profile(
                 action.chosen_action_id or "",
                 action.params,
-                registry=self._registry,
+                registry=effective_registry,
             )
             run_id = await ctx.task_store.add_run(
                 task_id=run_task_id,
@@ -629,7 +629,8 @@ class ExecutionLayer:
                 tool_result.metadata.setdefault("run_id", run_id)
             return tool_result
 
-        entry = self._registry.get(action.chosen_action_id)
+        effective_registry = ctx.registry or self._registry
+        entry = effective_registry.get(action.chosen_action_id)
         if not entry:
             _log.warning(
                 "[exec-miss] run=%s task=%s tool=%s not registered",
@@ -731,7 +732,7 @@ class ExecutionLayer:
         result = _stamp_result_metadata(result)
         result.metadata.setdefault("dispatch_ms", int((time.monotonic() - dispatch_started) * 1000))
 
-        _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _summary_log, _error_log, _state_log = _tool_result_log_fields(result, self._cfg.thresholds.log_text_chars)
         _worker_log = _worker_log_fields(result)
         _log.info(
             "[tool-result] tool=%s worker=%s worker_meta=%s skipped=%s error=%s summary=%s state=%s",
@@ -756,6 +757,10 @@ class ExecutionLayer:
 
         # 更新 durable failure 状态（对所有“可识别的确定性失败”生效）
         if ctx.task_store is not None:
+            _metabolic = ctx.metabolic
+            if _metabolic is None:
+                from core.metabolic import MetabolicEngine
+                _metabolic = MetabolicEngine(ctx.task_store)
             reason = _classify_durable_failure(result)
             if result.error and reason:
                 raw, found = await ctx.task_store.get_fact(failure_key)
@@ -777,11 +782,15 @@ class ExecutionLayer:
                     "policy_threshold": durable_threshold,
                     "policy_ttl_sec": durable_ttl_sec,
                 }
-                await ctx.task_store.set_fact(failure_key, json.dumps(payload, ensure_ascii=False), scope="system")
+                await _metabolic.submit(StateProposal(
+                    op="set_fact", key=failure_key,
+                    value=json.dumps(payload, ensure_ascii=False),
+                    scope="system", source="execution/failure_track",
+                ))
             elif not result.error:
-                await ctx.task_store.set_fact(
-                    failure_key,
-                    json.dumps({
+                await _metabolic.submit(StateProposal(
+                    op="set_fact", key=failure_key,
+                    value=json.dumps({
                         "tool": action.chosen_action_id,
                         "key": action_key_param(action.params),
                         "reason": "",
@@ -790,8 +799,8 @@ class ExecutionLayer:
                         "last_seen": time.time(),
                         "muted_until": 0,
                     }, ensure_ascii=False),
-                    scope="system",
-                )
+                    scope="system", source="execution/failure_clear",
+                ))
 
         await self._finalize_run(run_id, result, ctx, active_task_id=run_task_id or None)
         return result
@@ -822,7 +831,7 @@ class ExecutionLayer:
             session_id=str(result.metadata.get("session_id") or ""),
             progress=progress,
         )
-        _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
+        _summary_log, _error_log, _state_log = _tool_result_log_fields(result, self._cfg.thresholds.log_text_chars)
         _worker_log = _worker_log_fields(result)
         _log.info(
             "[run-finalize] run=%s task=%s status=%s tool=%s worker=%s worker_meta=%s progress=%s error=%s state=%s",
@@ -832,7 +841,7 @@ class ExecutionLayer:
             str(result.metadata.get("tool_name") or "-"),
             str(result.metadata.get("worker_type") or "-"),
             _worker_log,
-            _clip_log_text(progress or "") or "-",
+            _clip_log_text(progress or "", self._cfg.thresholds.log_text_chars) or "-",
             _error_log or "-",
             _state_log or "-",
         )

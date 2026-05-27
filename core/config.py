@@ -208,6 +208,9 @@ class LoopConfig(BaseModel):
         return self
 
     wake_poll_interval: float = Field(default=200, ge=1, description="事件轮询粒度（毫秒），越小响应越快但 CPU 开销越高")
+    arousal_min_factor: float = Field(default=0.8, ge=0.0, le=1.0, description="arousal 调制因子下限（高唤醒时等待间隔最多缩短至此比例）")
+    arousal_sensitivity: float = Field(default=0.4, ge=0.0, le=2.0, description="arousal 调制灵敏度（偏离中性每单位对应的因子变化量）")
+    arousal_neutral: float = Field(default=0.5, ge=0.0, le=1.0, description="arousal 中性基准值（对应调制因子 = 1.0）")
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
     chat_reply_timeout: int = Field(
         default=300, ge=30,
@@ -588,6 +591,23 @@ class EvolutionConfig(BaseModel):
             ">=2 = 启用竞争进化，并行生成 N 个候选，smoke test 筛选后按静态评分晋升最优。"
         ),
     )
+    backup_keep: int = Field(default=3, ge=1, description="进化备份文件保留数量，超出后自动清理最旧的")
+    smoke_timeout: float = Field(default=15.0, gt=0, description="smoke test 子进程超时时间（秒）")
+
+
+class EthosBaseline(BaseModel):
+    """Ethos 人格基线（五维价值权重），强类型；缺维度直接报错，不静默降级（公理 A2 Mode 6）。"""
+    truth:      float = Field(default=0.85, ge=0.0, le=1.0, description="真实")
+    caution:    float = Field(default=0.70, ge=0.0, le=1.0, description="谨慎")
+    continuity: float = Field(default=0.65, ge=0.0, le=1.0, description="连续")
+    curiosity:  float = Field(default=0.60, ge=0.0, le=1.0, description="好奇")
+    care:       float = Field(default=0.55, ge=0.0, le=1.0, description="关怀")
+
+    def as_dict(self) -> dict[str, float]:
+        """返回五维 dict，供需要 JSON 序列化的调用方使用。"""
+        return {"truth": self.truth, "caution": self.caution, "continuity": self.continuity,
+                "curiosity": self.curiosity, "care": self.care}
+
 
 class EthosConfig(BaseModel):
     """每 tick derive_ethos_state 使用的全部 Ethos 调整参数。
@@ -595,11 +615,8 @@ class EthosConfig(BaseModel):
     以 soul.ethos 嵌套在 SoulConfig 中。旧格式的扁平 ethos_* 字段由
     SoulConfig._migrate_flat_ethos 自动升级，无需手动修改 lingzhou.json。
     """
-    baseline: dict[str, float] = Field(
-        default_factory=lambda: {
-            "truth": 0.85, "caution": 0.70, "continuity": 0.65,
-            "curiosity": 0.60, "care": 0.55,
-        },
+    baseline: EthosBaseline = Field(
+        default_factory=EthosBaseline,
         description="初始价值图式（灵魂基因），可随经历缓慢演化",
     )
     ema_alpha: float = Field(default=0.9, ge=0.0, le=1.0, description="Ethos EMA 平滑系数")
@@ -614,11 +631,11 @@ class EthosConfig(BaseModel):
     failure_adjust_count: int = Field(default=2, ge=1)
     failure_truth_delta: float = Field(default=0.11, ge=0.0, le=1.0)
     failure_caution_delta: float = Field(default=0.10, ge=0.0, le=1.0)
-    failure_curiosity_delta: float = Field(default=0.08, ge=0.0, le=1.0)
+    failure_curiosity_delta: float = Field(default=0.08, ge=-1.0, le=1.0)
     high_error_adjust_streak: int = Field(default=4, ge=1)
     high_error_truth_delta: float = Field(default=0.10, ge=0.0, le=1.0)
     high_error_caution_delta: float = Field(default=0.12, ge=0.0, le=1.0)
-    high_error_care_delta: float = Field(default=0.07, ge=0.0, le=1.0)
+    high_error_care_delta: float = Field(default=0.07, ge=-1.0, le=1.0)
     active_task_continuity_delta: float = Field(default=0.08, ge=0.0, le=1.0)
     next_step_continuity_delta: float = Field(default=0.06, ge=0.0, le=1.0)
     next_step_care_delta: float = Field(default=0.05, ge=0.0, le=1.0)
@@ -845,6 +862,40 @@ class ThresholdsConfig(BaseModel):
         default=2, ge=0,
         description="durable fact 前缀在单次 context snapshot 中最多保留多少条",
     )
+    # BehaviorTracker 行为探测参数
+    behavior_seq_window_warn_at: int = Field(
+        default=3, ge=1,
+        description="同一文件被分窗口连续读取超过此次数时触发 seq_window 警告",
+    )
+    behavior_seq_window_gap_ratio: float = Field(
+        default=0.25, ge=0.0, le=1.0,
+        description="顺序窗口连续性判断：相邻读的起点与上次终点差距在窗口大小此比例以内视为连续",
+    )
+    behavior_belief_stale_threshold: int = Field(
+        default=4, ge=1,
+        description="rationale 指纹连续相同超过此次数时触发信念固化警告",
+    )
+    behavior_belief_window: int = Field(
+        default=8, ge=1,
+        description="rationale 指纹滑动窗口大小（deque maxlen）",
+    )
+    behavior_belief_hash_prefix: int = Field(
+        default=120, ge=10,
+        description="信念指纹仅取 rationale 前 N 字符，减少措辞微小差异的影响",
+    )
+    # ExecutionLayer 持久化失败降噪参数
+    durable_failure_threshold: int = Field(
+        default=3, ge=1,
+        description="同一确定性动作失败次数达到此值时触发持久降噪（durable failure sensing）",
+    )
+    durable_failure_ttl_sec: int = Field(
+        default=7200, ge=60,
+        description="持久化失败记录的存活时间（秒），超过后自动解除降噪",
+    )
+    log_text_chars: int = Field(
+        default=240, ge=0,
+        description="执行层日志文本截断长度（字符）；0 = 不截断",
+    )
     fact_context_recent_scan_multiplier: int = Field(
         default=3, ge=1,
         description="recent facts 扫描窗口倍数，用于先扩大扫描再截断输出",
@@ -881,6 +932,14 @@ class GatewayConfig(BaseModel):
     default_channel: Literal["local", "wechat", "webhook"] = Field(
         default="local",
         description="gateway start/run 在未显式传 --channel 时使用的默认消息渠道",
+    )
+    webhook_host: str = Field(
+        default="0.0.0.0",
+        description="webhook channel 监听地址；生产环境可改为 127.0.0.1 限制仅本地访问",
+    )
+    webhook_port: int = Field(
+        default=8765, ge=1, le=65535,
+        description="webhook channel 监听端口",
     )
 
 
@@ -1070,6 +1129,11 @@ class Config(BaseModel):
     @property
     def workspace_dir(self) -> Path:
         return self.resolve(self.loop.workspace_dir)
+
+    @property
+    def constitution_path(self) -> Path:
+        """宪法文件路径（公理 A3：只读挂载，不可被程序改写）。"""
+        return self.workspace_dir / "CONSTITUTION.md"
 
     def judgment_input_token_budget(self) -> int:
         """按模型上下文窗口反推 judgment 输入预算。

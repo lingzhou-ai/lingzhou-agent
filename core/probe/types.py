@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 
 # 探针执行方式
-ProbeKind = Literal["shell", "http", "python"]
+ProbeKind = Literal["shell", "http", "python", "builtin"]
 
 # 数据回传路径（LLM 自行决定如何处置 probe.run 的返回值；interval 探针后台推送到 wm）
 ProbeDataBack = Literal["none", "wm"]

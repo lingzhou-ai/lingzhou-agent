@@ -227,7 +227,10 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     preview = _truncate_text(combined, max(preview_limit, 0))
     preview_text = preview or "(无输出)"
-    summary_body = _compact_summary_text(preview_text, 120)
+    # summary 进入 WM / tool_history，LLM 需要看到完整输出结构（含换行）；
+    # 不再额外压缩成 120 字，以 preview_limit 为上限（默认 500，0=不限制）。
+    # 日志行使用 metadata["log_summary"]，由执行层另行截断，不依赖 summary 长度。
+    summary_body = _truncate_text(preview_text, max(preview_limit, 0)).strip()
     status = "timeout" if timed_out else f"exit={returncode}"
     summary = f"{status} cwd={workdir}"
     if use_sandbox:

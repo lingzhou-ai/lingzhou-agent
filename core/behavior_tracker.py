@@ -45,6 +45,11 @@ class BehaviorTracker:
         streak_threshold: int = 3,
         wm_priorities: dict[str, float] | None = None,
         registry: Any = None,
+        seq_window_warn_at: int = _SEQ_WINDOW_WARN_AT,
+        seq_window_gap_ratio: float = _SEQ_WINDOW_GAP_RATIO,
+        belief_stale_threshold: int = _BELIEF_STALE_THRESHOLD,
+        belief_window: int = _BELIEF_WINDOW,
+        belief_hash_prefix: int = _BELIEF_HASH_PREFIX,
     ) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
@@ -59,6 +64,11 @@ class BehaviorTracker:
         self._list_streak_fp: tuple[str, str] | None = None
         self._list_streak_count: int = 0
         self._loop_probe_version: int = 0
+        # 顺序窗口和信念指纹探测参数（来自 ThresholdsConfig）
+        self._seq_window_warn_at: int = max(1, seq_window_warn_at)
+        self._seq_window_gap_ratio: float = seq_window_gap_ratio
+        self._belief_stale_threshold: int = max(1, belief_stale_threshold)
+        self._belief_hash_prefix: int = max(10, belief_hash_prefix)
         # 同文件顺序窗口探测追踪
         self._seq_window_path: str | None = None
         self._seq_window_count: int = 0
@@ -67,7 +77,7 @@ class BehaviorTracker:
         self._wait_streak: int = 0          # 连续 wait/pause 决策次数
         self._wait_streak_warned: set[int] = set()   # 已触发通知的阈值
         # rationale 指纹追踪（信念固化检测）
-        self._rationale_hashes: deque[str] = deque(maxlen=_BELIEF_WINDOW)
+        self._rationale_hashes: deque[str] = deque(maxlen=max(1, belief_window))
         self._belief_stale_hash: str | None = None
         self._belief_stale_count: int = 0
         self._belief_stale_warned: bool = False
@@ -276,7 +286,7 @@ class BehaviorTracker:
                 gap = abs(start - self._seq_window_last_end)
                 gap_ratio = gap / max(window_size, 1)
                 # 窗口连续（与上次 end 接近）→ 递增计数
-                if gap_ratio <= _SEQ_WINDOW_GAP_RATIO or gap <= max(window_size, 100):
+                if gap_ratio <= self._seq_window_gap_ratio or gap <= max(window_size, 100):
                     self._seq_window_count += 1
                 else:
                     # 跳到了不连续区域 → 重置
@@ -289,7 +299,7 @@ class BehaviorTracker:
             self._seq_window_last_end = end
 
             if (
-                self._seq_window_count >= _SEQ_WINDOW_WARN_AT
+                self._seq_window_count >= self._seq_window_warn_at
                 and not self._seq_window_warned
             ):
                 self._seq_window_warned = True
@@ -374,8 +384,8 @@ class BehaviorTracker:
     def on_judgment(self, rationale: str) -> list["WMItem"]:
         """追踪 LLM rationale 指纹，检测"信念固化"（连续相同结论）。
 
-        将 rationale 前 _BELIEF_HASH_PREFIX 字符规范化后计算 MD5 指纹。
-        若同一指纹连续出现 >= _BELIEF_STALE_THRESHOLD 次，注入 WM 警告。
+        将 rationale 前 belief_hash_prefix 字符规范化后计算 MD5 指纹。
+        若同一指纹连续出现 >= belief_stale_threshold 次，注入 WM 警告。
         警告仅触发一次（_belief_stale_warned），直到结论真正改变后重置。
 
         返回需注入 WM 的条目列表（通常为空或 1 项）。
@@ -387,7 +397,7 @@ class BehaviorTracker:
             return items
 
         # 规范化：去首尾空白、折叠空白、取前 N 字符、转小写
-        normalized = " ".join(rationale.strip().split())[:_BELIEF_HASH_PREFIX].lower()
+        normalized = " ".join(rationale.strip().split())[:self._belief_hash_prefix].lower()
         fp = hashlib.md5(normalized.encode("utf-8", errors="replace")).hexdigest()[:12]
 
         self._rationale_hashes.append(fp)
@@ -400,7 +410,7 @@ class BehaviorTracker:
             self._belief_stale_warned = False
 
         if (
-            self._belief_stale_count >= _BELIEF_STALE_THRESHOLD
+            self._belief_stale_count >= self._belief_stale_threshold
             and not self._belief_stale_warned
         ):
             self._belief_stale_warned = True

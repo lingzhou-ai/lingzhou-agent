@@ -37,6 +37,13 @@ class Provider(Protocol):
         """释放连接资源。"""
         ...
 
+    async def ping(self, timeout: float = 8.0) -> tuple[bool, int, str | None]:
+        """连通性探测：根据模型选择正确端点，发送最小请求。
+
+        返回 (success, latency_ms, error_or_None)。
+        """
+        ...
+
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):

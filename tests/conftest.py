@@ -45,6 +45,9 @@ def _test_config(
             thresholds=SimpleNamespace(
                 shell_timeout=shell_timeout,
                 shell_max_output_chars=shell_max_output_chars,
+                durable_failure_threshold=3,
+                durable_failure_ttl_sec=7200,
+                log_text_chars=240,
             ),
         ),
     )

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import copy
 import logging
 from collections import deque
@@ -23,6 +24,7 @@ from rich.panel import Panel
 _log = logging.getLogger("lingzhou.loop")
 
 from core.config import Config
+from core.metabolic import MetabolicEngine, StateProposal
 from core.perception import (
     PerceptionLayer, EmotionState,
 )
@@ -62,32 +64,37 @@ from .startup import (
 console = Console()
 
 
-_CHAIN_STATE_FIELDS = (
-    "_last_next_step",
-    "_last_decision",
-    "_last_act_error",
-    "_last_act_progressful",
-    "_last_act_progress_reason",
-    "_last_action_tool",
-    "_last_action_key",
-    "_last_action_status",
-    "_last_action_summary",
-    "_last_action_error",
-    "_last_action_state_delta",
-    "_success_stall_task_id",
-    "_success_stall_streak",
-    "_recent_action_feedback",
-    "_last_action_sig",
-    "_last_result_fp",
-    "_idle_cycles",
-    "_last_curiosity_signal_idle_cycle",
-    "_ticks_since_judge",
-    "_pending_tier",
-    "_pending_idle_gap",
-    "_pending_routing_overrides",
-    "_pending_thinking_override",
-    "_conv_history",
-)
+@dataclasses.dataclass
+class ChainState:
+    """tick 链运行状态快照（取代硬编码字符串元组 _CHAIN_STATE_FIELDS）。
+
+    字段变更由编译器/静态分析检测，不再依赖运行时反射字符串。
+    _conv_history 在新建链时总是从空 deque 开始（不继承父链历史）。
+    """
+    _last_next_step: str = ""
+    _last_decision: str = "wait"
+    _last_act_error: bool = False
+    _last_act_progressful: bool = False
+    _last_act_progress_reason: str = ""
+    _last_action_tool: str = ""
+    _last_action_key: str = ""
+    _last_action_status: str = ""
+    _last_action_summary: str = ""
+    _last_action_error: str = ""
+    _last_action_state_delta: str = ""
+    _success_stall_task_id: str | None = None
+    _success_stall_streak: int = 0
+    _recent_action_feedback: deque = dataclasses.field(default_factory=lambda: deque(maxlen=3))
+    _last_action_sig: str = ""
+    _last_result_fp: str = ""
+    _idle_cycles: int = 0
+    _last_curiosity_signal_idle_cycle: int = 0
+    _ticks_since_judge: int = 0
+    _pending_tier: str | None = None
+    _pending_idle_gap: float | None = None
+    _pending_routing_overrides: dict | None = None
+    _pending_thinking_override: str | None = None
+    _conv_history: deque = dataclasses.field(default_factory=lambda: deque(maxlen=6))
 
 
 
@@ -114,6 +121,7 @@ class CognitionLoop:
         self._wm = WorkingMemory(capacity=cfg.memory.working_capacity, token_budget=cfg.effective_wm_token_budget(), item_max_tokens=cfg.memory.wm_item_max_tokens)
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
         self._task_store = TaskStore(Path(cfg.db_path))
+        self._metabolic = MetabolicEngine(self._task_store)  # 代谢器官（公理 A5）
 
         # 情绪状态(初始值来自 config)
         self._emotion = EmotionState.from_config(cfg)
@@ -169,6 +177,11 @@ class CognitionLoop:
                 "belief_stale": cfg.thresholds.wm_pri_critical,
             },
             registry=self._registry,
+            seq_window_warn_at=cfg.thresholds.behavior_seq_window_warn_at,
+            seq_window_gap_ratio=cfg.thresholds.behavior_seq_window_gap_ratio,
+            belief_stale_threshold=cfg.thresholds.behavior_belief_stale_threshold,
+            belief_window=cfg.thresholds.behavior_belief_window,
+            belief_hash_prefix=cfg.thresholds.behavior_belief_hash_prefix,
         )
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)
@@ -234,6 +247,10 @@ class CognitionLoop:
         self._chain_runtime_state: dict[str, dict[str, Any]] = {}
 
     @property
+    def metabolic(self) -> MetabolicEngine:
+        return self._metabolic
+
+    @property
     def probe_manager(self) -> ProbeManager:
         return self._probe_manager
 
@@ -260,6 +277,7 @@ class CognitionLoop:
             judgment=self._judgment,
             execution=self._execution,
             registry=self._registry,
+            metabolic=self._metabolic,
         )
 
     async def open(self) -> None:
@@ -384,14 +402,19 @@ class CognitionLoop:
                     "belief_stale": self._cfg.thresholds.wm_pri_critical,
                 },
                 registry=self._registry,
+                seq_window_warn_at=self._cfg.thresholds.behavior_seq_window_warn_at,
+                seq_window_gap_ratio=self._cfg.thresholds.behavior_seq_window_gap_ratio,
+                belief_stale_threshold=self._cfg.thresholds.behavior_belief_stale_threshold,
+                belief_window=self._cfg.thresholds.behavior_belief_window,
+                belief_hash_prefix=self._cfg.thresholds.behavior_belief_hash_prefix,
             ),
             "_judgment": chain_judgment,
             "_conv_history": deque(maxlen=6),
         }
-        for field in _CHAIN_STATE_FIELDS:
-            if field == "_conv_history":
+        for f in dataclasses.fields(ChainState):
+            if f.name == "_conv_history":
                 continue
-            state[field] = copy.deepcopy(getattr(self, field))
+            state[f.name] = copy.deepcopy(getattr(self, f.name))
         return state
 
     def _mount_chain_view(self, view: Any, state: dict[str, Any]) -> None:
@@ -400,30 +423,15 @@ class CognitionLoop:
         view._perception = state["_perception"]
         view._behavior = state["_behavior"]
         view._judgment = state["_judgment"]
-        for field in _CHAIN_STATE_FIELDS:
-            setattr(view, field, state[field])
+        for f in dataclasses.fields(ChainState):
+            setattr(view, f.name, state[f.name])
 
     def _sync_chain_state_from_view(self, state: dict[str, Any], view: Any) -> None:
-        for field in _CHAIN_STATE_FIELDS:
-            state[field] = getattr(view, field)
+        for f in dataclasses.fields(ChainState):
+            state[f.name] = getattr(view, f.name)
         # 运行镜像：供 wait_after_cycle/state_snapshot 读取最近完成 tick 的状态
-        self._last_decision = view._last_decision
-        self._pending_idle_gap = view._pending_idle_gap
-        self._pending_tier = view._pending_tier
-        self._pending_routing_overrides = view._pending_routing_overrides
-        self._pending_thinking_override = view._pending_thinking_override
-        self._ticks_since_judge = view._ticks_since_judge
-        self._last_next_step = view._last_next_step
-        self._last_act_progressful = view._last_act_progressful
-        self._last_act_progress_reason = view._last_act_progress_reason
-        self._last_action_tool = view._last_action_tool
-        self._last_action_key = view._last_action_key
-        self._last_action_status = view._last_action_status
-        self._last_action_summary = view._last_action_summary
-        self._last_action_error = view._last_action_error
-        self._last_action_state_delta = view._last_action_state_delta
-        self._last_action_sig = view._last_action_sig
-        self._last_result_fp = view._last_result_fp
+        for f in dataclasses.fields(ChainState):
+            setattr(self, f.name, state[f.name])
 
     async def _run_dispatched_tick(self, job: TickJob) -> None:
         async with self._dispatch_state_lock:
@@ -502,7 +510,11 @@ class CognitionLoop:
 
     async def _save_self_model(self) -> None:
         """持久化自我模型到 DB(每 tick 调用)。"""
-        await self._task_store.set_fact("self:model", self._judgment.self_model.to_json(), scope="system")
+        await self._metabolic.submit(StateProposal(
+            op="set_fact", key="self:model",
+            value=self._judgment.self_model.to_json(),
+            scope="system", source="loop/save_self_model",
+        ))
 
     def _maybe_inject_budget_warning(self) -> None:
         """Token 预算记录：仅日志，不向 WM 注入任何建议。"""
@@ -527,6 +539,23 @@ class CognitionLoop:
             and self._last_action_tool
             and not self._last_action_tool.startswith("task.update")
         )
+        # 补充检查：LLM 可能连续做 wait 决策等待子代理完成，此时 last_decision != "act"
+        # 但 task store 里确实有活跃任务或运行中的 run，不应视为空闲
+        if not has_real_work:
+            _active = await self._task_store.get_active()
+            if _active is not None:
+                # source=self_drive 任务若 next_step 指向空转/监听，不视为真实工作，
+                # 以防该任务一直挂着 in_progress 却不做事，导致自驱信号被永久压制。
+                _is_stalled_sd = (
+                    getattr(_active, "source", None) == "self_drive"
+                    and self._last_action_tool
+                    and self._last_action_tool.startswith("task.update")
+                    and self._last_decision == "act"
+                )
+                has_real_work = not _is_stalled_sd
+            else:
+                _running_runs = await self._task_store.list_runs(status="running", limit=1)
+                has_real_work = bool(_running_runs)
 
         # 检查是否探索卡住（streak 超过窗口大小 + 2，使用公开属性）
         _stuck_gate = self._cfg.loop.behavior_streak_threshold + 2
@@ -732,7 +761,13 @@ class CognitionLoop:
         if plan.episodic_summary:
             self._episodic.record(role="consolidation", content=plan.episodic_summary, task_id=task_id)
         for fact in plan.facts:
-            await self._task_store.set_fact(fact.key, fact.value, scope=fact.scope)
+            _metabolic = getattr(self, "_metabolic", None)
+            if _metabolic is None:
+                _metabolic = MetabolicEngine(self._task_store)
+            await _metabolic.submit(StateProposal(
+                op="set_fact", key=fact.key, value=fact.value,
+                scope=fact.scope, source="loop/consolidation",
+            ))
         for node in plan.semantic_nodes:
             merged = merge_promoted_node(self._semantic.get(node.id), node, memory_cfg=self._cfg.memory)
             self._semantic.upsert(merged)
@@ -754,7 +789,10 @@ class CognitionLoop:
             )
             if daily_summary_node is not None:
                 self._semantic.upsert(daily_summary_node)
-            await self._task_store.set_fact(daily_summary_marker, "1", scope="system")
+            await (getattr(self, "_metabolic", None) or MetabolicEngine(self._task_store)).submit(StateProposal(
+                op="set_fact", key=daily_summary_marker, value="1",
+                scope="system", source="loop/daily_summary",
+            ))
         # 保留身份锚点(bootstrap_identity)和自我感知信号(self_awareness)
         # self_awareness 包含行为循环检测等信号，清除后 LLM 会失去对空转的感知
         self._wm.clear(preserve_kinds={"bootstrap_identity", "self_awareness"})
