@@ -19,7 +19,16 @@ class ProviderDefinition(BaseModel):
 
     type: str = "openai_compat"
     base_url: str
-    api_key_env: str = "OPENAI_API_KEY"
+    api_key_env: str = Field(
+        default="OPENAI_API_KEY",
+        description=(
+            "openai 模式：存放 API Key 的环境变量名（如 DASHSCOPE_API_KEY）。\n"
+            "copilot 模式：存放 GitHub PAT 的环境变量名。\n"
+            "  推荐用专用变量 COPILOT_GITHUB_TOKEN，避免与 gh CLI / GitHub Actions\n"
+            "  的通用 GITHUB_TOKEN 混用。若已执行 lingzhou auth login-copilot，\n"
+            "  token 存于 auth-profiles.json，此字段仅作 env fallback。"
+        ),
+    )
     auth_profile_id: str = Field(
         default="",
         description="可选 auth profile id（如 'bailian:default'），用于从 ~/.lingzhou/auth-profiles.json 读取 token",

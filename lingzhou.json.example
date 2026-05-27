@@ -23,18 +23,30 @@
       "mode": "copilot",
       "_doc": [
         "GitHub Copilot 模型 API（OpenAI 兼容接口）。",
-        "推荐先执行：lingzhou auth login-copilot。",
-        "主链路：GitHub token → Copilot token exchange → Copilot API。",
+        "推荐先执行：lingzhou auth login-copilot（token 存入 ~/.lingzhou/auth-profiles.json）。",
+        "主链路：GitHub PAT → Copilot token exchange → Copilot API。",
+        "api_key_env 用于指定存放 GitHub PAT 的环境变量名。",
+        "  推荐使用专用变量 COPILOT_GITHUB_TOKEN，避免与 gh CLI / GitHub Actions 的",
+        "  通用 GITHUB_TOKEN 撞名。若已执行 login-copilot 则此字段仅作 fallback。",
         "oauth_client_id 仅作显式 --method device 时的兼容回退。",
         "mode=copilot: thinking 由顶层 thinking 字段自动注入 reasoning_effort。",
         "models 可覆盖/追加运行时模型目录；常用字段：api、input、capabilities、reasoning、request_params。"
       ],
       "base_url": "https://api.individual.githubcopilot.com",
-      "api_key_env": "GITHUB_TOKEN",
+      "api_key_env": "COPILOT_GITHUB_TOKEN",
       "oauth_client_id": "",
       "models": [
         {
           "id": "gpt-5.4",
+          "api": "responses",
+          "input": ["text", "image"],
+          "capabilities": ["text_generation", "thinking", "vision"],
+          "request_params": {
+            "unsupported": ["temperature"]
+          }
+        },
+        {
+          "id": "gpt-5-mini",
           "api": "responses",
           "input": ["text", "image"],
           "capabilities": ["text_generation", "thinking", "vision"],
@@ -67,8 +79,9 @@
     "  bailian/qwen-plus          — 131K 经济型，无思考模式",
     "",
     "GitHub Copilot 模型（需先配置 copilot provider）：",
-    "  copilot/gpt-5.4            — 131K GPT-5.4 thinking，reasoning_effort 可调",
-    "  copilot/gpt-5.4-mini       — 131K GPT-5.4-mini thinking",
+  "copilot/gpt-5.4            — 400K GPT-5.4 thinking，reasoning_effort 可调",
+    "  copilot/gpt-5-mini         — 400K GPT-5 Mini thinking（通用 ID，实际可用）",
+    "  copilot/gpt-5.4-mini       — 400K GPT-5.4-mini thinking（带版本号）",
     "  copilot/gpt-4.5            — 131K 无 thinking，速度快",
     "  copilot/o3                 — 200K o3 推理模型",
     "  copilot/o4-mini            — 200K o4-mini 轻量推理",

@@ -156,6 +156,18 @@
         }
       },
       {
+        "id": "gpt-5-mini",
+        "context_window": 400000,
+        "max_tokens": 128000,
+        "reasoning": true,
+        "api": "responses",
+        "input": ["text", "image"],
+        "capabilities": ["text_generation", "thinking", "vision"],
+        "request_params": {
+          "unsupported": ["temperature"]
+        }
+      },
+      {
         "id": "gpt-5.4-mini",
         "context_window": 400000,
         "max_tokens": 65536,
