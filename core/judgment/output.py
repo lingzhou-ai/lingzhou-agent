@@ -118,17 +118,16 @@ def _build_team_view_from_cfg(cfg: Any) -> str:
     for tier in ("reader", "reasoner", "repair"):
         model = routing.get(tier, cfg.model)
         role = {
-            "reader": "操作层 — 快速/低成本，适合 file.read/task.list/memory.search 等轻量查询",
-            "reasoner": "思考层 — 你本人，深度推理，适合复杂决策/代码修改/用户交互",
+            "reader": "工具执行层 — 快速/低成本，由系统自动调度执行轻量工具",
+            "reasoner": "思考层 — 你本人，负责所有决策、规划、推理与用户交互",
             "repair": "修复层 — 格式修复/小修小补",
         }.get(tier, tier)
         lines.append(f"- {tier}: {model}")
         lines.append(f"  {role}")
     lines.append("")
     lines.append("调度规则:")
-    lines.append("- 你是 reasoner（思考层），负责复杂决策。简单操作应委派给 reader")
-    lines.append("- 委派方式: 在 model_strategy 中设置 next_phase_tier='reader'")
-    lines.append("- reader 的操作层模型成本低速度快，不要在 reasoner 上做纯查询")
+    lines.append("- 你是 reasoner（思考层），负责所有判断与决策")
+    lines.append("- reader 由系统自动调度，无需也不可通过 next_phase_tier 手动指定")
     lines.append("- 关键决策、代码修改、用户交互必须由你亲自处理")
     return "\n".join(lines)
 

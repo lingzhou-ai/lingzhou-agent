@@ -222,7 +222,6 @@ async def _run_one_task(
                 tool_history=tool_history,
                 user_message=task.goal if round_i == 0 else "",
                 active_task=task,
-                prefer_tier="reader",
             )
         except Exception as exc:
             error = str(exc)

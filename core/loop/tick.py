@@ -1070,7 +1070,7 @@ async def _apply_tick_model_strategy(
         await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
         active_task.model_tier = persist_tier
 
-    if next_tier in {"reader", "reasoner", "repair"}:
+    if next_tier in {"reasoner", "repair"}:
         loop._pending_tier = next_tier
     else:
         loop._pending_tier = None
