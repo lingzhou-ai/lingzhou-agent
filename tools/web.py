@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -17,9 +19,8 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 MAX_FETCH_CHARS = 50000
-MAX_FETCH_TIMEOUT = 30
 MAX_SEARCH_RESULTS = 10
-SEARCH_TIMEOUT = 15
+HTTP_TIMEOUT = httpx.Timeout(connect=25.0, read=35.0, write=15.0, pool=10.0)
 
 
 # ── 共享 HTTP 客户端 ─────────────────────────────────────────────────────────
@@ -28,18 +29,40 @@ _http_client: httpx.AsyncClient | None = None
 
 async def _get_client() -> httpx.AsyncClient:
     global _http_client
-    if _http_client is None or getattr(_http_client, "is_closed", False):
-        import os
-        limits = httpx.Limits(max_connections=5, max_keepalive_connections=2)
+    if _http_client is None or _http_client.is_closed:
         proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
         _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(MAX_FETCH_TIMEOUT),
-            limits=limits,
+            timeout=HTTP_TIMEOUT,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=3),
             follow_redirects=True,
             headers={"User-Agent": DEFAULT_UA},
             proxy=proxy,
         )
     return _http_client
+
+
+async def _safe_request(method: str, url: str, **kwargs) -> httpx.Response:
+    """带重试的 HTTP 请求包装器，缓解 ConnectTimeout / 短暂网络抖动。"""
+    client = await _get_client()
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = await client.request(method, url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except httpx.ConnectTimeout as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise
+        except httpx.RequestError as e:
+            last_err = e
+            if attempt < 2:
+                await asyncio.sleep(0.8)
+                continue
+            raise
+    raise last_err  # type: ignore[misc]
 
 
 # ── HTML → 纯文本 ────────────────────────────────────────────────────────────
@@ -92,10 +115,7 @@ async def web_fetch(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     max_chars = min(int(params.get("max_chars", MAX_FETCH_CHARS)), MAX_FETCH_CHARS)
 
     try:
-        client = await _get_client()
-        resp = await client.get(url)
-        resp.raise_for_status()
-
+        resp = await _safe_request("GET", url)
         content_type = resp.headers.get("content-type", "")
         text: str
 
@@ -157,11 +177,9 @@ async def web_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     max_results = min(int(params.get("max_results", MAX_SEARCH_RESULTS)), MAX_SEARCH_RESULTS)
 
     try:
-        client = await _get_client()
         # DuckDuckGo HTML 搜索（无需 API key）
         search_url = "https://html.duckduckgo.com/html/"
-        resp = await client.post(search_url, data={"q": query})
-        resp.raise_for_status()
+        resp = await _safe_request("POST", search_url, data={"q": query})
 
         # 解析搜索结果
         results: list[dict[str, str]] = []
