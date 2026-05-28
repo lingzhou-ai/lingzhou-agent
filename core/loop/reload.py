@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from core.config import Config
 from core.evolution import EvolutionEngine
 from core.execution import ExecutionLayer
+from .run_driver import RunDriver
 from core.judgment import JudgmentLayer
 from core.perception import PerceptionLayer
 from provider import create_provider
@@ -154,6 +155,7 @@ async def _commit_hot_reload_candidate(
     loop._routing_providers = candidate.routing_providers
     loop._judgment = candidate.judgment
     loop._execution = candidate.execution
+    loop._run_driver = RunDriver(loop._execution)  # Phase 3b: rewire
     loop._evolution = candidate.evolution
     loop._perception = candidate.perception
     loop._cfg_mtime = cfg_mtime

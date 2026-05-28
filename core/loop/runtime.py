@@ -34,6 +34,7 @@ from core.execution import (
     ExecutionLayer,
 )
 from core.evolution import EvolutionEngine
+from .run_driver import RunDriver
 from .tick import (
     _post_tick_memory_impl,
     _tick_impl,
@@ -127,6 +128,7 @@ class CognitionLoop:
         self._perception = PerceptionLayer(cfg)
         self._judgment = JudgmentLayer(self._provider, self._registry, cfg)
         self._execution = ExecutionLayer(self._registry, cfg)
+        self._run_driver = RunDriver(self._execution)  # Phase 3b: Run 路由层
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
         # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}

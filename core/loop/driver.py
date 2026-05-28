@@ -15,6 +15,13 @@ _log = logging.getLogger("lingzhou.loop")
 async def _run_cycle_impl(loop: Any, cycle: int) -> int:
     cycle, handled_chat = await loop._process_pending_chat_turn(cycle)
     if not handled_chat:
+        # Phase 3d：优先认领 DB pending Runs（bootstrap/崩溃恢复路径）
+        run_driver = getattr(loop, "_run_driver", None)
+        if run_driver is not None:
+            polled_cycle = await run_driver.poll_pending_runs(loop, cycle)
+            if polled_cycle is not None:
+                return polled_cycle
+
         if getattr(loop, "_tick_dispatcher", None) is not None and loop._tick_dispatcher.enabled:
             active_task = await loop._task_store.get_active()
             dispatch_cycle = await loop._next_dispatch_cycle()

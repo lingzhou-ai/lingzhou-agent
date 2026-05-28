@@ -154,8 +154,7 @@
     "evolve_every": 30,
     "max_consecutive_errors": 5,
     "heartbeat_interval": 1800,
-    "judge_every": 1,
-    "max_tool_rounds": 8
+    "judge_every": 1
   },
 
   "prompts": {
@@ -311,7 +310,6 @@
     "skill_min_budget_tokens": 80,
     "ask_evidence_budget": 2,
     "task_explore_converge_after": 4,
-    "continue_task_plan_max_per_tick": 1,
     "continue_tool_history_compact_threshold": 6,
     "continue_tool_history_keep_last": 3,
     "judgment_error_streak_guard": 2,

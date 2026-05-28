@@ -1824,7 +1824,8 @@ async def _web_fetch_recreates_closed_shared_client(monkeypatch):
     class _FreshClient:
         is_closed = False
 
-        async def get(self, url: str):
+        async def request(self, method: str, url: str, **kwargs):
+            assert method == "GET"
             assert url == "https://example.com"
             return _FakeResponse()
 

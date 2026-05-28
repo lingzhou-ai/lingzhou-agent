@@ -334,6 +334,27 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
     if zombie_count > 0:
         _log.info("[restart] 重置 %d 个 in_progress 任务为 pending", zombie_count)
 
+    # Phase 3d：清理上次崩溃遗留的非终态 Run
+    try:
+        stale_count = await loop._task_store.cancel_stale_runs()
+        if stale_count > 0:
+            _log.info("[restart] 取消 %d 个遗留 stale Run（崩溃/重启恢复）", stale_count)
+    except Exception as _exc:
+        _log.debug("[restart] cancel_stale_runs 失败（不影响启动）: %s", _exc)
+
+    # Phase 3d：若无 pending Run，写入 bootstrap pending Run（确保 poll 可以驱动首轮 tick）
+    try:
+        _existing_pending = await loop._task_store.get_pending_runs(limit=1)
+        if not _existing_pending:
+            _bootstrap_run_id = await loop._task_store.add_run(
+                run_type="judge",
+                status="pending",
+                log_text="[startup] bootstrap pending Run — awaiting first poll",
+            )
+            _log.info("[startup] 创建 bootstrap pending Run #%d", _bootstrap_run_id)
+    except Exception as _exc:
+        _log.debug("[startup] bootstrap pending Run 创建失败（不影响启动）: %s", _exc)
+
     # ── 崩溃连续性恢复：读取 survival.json，若上次非干净退出则注入 WM 感知 ──
     _inject_crash_recovery(loop)
 

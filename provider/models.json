@@ -1,6 +1,19 @@
 {
   "_doc": "内置模型目录。context_window 用于推导 judgment 输入预算；max_tokens 是输出上限（provider 侧约束，代码不发送 max_tokens 参数）。用户可通过 lingzhou.json 的 context_window_tokens 字段覆盖此处的值。api/input/request_params/capabilities 属于模型能力元数据，会一并进入运行时 catalog。",
 
+  "run_type_routing": {
+    "_doc": "run_type → 默认模型档位映射（Phase 3c）。task_default 表示继承活跃任务的 model_tier；其他值直接选路由档位。可在 lingzhou.json 通过 model.run_type_routing 覆盖。",
+    "judge":      "reader",
+    "tool_chain": "task_default",
+    "chat_reply": "reader",
+    "evolve":     "reasoner",
+    "subagent":   "task_default",
+    "probe":      "reader",
+    "llm":        "reader",
+    "exec":       "task_default",
+    "multimodal": "task_default"
+  },
+
   "deepseek": {
     "base_url": "https://api.deepseek.com",
     "_doc": [

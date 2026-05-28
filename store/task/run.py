@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -123,3 +123,43 @@ class RunStore(BaseAsyncStore):
             (run.task_id, run.status, run.completed_at, run.to_data_json(), run_id),
         )
         await self._db.commit()
+
+    async def get_pending_runs(self, *, limit: int = 10) -> list[Run]:
+        """返回 status='pending' 的 Run，按 created_at 升序（最早优先，Phase 3d 调度器轮询用）。"""
+        async with self._db.execute(
+            "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data"
+            " FROM runs WHERE status='pending' ORDER BY created_at LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [Run.from_row(r) for r in rows]
+
+    async def cancel_stale_runs(self, stale_after_seconds: int = 600) -> int:
+        """将超时的 running/pending Run 标为 cancelled（Phase 3d 崩溃恢复）。
+
+        用于进程重启时清理上次崩溃遗留的非终态 Run，
+        保持 DB 状态一致性，避免 runs 表中出现永久 'running' 记录。
+
+        Returns:
+            取消的 Run 数量。
+        """
+        cutoff = (datetime.now(UTC) - timedelta(seconds=stale_after_seconds)).isoformat()
+        async with self._db.execute(
+            "SELECT id FROM runs WHERE status IN ('running', 'pending') AND started_at < ?",
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            return 0
+        count = 0
+        for (run_id,) in rows:
+            try:
+                await self.update_run(
+                    run_id,
+                    status="cancelled",
+                    error_text="[startup] stale run cancelled — process restarted",
+                )
+                count += 1
+            except Exception:
+                pass
+        return count

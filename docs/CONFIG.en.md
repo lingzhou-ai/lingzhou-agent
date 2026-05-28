@@ -31,7 +31,6 @@ Providers are defined in the `providers` section. Environment variables or auth 
 | `loop.active_idle_gap` | default wait interval in milliseconds while a task is active |
 | `loop.min_act_gap` | minimum interval in milliseconds between two `act` decisions |
 | `loop.chat_reply_timeout` | timeout for chat reply waiting |
-| `loop.max_tool_rounds` | max tool rounds inside a single tick |
 | `loop.judge_every` | when fully idle, only call the LLM every N ticks; ignored when there is active work or a user message |
 | `loop.max_consecutive_errors` | consecutive error threshold |
 | `loop.evolve_every` | evolution check frequency |

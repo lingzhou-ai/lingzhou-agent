@@ -21,6 +21,7 @@ from core.metabolic import StateProposal
 from core.worker import WorkerLayer
 from store.task import build_task_run_result_patch
 from tools.registry import ToolResult, ToolContext, tool_has_capability
+from provider.catalog import get_run_type_routing as _get_run_type_routing
 
 _log = logging.getLogger("lingzhou.execution")
 
@@ -205,6 +206,11 @@ def _infer_run_profile(
     registry: ToolRegistry | None = None,
 ) -> tuple[str, str]:
     p = params or {}
+    # 语义路由：已知高级工具优先按名称分类
+    if tool_name in {"evolution.evolve", "evolution.synthesize"}:
+        return "evolve", "evolve-worker"
+    if tool_name == "subagent.run":
+        return "subagent", "subagent-worker"
     if p.get("monitor_fact_key") or p.get("status_fact_key"):
         _log.debug("[run-profile] tool=%s classified as llm-worker via fact monitor", tool_name)
         return "llm", "llm-worker"
@@ -568,6 +574,20 @@ class ExecutionLayer:
                 action.params,
                 registry=effective_registry,
             )
+            # Phase 3c：若任务未显式设定 model_tier，按 run_type_routing 补全
+            # 优先级：Config 覆盖 > catalog 路由 > 任务自身 tier
+            effective_tier = task_tier
+            if not effective_tier or effective_tier == "task_default":
+                try:
+                    _routing = _get_run_type_routing()
+                    # Config 覆盖层（最高优先级）
+                    _config_rt = getattr(self._cfg, "run_type_routing", {}) or {}
+                    _routing = {**_routing, **{k: v for k, v in _config_rt.items() if isinstance(v, str)}}
+                    _mapped = _routing.get(run_type, "")
+                    if _mapped and _mapped != "task_default":
+                        effective_tier = _mapped
+                except Exception:
+                    pass  # 路由表读取失败不阻断主流程
             run_id = await ctx.task_store.add_run(
                 task_id=run_task_id,
                 run_type=run_type,
@@ -579,7 +599,7 @@ class ExecutionLayer:
                     "params": action.params or {},
                 },
                 tool_name=action.chosen_action_id or "",
-                model_tier=task_tier,
+                model_tier=effective_tier,
             )
             if run_id is not None:
                 _record_run_started(
@@ -589,7 +609,7 @@ class ExecutionLayer:
                     tool_name=action.chosen_action_id or "",
                     run_type=run_type,
                     worker_type=worker_type,
-                    model_tier=task_tier,
+                    model_tier=effective_tier,
                 )
                 _log.info(
                     "[run-start] run=%s task=%s tool=%s worker=%s limit=%s tier=%s",

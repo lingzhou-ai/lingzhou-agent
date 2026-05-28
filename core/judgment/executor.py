@@ -255,12 +255,8 @@ class JudgmentExecutor:
         thinking_override: str | None = None,
         routing_overrides: dict[str, str] | None = None,
     ) -> tuple[Provider, ModelSelection]:
-        # 判断 phase 不允许使用 reader（人不能没有大脑）
-        # prefer_tier="reader" 在判断 phase 同样无效，自动清除
-        _effective_prefer_tier = (
-            None if phase in self._REASONER_ONLY_PHASES and prefer_tier == "reader"
-            else prefer_tier
-        )
+        # 显式 prefer_tier 始终生效；仅在没有 prefer_tier 时，reasoner-only phase 排除 reader
+        _effective_prefer_tier = prefer_tier
         tier = self._select_tier(
             phase=phase,
             user_message=user_message,

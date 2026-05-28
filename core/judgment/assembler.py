@@ -422,10 +422,6 @@ class JudgmentContextAssembler:
 
         capability_mapping: dict[str, list[str]] = {}
         current_action_caps: list[str] = []
-        task_plan_calls_this_tick = sum(
-            1 for item in (tool_history or []) if str(item.get("tool") or "") == "task.plan"
-        )
-        continue_task_plan_max = self._cfg.thresholds.continue_task_plan_max_per_tick
         tool_history_compact_threshold = self._cfg.thresholds.continue_tool_history_compact_threshold
         tool_history_keep_last = self._cfg.thresholds.continue_tool_history_keep_last
         tool_history_count = len(tool_history or [])
@@ -440,9 +436,6 @@ class JudgmentContextAssembler:
             "tool_capability_mapping": {k: sorted(v) for k, v in capability_mapping.items()},
             "current_action_capabilities": current_action_caps,
             "continue_phase_policy": {
-                "task_plan_calls_this_tick": task_plan_calls_this_tick,
-                "task_plan_max_per_tick": continue_task_plan_max,
-                "task_plan_blocked_next": task_plan_calls_this_tick >= continue_task_plan_max,
                 "tool_history_count": tool_history_count,
                 "tool_history_compact_threshold": tool_history_compact_threshold,
                 "tool_history_keep_last": tool_history_keep_last,

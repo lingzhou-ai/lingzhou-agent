@@ -9,6 +9,7 @@ Type=simple
 ExecStart=/usr/local/bin/lingzhou-systemd-wrapper.sh
 Restart=on-failure
 RestartSec=10
+StartLimitIntervalSec=0
 EnvironmentFile=-/root/.lingzhou/.env
 LimitNOFILE=65536
 

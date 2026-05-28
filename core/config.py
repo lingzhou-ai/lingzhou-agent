@@ -266,14 +266,6 @@ class LoopConfig(BaseModel):
             "有任务或用户消息时忽略此设置，始终调用。默认 1 = 每轮都调（无聚合）。"
         ),
     )
-    max_tool_rounds: int = Field(
-        default=8, ge=1,
-        description=(
-            "单次 tick 内允许的最大工具调用轮次（chat + autonomous 共用）。"
-            "首轮走完整 perception，后续轮追加工具历史直接续判，不重跑感知链路。"
-            "有用户消息时达到上限会注入兜底回复；自主模式则在上限处结束本轮并等待下一 tick。"
-        ),
-    )
     wait_streak_notify: list[int] = Field(
         default=[3, 6],
         description=(
@@ -750,10 +742,6 @@ class ThresholdsConfig(BaseModel):
         default=4, ge=1,
         description="tool_history 中探索类动作累计达到此次数后，model_routing 的 global_cost_posture 从 conserve 切到 converge",
     )
-    continue_task_plan_max_per_tick: int = Field(
-        default=1, ge=1,
-        description="单个 tick 的 continue phase 中最多允许多少次 task.plan；超过后 runtime 强制打断并要求下一 tick 直接执行计划内工具",
-    )
     continue_tool_history_compact_threshold: int = Field(
         default=6, ge=1,
         description="continue phase 中 tool_history 达到此条数后压缩早期条目，避免上下文爆炸",
@@ -1026,6 +1014,14 @@ class Config(BaseModel):
             "示例: {\"qwen3.6-plus\": {\"input\": 0.50, \"output\": 2.00}}"
         ),
     )
+    run_type_routing: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "run_type → 模型档位映射（覆盖 models.json 内置默认值）。\n"
+            "key 为 run_type（如 judge/chat_reply/llm/exec…），value 为档位名（reader/reasoner/repair/task_default）。\n"
+            "示例: {\"judge\": \"reasoner\", \"chat_reply\": \"reader\"}"
+        ),
+    )
 
     # ── 其他配置节 ────────────────────────────────────────────────────────
     loop: LoopConfig = Field(default_factory=LoopConfig)
@@ -1236,7 +1232,6 @@ def config_reference_defaults() -> dict[str, str]:
         "loop.active_idle_gap": _format_config_doc_default(loop.active_idle_gap),
         "loop.min_act_gap": _format_config_doc_default(loop.min_act_gap),
         "loop.chat_reply_timeout": _format_config_doc_default(loop.chat_reply_timeout),
-        "loop.max_tool_rounds": _format_config_doc_default(loop.max_tool_rounds),
         "loop.judge_every": _format_config_doc_default(loop.judge_every),
         "loop.max_consecutive_errors": _format_config_doc_default(loop.max_consecutive_errors),
         "loop.evolve_every": _format_config_doc_default(loop.evolve_every),

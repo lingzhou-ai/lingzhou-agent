@@ -492,6 +492,7 @@ def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
     class _FakeAsyncClient:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
+            self.is_closed = False
             self.timeout = SimpleNamespace(read=30.0, connect=30.0)
             self._responses = [
                 httpx.Response(400, text='{"error":"bad request"}', request=httpx.Request("POST", "https://api.individual.githubcopilot.com/chat/completions")),
@@ -550,6 +551,7 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     class _FakeAsyncClient:
         def __init__(self) -> None:
             self.calls: list[dict[str, Any]] = []
+            self.is_closed = False
             self.timeout = SimpleNamespace(read=30.0, connect=30.0)
             self._responses = [
                 httpx.Response(
@@ -640,6 +642,7 @@ def test_copilot_gpt5_responses_400_surfaces_error_body():
 
     class _FakeAsyncClient:
         def __init__(self) -> None:
+            self.is_closed = False
             self.timeout = SimpleNamespace(read=30.0, connect=30.0)
             self._responses = [
                 httpx.Response(

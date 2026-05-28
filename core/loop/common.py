@@ -12,8 +12,10 @@ from core.perception import PerceptionReplaySummary
 from store.task import Task
 from tools.registry import ToolResult
 
-# 判断层允许的 tier：reader 只负责工具执行，不参与判断路由
+# 判断层执行 tier（用于 task 模型档位校验，不含 reader）
 _JUDGMENT_TIERS: frozenset[str] = frozenset({"reasoner", "repair"})
+# tier hint 白名单（包含 reader，供显式 prefer_tier / next_phase_tier 使用）
+_HINT_TIERS: frozenset[str] = frozenset({"reasoner", "repair", "reader"})
 
 # 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)
 _LOG_RATIONALE_CHARS = 120
@@ -106,7 +108,17 @@ def _should_continue_within_tick(
 
 def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
-    return next_tier if next_tier in _JUDGMENT_TIERS else None
+    return next_tier if next_tier in _HINT_TIERS else None
+
+
+def _preferred_continue_tier(
+    action: JudgmentOutput,
+    *,
+    user_message: str = "",
+    registry: Any | None = None,
+) -> str | None:
+    """从当前轮动作的 model_strategy 中提取续判档位提示（Phase 3c 扩展）。"""
+    return _next_initial_tier_hint(action)
 
 
 def _task_model_tier(task: Task | None) -> str | None:
@@ -124,7 +136,7 @@ def _prefer_tier_for_task(
 ) -> str | None:
     if has_user_message:
         return "reasoner"
-    if pending_tier in _JUDGMENT_TIERS:
+    if pending_tier in _HINT_TIERS:
         return pending_tier
     return _task_model_tier(task)
 

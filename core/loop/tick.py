@@ -38,6 +38,8 @@ from tools.registry import ToolResult
 from .chat import _bind_chat_id, _resolve_reply_chat_id
 from .common import (
     _EVENT_TITLE_CHARS,
+    _HINT_TIERS,
+    _JUDGMENT_TIERS,
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
     _infer_valence_from_text,
@@ -642,8 +644,23 @@ async def _execute_tick_action(
     else:
         for item in loop._behavior.on_wait(action.decision, active_task is not None):
             loop._wm.add(item)
+        # Phase 3a：为有 LLM 判断（非 judge_every 聚合跳过）的非执行 tick 写入 Run，
+        # 使 `lingzhou logs runs --type judge/chat_reply` 可筛选纯判断轮次。
+        _llm_skipped = (action.rationale or "").startswith("[按请求聚合]")
+        if not _llm_skipped and loop._task_store is not None:
+            _rt = "chat_reply" if action.reply_to_user else "judge"
+            try:
+                await loop._task_store.add_run(
+                    task_id=active_task.id if active_task else 0,
+                    run_type=_rt,
+                    worker_type=f"{_rt}-worker",
+                    status="succeeded",
+                    output_json={"decision": action.decision, "rationale": (action.rationale or "")[:200]},
+                )
+            except Exception as _exc:
+                _log.debug("[tick] judge/chat_reply run 写入失败（不影响主流程）: %s", _exc)
 
-    result = await loop._execution.dispatch(action, ctx)
+    result = await loop._run_driver.dispatch(action, ctx)
     tool_history: list[dict[str, Any]] = []
     if action.decision == "act":
         tool_history.append(_tool_history_entry(action, result))
@@ -1074,13 +1091,13 @@ async def _apply_tick_model_strategy(
     cfg = loop._cfg
     next_tier = _next_initial_tier_hint(action) or ""
     task_tier = _task_model_tier(active_task)
-    persist_tier = next_tier if next_tier in {"reasoner", "repair"} else (task_tier if task_tier in {"reasoner", "repair"} else "")
+    persist_tier = next_tier if next_tier in _JUDGMENT_TIERS else (task_tier if task_tier in _JUDGMENT_TIERS else "")
 
     if active_task and persist_tier and persist_tier != task_tier:
         await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
         active_task.model_tier = persist_tier
 
-    if next_tier in {"reasoner", "repair"}:
+    if next_tier in _JUDGMENT_TIERS:
         loop._pending_tier = next_tier
     else:
         loop._pending_tier = None
@@ -1116,7 +1133,7 @@ async def _apply_tick_model_strategy(
         else:
             valid = {
                 key: value for key, value in raw_overrides.items()
-                if key in {"reader", "reasoner", "repair"} and isinstance(value, str) and value
+                if key in _HINT_TIERS and isinstance(value, str) and value
             }
             if valid:
                 loop._pending_routing_overrides = valid

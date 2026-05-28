@@ -472,6 +472,14 @@ class TaskStore:
             model_tier=model_tier, progress=progress, extras=extras,
         )
 
+    async def cancel_stale_runs(self, stale_after_seconds: int = 600) -> int:
+        """清理进程重启后遗留的非终态 Run（Phase 3d 崩溃恢复）。"""
+        return await self._runs.cancel_stale_runs(stale_after_seconds)
+
+    async def get_pending_runs(self, *, limit: int = 10) -> list:
+        """查询 status='pending' 的 Run（Phase 3d 调度器轮询用）。"""
+        return await self._runs.get_pending_runs(limit=limit)
+
     async def add_meta_reflection(
         self,
         *,

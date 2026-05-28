@@ -40,6 +40,16 @@ def _load(catalog_path: str | None = None) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in raw.items() if isinstance(v, dict)}
 
 
+def get_run_type_routing(*, catalog_path: Path | None = None) -> dict[str, str]:
+    """返回 run_type → 模型档位 映射（来自 models.json 顶层 run_type_routing 段）。
+
+    "_doc" 键及非字符串值会被过滤掉。调用方可将返回值与自身默认值合并使用。
+    """
+    catalog_key = str(catalog_path.expanduser()) if catalog_path is not None else None
+    routing = _load(catalog_key).get("run_type_routing", {})
+    return {k: v for k, v in routing.items() if isinstance(v, str) and k != "_doc"}
+
+
 def lookup_model(model_id: str, *, catalog_path: Path | None = None) -> dict[str, Any] | None:
     """在所有 provider 里查找 model_id，返回模型元数据字典；未找到返回 None。"""
     catalog_key = str(catalog_path.expanduser()) if catalog_path is not None else None
