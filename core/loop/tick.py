@@ -38,6 +38,8 @@ from tools.registry import ToolResult
 from .chat import _bind_chat_id, _resolve_reply_chat_id
 from .common import (
     _EVENT_TITLE_CHARS,
+    _HINT_TIERS,
+    _JUDGMENT_TIERS,
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
     _infer_valence_from_text,
@@ -1089,13 +1091,13 @@ async def _apply_tick_model_strategy(
     cfg = loop._cfg
     next_tier = _next_initial_tier_hint(action) or ""
     task_tier = _task_model_tier(active_task)
-    persist_tier = next_tier if next_tier in {"reasoner", "repair"} else (task_tier if task_tier in {"reasoner", "repair"} else "")
+    persist_tier = next_tier if next_tier in _JUDGMENT_TIERS else (task_tier if task_tier in _JUDGMENT_TIERS else "")
 
     if active_task and persist_tier and persist_tier != task_tier:
         await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
         active_task.model_tier = persist_tier
 
-    if next_tier in {"reasoner", "repair"}:
+    if next_tier in _JUDGMENT_TIERS:
         loop._pending_tier = next_tier
     else:
         loop._pending_tier = None
@@ -1131,7 +1133,7 @@ async def _apply_tick_model_strategy(
         else:
             valid = {
                 key: value for key, value in raw_overrides.items()
-                if key in {"reader", "reasoner", "repair"} and isinstance(value, str) and value
+                if key in _HINT_TIERS and isinstance(value, str) and value
             }
             if valid:
                 loop._pending_routing_overrides = valid
