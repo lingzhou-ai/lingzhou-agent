@@ -95,63 +95,19 @@ async def _run_continue_phase(
             wm_delta=_wm_delta or None,
         )
 
-        blocked_by_plan_limit = False
         if cont.decision == "act":
             tool_name = cont.chosen_action_id or ""
             key_param = action_key_param(cont.params)
-            # task.plan 每 tick 限额：达到配置上限后强制跳出 continue loop，让下一 tick 直接执行。
-            if tool_name == "task.plan":
-                max_plan_calls = max(1, int(loop._cfg.thresholds.continue_task_plan_max_per_tick))
-                prior_plan_calls = sum(1 for item in tool_history if item.get("tool") == "task.plan")
-                attempted_plan_calls = prior_plan_calls + 1
-                if attempted_plan_calls > max_plan_calls:
-                    _log.warning(
-                        "[continue] task.plan 本 tick 第 %d 次，超过上限 %d，记录阻断结果并请求同 tick 重判",
-                        attempted_plan_calls,
-                        max_plan_calls,
-                    )
-                    _forced_break = WMItem(
-                        kind="self_awareness",
-                        content=(
-                            f"[计划阻断] continue 阶段本 tick 第 {attempted_plan_calls} 次 task.plan 超过上限 {max_plan_calls}，"
-                            "本轮未执行 task.plan。请基于现有 plan 直接选择要执行的工具，而不是继续 plan。"
-                        ),
-                        priority=loop._cfg.thresholds.wm_pri_critical,
-                    )
-                    loop._wm.add(_forced_break)
-                    _wm_delta.append(_forced_break.to_dict())
-                    blocked_by_plan_limit = True
-                    cont_result = ToolResult(
-                        summary=(
-                            f"continue 阶段本 tick 第 {attempted_plan_calls} 次 task.plan 超过上限 {max_plan_calls}；"
-                            "本轮未执行 task.plan，请直接执行计划中的工具。"
-                        ),
-                        error="ContinueTaskPlanLimit",
-                        skipped=True,
-                        kind="self_awareness",
-                        priority=loop._cfg.thresholds.wm_pri_critical,
-                        state_delta={
-                            "continue_task_plan_blocked": True,
-                            "attempted_plan_calls": attempted_plan_calls,
-                            "task_plan_max_per_tick": max_plan_calls,
-                        },
-                    )
-                else:
-                    cont_result = None
-            else:
-                cont_result = None
-            if not blocked_by_plan_limit:
-                for behavior_item in loop._behavior.on_act(
-                    tool_name,
-                    key_param,
-                    str(active_task.id) if active_task else None,
-                    cont.params,
-                ):
-                    loop._wm.add(behavior_item)
-                    _wm_delta.append(behavior_item.to_dict())
-                loop._behavior.apply_cognitive_probe(cognitive_signals)
-        else:
-            cont_result = None
+            for behavior_item in loop._behavior.on_act(
+                tool_name,
+                key_param,
+                str(active_task.id) if active_task else None,
+                cont.params,
+            ):
+                loop._wm.add(behavior_item)
+                _wm_delta.append(behavior_item.to_dict())
+            loop._behavior.apply_cognitive_probe(cognitive_signals)
+        cont_result = None
 
         if cont_result is None:
             cont_result = await loop._execution.dispatch(cont, ctx)
@@ -186,18 +142,14 @@ async def _run_continue_phase(
             if cont_result.error and "oldtextnotfound" in (cont_result.error or "").lower():
                 for behavior_item in loop._behavior.on_edit_failure(cont_result.error or ""):
                     loop._wm.add(behavior_item)
-            if not blocked_by_plan_limit:
-                loop._behavior.on_act_result(cont.chosen_action_id or "", cont_result.summary or "")
+            loop._behavior.on_act_result(cont.chosen_action_id or "", cont_result.summary or "")
             tool_history.append(_tool_history_entry(cont, cont_result))
 
         action = cont
         result = cont_result
         if action.reply_to_user or not _should_continue_within_tick(action, registry=loop._registry):
             break
-        # PlanUnchanged：计划结构没变，继续循环只会死锁；WM 中已有"请直接执行"提示，
-        # 直接跳出 continue 阶段，让下一 tick 感知 WM 后执行具体工具。
         # PlanUnchanged：计划结构没变，继续循环只会死锁；跳出让下一 tick 直接执行具体工具。
-        # ContinueTaskPlanLimit：计划调用被阻断，但 WM 已注入提示要求同 tick 重判选择其他工具，不应跳出。
         if cont_result.error == "PlanUnchanged":
             _log.debug("[continue] PlanUnchanged — 跳出 continue 循环，下一 tick 直接执行")
             break
