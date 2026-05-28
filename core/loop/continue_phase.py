@@ -70,9 +70,10 @@ async def _run_continue_phase(
     compact_threshold = max(1, int(cfg.thresholds.continue_tool_history_compact_threshold))
     keep_last = max(1, int(cfg.thresholds.continue_tool_history_keep_last))
 
-    for inner in range(cfg.loop.max_tool_rounds - 1):
+    _inner = 0
+    while True:
         if await loop._task_store.has_pending_chat_message():
-            _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", inner)
+            _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", _inner)
             break
 
         # 工具历史超长时压缩早期条目，避免上下文窗口爆炸
@@ -133,7 +134,7 @@ async def _run_continue_phase(
         if cont.rationale:
             loop._episodic.record(
                 role="assistant",
-                content=f"[inner-{inner + 1}] {cont.rationale}",
+                content=f"[inner-{_inner + 1}] {cont.rationale}",
                 task_id=str(active_task.id) if active_task else None,
                 affect=affect,
             )
@@ -147,6 +148,7 @@ async def _run_continue_phase(
 
         action = cont
         result = cont_result
+        _inner += 1
         if action.reply_to_user or not _should_continue_within_tick(action, registry=loop._registry):
             break
         # PlanUnchanged：计划结构没变，继续循环只会死锁；跳出让下一 tick 直接执行具体工具。
