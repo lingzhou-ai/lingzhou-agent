@@ -259,6 +259,7 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         resource_key=str(workdir),
         fingerprint=_fingerprint(command, workdir, returncode, combined),
         metadata=payload,
+        error="timeout" if timed_out else (f"exit={returncode}" if returncode != 0 else None),
         state_delta={
             "process": "finished",
             "exit_code": returncode,
