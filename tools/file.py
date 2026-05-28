@@ -541,14 +541,25 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ToolParam("path", "string", "文件路径", required=True),
         ToolParam("edits", "array",
                   "替换操作列表，每项包含 oldText（要替换的原文）和 newText（替换后的内容）。"
-                  "必须是数组，即使只改一处也要用数组包裹。"
+                  "必须是数组，即使只改一处也要用数组包裹；亦支持 old_text/new_text 顶层别名。"
                   "例: [{\"oldText\": \"foo\", \"newText\": \"bar\"}, {\"oldText\": \"baz\", \"newText\": \"qux\"}]",
-                  required=True),
+                  required=False),
+        ToolParam("old_text", "string", "要替换的原文（兼容旧版单字段调用）", required=False),
+        ToolParam("new_text", "string", "替换后的内容（兼容旧版单字段调用）", required=False),
     ],
 ))
 async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     path = _resolve_mutation_path(Path(params.get("path") or "").expanduser(), ctx)
     edits_raw = params.get("edits")
+
+    # 兼容 LLM 错误传递顶层 old_text/new_text 的情况
+    if not edits_raw:
+        ot = params.get("old_text") or params.get("oldText")
+        nt = params.get("new_text") or params.get("newText")
+        if ot is not None:
+            if not nt:
+                return ToolResult(summary="missing new_text: 单字段调用必须同时提供 new_text/newText", error="MissingNewText", skipped=True)
+            edits_raw = [{"oldText": ot, "newText": nt}]
 
     if not path.exists():
         return ToolResult(summary=f"文件不存在: {path}（edit 只能修改已存在的文件，新文件请用 file.write）", error="FileNotFound")
@@ -594,6 +605,8 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
             if not old_text:
                 return ToolResult(summary=f"edits[{i}]: oldText 不能为空", error="EmptyOldText", skipped=True)
+            if not new_text:
+                return ToolResult(summary=f"edits[{i}]: newText 不能为空", error="EmptyNewText", skipped=True)
 
             # 所有 edit 都基于原始文件匹配，而不是增量匹配修改后的内容。
             first_idx = original.find(old_text)

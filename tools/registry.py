@@ -248,6 +248,7 @@ class ToolRegistry:
             stem = mod_file.stem
             module_name = f"tools.{stem}"
             if module_name in sys.modules:
+                importlib.reload(sys.modules[module_name])
                 continue
             spec = importlib.util.spec_from_file_location(module_name, mod_file)
             if spec and isinstance(spec.loader, SourceFileLoader):
