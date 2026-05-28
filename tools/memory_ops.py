@@ -72,7 +72,7 @@ def _disambiguate_semantic_title(ctx: ToolContext, raw_title: str, kind: str, no
     description="向工作记忆添加一条提炼后的观察或结论。只写从素材中蒸馏出的要点（1-3句），禁止写原始文件内容、命令输出或大段文本——那些素材已在 tool_history 中保留，重复写入会撑满上下文。",
     progress_category="mutation",
     params=[
-        ToolParam("content", "string", "提炼后的观察/结论/警告，不超过200字", required=True),
+        ToolParam("content", "string", "提炼后的观察/结论/警告；字数不限，但必须是自己的提炼，不得直接粘贴原始文件内容或命令输出", required=True),
         ToolParam("kind", "string", "类型标签，如 observation/conclusion/caution", required=False),
         ToolParam("priority", "number", "优先级 0-1，默认 0.8", required=False),
     ],
