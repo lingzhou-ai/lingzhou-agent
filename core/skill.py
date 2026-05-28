@@ -656,7 +656,6 @@ class SkillRegistry:
         max_inject: 最多提示多少个候选技能；0 = 不限（向后兼容）。
         """
         all_skills = list(self._skills)
-        context_text = str(_kwargs.get("context_text") or "")
         has_active_task = bool(_kwargs.get("has_active_task"))
         has_next_step = bool(_kwargs.get("has_next_step"))
         failure_count = int(_kwargs.get("failure_count") or 0)

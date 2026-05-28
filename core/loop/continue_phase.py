@@ -10,7 +10,6 @@ from typing import Any
 
 from core.judgment import JudgmentOutput
 from memory.working import WMItem
-from tools.registry import ToolResult
 
 from .common import (
     _maybe_reconcile_bootstrap,

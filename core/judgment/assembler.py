@@ -829,16 +829,10 @@ class JudgmentContextAssembler:
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
         self._last_selected_skills = []
-        # 结合状态信号 + 上轮 LLM 使用记忆 + 当前任务/消息文本预选候选 skill
-        # 三层优先级：(1) last_applied 记忆热路径，(2) state_rules 信号驱动，(3) context 关键词兜底
+        # 结合状态信号 + 上轮 LLM 使用记忆预选候选 skill
+        # 两层优先级：(1) last_applied 记忆热路径，(2) state_rules 信号驱动
         _wm_pressure = (wm.total_tokens / wm._token_budget) if wm._token_budget > 0 else 0.0
-        _skill_ctx = " ".join(filter(None, [
-            task.title if task else "",
-            task.next_step if task else "",
-            user_message or "",
-        ]))
         skills = self._skills.match_for_context(
-            context_text=_skill_ctx,
             last_applied=self._last_applied_skill_names,
             has_active_task=bool(task),
             has_next_step=bool(task and getattr(task, "next_step", None)),
