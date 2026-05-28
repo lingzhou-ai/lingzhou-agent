@@ -5,10 +5,6 @@ description: "用户否定性反馈内化技能。Use when 收到用户消息时
 compatibility: Designed for Lingzhou user message handling.
 tags: reflection, user, correction, self-correction
 triggers: 否定反馈, 纠正, 搞错了, 不对, 撤回
-match_terms: 用户否定, 反思, 纠正, probe.disable, memory.set_fact 覆盖
-match_rules: |
-  any: 搞错了 | 不对 | 纠正 | 撤回 | 不满意 => 1.0
-  any: 否定反馈 | 反思 | 纠正 => 0.8
 state_rules: |
   has_active_task => 0.2
 ---

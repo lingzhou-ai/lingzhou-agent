@@ -5,10 +5,6 @@ description: "任务拆解与执行纪律技能。Use when 接到新任务首轮
 compatibility: Designed for Lingzhou task runtime.
 tags: task, planning, decomposition, parallel
 triggers: 新任务, task.plan, 拆解, parallel_actions, delegate_tasks
-match_terms: task.add, task.plan, delegate_tasks, parallel_actions, next_step
-match_rules: |
-  any: task.plan | 拆解 | delegate_tasks => 0.9
-  any: task.add | parallel_actions | next_step => 0.6
 state_rules: |
   has_active_task => 0.35
 ---

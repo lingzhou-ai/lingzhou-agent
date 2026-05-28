@@ -5,10 +5,6 @@ description: "冷启动 / bootstrap 技能。Use when 刚进入运行循环，�
 compatibility: Designed for Lingzhou judgment runtime; bootstrap identity is already injected into working memory.
 tags: bootstrap, cold-start
 triggers: 冷启动, bootstrap, 启动
-match_terms: bootstrap_identity, BOOTSTRAP.md, IDENTITY.md, SOUL.md
-match_rules: |
-  any: 冷启动 | bootstrap | 启动 => 0.7
-  any: bootstrap_identity | BOOTSTRAP.md | IDENTITY.md | SOUL.md => 1.0
 state_rules: |
   idle_only => 1.2
 ---

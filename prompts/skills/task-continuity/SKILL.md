@@ -5,10 +5,6 @@ description: "任务连续性技能。Use when 当前任务已有 next_step、cu
 compatibility: Designed for Lingzhou task runtime with active_task / inbox steering.
 tags: continuity, task
 triggers: next_step, 继续推进, 当前任务
-match_terms: current_step, task inbox, steering, old plan
-match_rules: |
-  any: next_step | 继续推进 | 当前任务 => 0.7
-  any: current_step | task inbox | steering | old plan => 1.0
 state_rules: |
   has_active_task => 0.35
   has_next_step => 0.85

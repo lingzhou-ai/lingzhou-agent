@@ -784,8 +784,8 @@ class SkillRegistry:
 
         scored: list[tuple[float, int, Skill]] = []
         for index, skill in enumerate(all_skills):
+            # 仅使用机器可观测的状态信号打分；文本关键词匹配由 LLM 自主在 catalog 中完成
             score = _state_score(skill, state_values=state_values)
-            score += _context_score(skill, context_text)
             # last_applied 只加权已有得分的 skill，不独立浮出零分 skill
             if skill.name in applied_names and score > 0:
                 score += 0.35

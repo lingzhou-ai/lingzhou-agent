@@ -4,10 +4,6 @@ description: "证据优先修改技能。Use when 准备写文件、执行命令
 compatibility: Designed for Lingzhou editing workflows with file and shell tools.
 tags: caution, verification
 triggers: 修改, 写入, 验证, 证据
-match_terms: file.edit, file.write, shell.run, verify
-match_rules: |
-  any: 修改 | 写入 | 验证 | 证据 => 0.7
-  any: file.edit | file.write | shell.run | verify => 1.0
 state_rules: |
   wm_pressure_ratio >= 0.1 => 0.55
 ---

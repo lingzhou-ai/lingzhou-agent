@@ -5,11 +5,6 @@ description: "工具与 provider 集成技能，也包含用户追问守护（as
 compatibility: Designed for Lingzhou tool calling and provider integration flows.
 tags: provider, tool-call, ask-evidence
 triggers: 工具失败, 参数错误, file not found, 调用失败, 用户追问, task.ask, URL
-match_terms: FileNotFound, 参数名, 参数类型, tool call fails, ask_evidence, task.ask, web.fetch
-match_rules: |
-  any: 工具失败 | 参数错误 | file not found | 调用失败 => 0.7
-  any: FileNotFound | 参数名 | 参数类型 | tool call fails => 1.0
-  any: ask_evidence | task.ask | 用户追问 | web.fetch => 0.7
 state_rules: |
   failure_signal_ratio >= 0.1 => 0.8
 ---

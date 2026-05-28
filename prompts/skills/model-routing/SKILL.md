@@ -5,11 +5,6 @@ description: "模型路由与推理档位技能。Use when 需要根据 model_ro
 compatibility: Designed for Lingzhou multi-tier routing and model_strategy decisions.
 tags: routing, model, tier, thinking
 triggers: 模型路由, next_phase_tier, routing_overrides, thinking_override, next_idle_gap
-match_terms: model_routing_section, tool_tier_mapping, tool_capability_mapping, next_phase_tier, routing_overrides, thinking_override, next_idle_gap_secs, next_idle_gap_ms
-match_rules: |
-  any: model_routing_section | tool_tier_mapping | tool_capability_mapping => 1.0
-  any: next_phase_tier | routing_overrides | thinking_override | next_idle_gap_secs | next_idle_gap_ms => 0.9
-  any: reader | reasoner | repair | capability => 0.5
 state_rules: |
   has_active_task >= 0.5 => 0.2
   wm_pressure_ratio >= 0.05 => 0.2

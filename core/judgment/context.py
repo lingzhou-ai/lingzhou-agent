@@ -1057,30 +1057,31 @@ def _fmt_perception_replay(replay: PerceptionReplaySummary | None) -> str:
     return "\n".join(lines)
 
 
-def _short_skill_desc(desc: str, limit: int = 90) -> str:
+def _short_skill_desc(desc: str, limit: int = 200) -> str:
     text = desc.strip()
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
 
 
-def _fmt_skill_catalog(skills: list[Skill]) -> str:
+def _fmt_skill_catalog(skills: list[Skill], *, pinned_names: set[str] | None = None) -> str:
     if not skills:
         return "（暂无 skills）"
     lines = [
-        "**AGENT SKILLS CATALOG** — 这里只预加载 metadata，不直接注入完整 instructions。",
-        "当某个 skill 的 description 明显匹配当前任务时，用 skill.activate 加载对应 SKILL.md；不要仅凭 skill 名称猜测。",
+        "**AGENT SKILLS CATALOG** — 阅读每条 description（Use when）后自主判断是否激活，不要仅凭名称猜测。",
+        "用 skill.activate(name=\"...\") 加载完整 SKILL.md，再决定是否遵循。",
         "",
-        "| 技能 | 触发信号 | 何时使用 |",
-        "|------|---------|---------|",
+        "| 技能 | 说明（Use when）及激活上下文 |",
+        "|------|--------------------------|",
     ]
     for skill in skills:
-        triggers_list = getattr(skill, "triggers", None) or []
-        trigger_str = "、".join(triggers_list[:3]) if triggers_list else "—"
         desc = _short_skill_desc(skill.description)
-        lines.append(f"| `{skill.name}` | {trigger_str} | {desc} |")
+        compat = str(getattr(skill, "compatibility", "") or "").strip()
+        cell = f"{desc}<br>*{compat}*" if compat else desc
+        pin_mark = " `[↑]`" if pinned_names and skill.name in pinned_names else ""
+        lines.append(f"| `{skill.name}`{pin_mark} | {cell} |")
     lines.append("")
-    lines.append("可调用 skill.list / skill.search 查 catalog；真正使用前优先 skill.activate，而不是把目录摘要当完整规则。")
+    lines.append("可调用 skill.list / skill.search 浏览；激活前务必 skill.activate 读取完整规则。")
     return "\n".join(lines)
 
 

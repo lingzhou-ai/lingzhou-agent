@@ -5,10 +5,6 @@ description: "记忆与知识管理技能。Use when 任务完成后、空闲整
 compatibility: Designed for Lingzhou memory and skill management.
 tags: memory, knowledge, skill, stewardship
 triggers: 记忆, 存储, 知识, skill.synthesize, 空闲整理
-match_terms: memory.set_fact, memory.add_semantic, skill.synthesize, skill.evolve, memory.add_wm
-match_rules: |
-  any: memory.set_fact | memory.add_semantic | skill.synthesize => 0.9
-  any: 记忆 | 存储 | 知识管理 => 0.6
 state_rules: |
   wm_pressure_ratio >= 0.1 => 0.5
 ---

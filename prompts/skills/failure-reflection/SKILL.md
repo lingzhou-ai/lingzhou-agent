@@ -5,10 +5,6 @@ description: "失败反思技能。Use when 已积累失败信号、连续重试
 compatibility: Designed for Lingzhou failure handling and recovery loops.
 tags: failure, reflection
 triggers: 失败, 报错, 根因, 重试
-match_terms: retry, blocked, root cause, recover
-match_rules: |
-  any: 失败 | 报错 | 根因 | 重试 => 0.7
-  any: retry | blocked | root cause | recover => 1.0
 state_rules: |
   failure_signal_ratio >= 0.1 => 1.4
 ---

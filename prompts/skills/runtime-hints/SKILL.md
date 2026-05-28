@@ -5,10 +5,6 @@ description: "运行时提示响应技能。Use when WM 中出现 task_replan / 
 compatibility: Designed for Lingzhou runtime hint and cognitive signal handling.
 tags: runtime, hints, cognitive, signals, recovery
 triggers: task_replan, routing_guard, meta_reflection, crash_recovery, 认知警告
-match_terms: task_replan, routing_guard, meta_reflection, crash_recovery, durable_failure_policy
-match_rules: |
-  any: task_replan | routing_guard | meta_reflection | crash_recovery => 1.0
-  any: 认知警告 | 调度触发 | control:meta | control:durable => 0.9
 state_rules: |
   wm_pressure_ratio >= 0.05 => 0.3
 ---

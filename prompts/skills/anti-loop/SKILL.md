@@ -5,10 +5,6 @@ description: "反循环执行纪律技能。Use when 检测到重复工具调用
 compatibility: Designed for Lingzhou execution loop management.
 tags: anti-loop, execution, discipline, wm
 triggers: 循环, 重复调用, 无进展, 重试, durable_failure
-match_terms: durable_failure, self_aware, repeat_action_count, memory.snapshot, file.read loop
-match_rules: |
-  any: 循环 | 重复调用 | 无进展 => 0.9
-  any: durable_failure | repeat_action_count | 自我感知 => 1.0
 state_rules: |
   failure_signal_ratio >= 0.05 => 0.5
   wm_pressure_ratio >= 0.1 => 0.3

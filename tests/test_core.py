@@ -3524,9 +3524,7 @@ def test_skill_registry_loads_package_skill_and_matches_context(tmp_path):
         """---
 name: karpathy-coding-base
 description: |
-  Andrej Karpathy-inspired coding guardrails. Triggers: 修复bug、重构、写脚本、代码审查
-match_rules: |
-    any: 修复bug | 重构 | 写脚本 | 代码审查 | bug | 脚本 => 1.0
+  Andrej Karpathy-inspired coding guardrails. Use when: fixing bugs, refactoring, writing scripts, code review.
 ---
 先思考，再编码。极简优先。手术式变更。目标驱动验证。
 """,
@@ -3539,9 +3537,7 @@ match_rules: |
         """---
 name: interaction
 description: |
-  统一人际交互入口。Triggers: 提问/确认/好奇追问/理解语境
-match_rules: |
-    any: 提问 | 确认 | 好奇 | 好奇追问 | 理解语境 => 1.0
+  统一人际交互入口。Use when: 提问/确认/好奇追问/理解语境。
 ---
 先判断意图，再决定是回答、提问还是确认。方向不清时问一个最小问题。
 """,
@@ -3554,9 +3550,7 @@ match_rules: |
         """---
 name: proactive-work
 description: |
-  主动工作方法论。Triggers: 完成任务后、等回复时、需自主决定下一步
-match_rules: |
-    any: 完成任务后 | 等回复时 | 自主决定下一步 | 自己判断 | 往前推进 => 1.0
+  主动工作方法论。Use when: 完成任务后、等回复时、需自主决定下一步。
 ---
 完成任务后不要等待，主动判断并推进下一步。
 """,
@@ -3569,9 +3563,8 @@ match_rules: |
         """---
 name: self-monitoring
 description: |
-  Self-monitoring. Triggers: 工具执行失败、编辑失败、文件异常、日志错误、执行偏离预期
-match_rules: |
-    any: 工具执行失败 | 编辑失败 | edit 失败 | 文件异常 | 日志错误 | 日志异常 | 执行偏离预期 | 哪里偏了 => 1.0
+  Self-monitoring. Use when: tool call fails, edit fails, log errors, execution deviation.
+state_rules: failure_signal >= 0.5 => 1.0
 ---
 发现漂移、日志错误、编辑失败后，先检查并修复。
 """,
@@ -3584,9 +3577,8 @@ match_rules: |
         """---
 name: error-handling
 description: |
-  Error handling. Triggers: tool call fails, exec denied, network timeout, permission error
-match_rules: |
-    any: tool call fails | exec denied | network timeout | permission error => 1.0
+  Error handling. Use when: exec denied, timeout, permission error, tool call fails.
+state_rules: failure_signal >= 0.5 => 2.0
 ---
 失败后先分类错误，再决定重试、替代还是汇报。
 """,
@@ -3594,6 +3586,7 @@ match_rules: |
     )
 
     reg = SkillRegistry(skills_dir=skills_dir)
+    # max_inject=0：展示全部 catalog，LLM 自主感知并选择
     skills = reg.match_for_context(
         wm_pressure=0.1,
         has_active_task=True,
@@ -3601,7 +3594,7 @@ match_rules: |
         failure_count=0,
         high_error_streak=0,
         context_text="请你修复 bug，并顺手重构这个脚本",
-        max_inject=20,
+        max_inject=0,
     )
     assert any(s.name == "karpathy-coding-base" for s in skills)
 
@@ -3612,7 +3605,7 @@ match_rules: |
         failure_count=0,
         high_error_streak=0,
         context_text="我有点好奇，你觉得这里真正的分歧是什么？",
-        max_inject=20,
+        max_inject=0,
     )
     assert any(s.name == "interaction" for s in interaction_skills)
 
@@ -3623,7 +3616,7 @@ match_rules: |
         failure_count=0,
         high_error_streak=0,
         context_text="做完了当前任务，接下来你自己判断往前推进",
-        max_inject=20,
+        max_inject=0,
     )
     assert any(s.name == "proactive-work" for s in proactive_skills)
 
@@ -3649,6 +3642,7 @@ match_rules: |
     )
     assert any(s.name == "error-handling" for s in err_skills)
 
+    # error-handling 有更高的 state_rules 权重（2.0 > 1.0），在 failure 信号下应排第一
     focused_err_skills = reg.match_for_context(
         wm_pressure=0.1,
         has_active_task=True,
@@ -3791,8 +3785,6 @@ def test_builtin_skills_follow_unified_frontmatter_spec():
         "compatibility",
         "tags",
         "triggers",
-        "match_terms",
-        "match_rules",
         "state_rules",
     )
 
@@ -4002,7 +3994,11 @@ seed v2
     assert "workspace override" in target.read_text(encoding="utf-8")
 
 
-def test_skill_registry_prefers_contextual_skill_over_builtin_state_bias(tmp_path):
+def test_skill_registry_description_triggers_no_longer_drive_machine_selection(tmp_path):
+    """LLM 新范式：description 中的 Triggers: 文本不再驱动机器侧评分。
+    skill 无 state_rules 时 score=0，max_inject=1 下不会被选中。
+    激活改由 LLM 阅读 catalog description 后自主调用 skill.activate 完成。
+    """
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
@@ -4030,7 +4026,8 @@ description: |
         max_inject=1,
     )
 
-    assert [skill.name for skill in skills] == ["error-handling"]
+    # 新范式：description Triggers: 文本不再驱动机器侧选择；无 state_rules = score 0 = 不被注入
+    assert [skill.name for skill in skills] != ["error-handling"]
 
 
 def test_skill_registry_does_not_match_on_skill_name_alone(tmp_path):
@@ -4063,7 +4060,10 @@ description: 完全中性的技能说明。
     assert [skill.name for skill in skills] != ["error-handling"]
 
 
-def test_skill_registry_prefers_explicit_match_terms(tmp_path):
+def test_skill_registry_match_terms_no_longer_drive_machine_selection(tmp_path):
+    """LLM 新范式：match_terms 不再驱动机器侧评分。
+    skill 无 state_rules 时 score=0，max_inject=1 不会被选中，可以安全删除 match_terms 字段。
+    """
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
@@ -4091,10 +4091,14 @@ match_terms: timeout, permission error, exec denied
         max_inject=1,
     )
 
-    assert [skill.name for skill in skills] == ["neutral-skill"]
+    # match_terms 不再驱动机器侧评分；无 state_rules = score 0 = 不会被选中
+    assert [skill.name for skill in skills] != ["neutral-skill"]
 
 
-def test_skill_registry_uses_declarative_match_rules(tmp_path):
+def test_skill_registry_match_rules_no_longer_drive_machine_selection(tmp_path):
+    """LLM 新范式：match_rules 不再驱动机器侧评分。
+    skill 无 state_rules 时 score=0，max_inject=1 不会被选中，可以安全删除 match_rules 字段。
+    """
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
@@ -4123,7 +4127,8 @@ match_rules: |
         max_inject=1,
     )
 
-    assert [skill.name for skill in skills] == ["gateway-reconnect"]
+    # match_rules 不再驱动机器侧评分；无 state_rules = score 0 = 不会被选中
+    assert [skill.name for skill in skills] != ["gateway-reconnect"]
 
 
 def test_skill_registry_description_only_no_longer_matches_context(tmp_path):
@@ -4228,39 +4233,35 @@ def test_last_applied_boosts_skill_when_it_already_has_score(tmp_path):
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
-    # skill-weak：context 关键词命中但分低
+    # skill-weak：idle 状态下有基础分
     pkg_w = skills_dir / "skill-weak"
     pkg_w.mkdir(parents=True)
     (pkg_w / "SKILL.md").write_text(
         """---
 name: skill-weak
 description: |
-  Weak skill. Use when: debugging.
+  Weak skill. Use when: idle, no task active.
 compatibility: any
 tags: debug
-triggers: ["debug"]
-match_terms: debug
-match_rules: ""
-state_rules: ""
+triggers: ["idle"]
+state_rules: idle_only => 0.5
 ---
 Weak body.
 """,
         encoding="utf-8",
     )
-    # skill-strong：context 关键词命中且在 last_applied 中（应排第一）
+    # skill-strong：同样有 idle 基础分，且在 last_applied 中（加权后排第一）
     pkg_s = skills_dir / "skill-strong"
     pkg_s.mkdir(parents=True)
     (pkg_s / "SKILL.md").write_text(
         """---
 name: skill-strong
 description: |
-  Strong skill. Use when: fixing bug.
+  Strong skill. Use when: idle, no active task.
 compatibility: any
 tags: bug
-triggers: ["bug fix"]
-match_terms: bug
-match_rules: ""
-state_rules: ""
+triggers: ["idle"]
+state_rules: idle_only => 0.5
 ---
 Strong body.
 """,
@@ -4269,6 +4270,7 @@ Strong body.
 
     reg = SkillRegistry(skills_dir=skills_dir)
 
+    # has_active_task=False, has_next_step=False → idle_only=1.0 → 两个 skill 都有基础分
     skills = reg.match_for_context(
         last_applied=["skill-strong"],
         has_active_task=False,
@@ -4308,24 +4310,23 @@ def test_skill_catalog_pinned_mark_appears_for_last_applied():
 
 
 def test_skill_catalog_sorted_by_match_score(tmp_path):
-    """match_for_context 返回的 skills 排在 catalog 顶部，其余按原序追加。"""
+    """match_for_context 返回的 state-scored skills 排在 catalog 顶部，其余按原序追加。"""
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
-    for name, term in [("skill-x", "xray"), ("skill-y", "yoga"), ("skill-z", "zebra")]:
+    for name, has_state in [("skill-x", False), ("skill-y", False), ("skill-z", True)]:
+        state_rules = "wm_pressure_ratio >= 0.1 => 1.0" if has_state else ""
         pkg = skills_dir / name
         pkg.mkdir(parents=True)
         (pkg / "SKILL.md").write_text(
             f"""---
 name: {name}
 description: |
-  {name} handler. Use when: dealing with {term}.
+  {name} handler. Use when: relevant state signal fires.
 compatibility: any
 tags: test
-triggers: ["{term}"]
-match_terms: {term}
-match_rules: ""
-state_rules: ""
+triggers: ["signal"]
+state_rules: {state_rules}
 ---
 body.
 """,
@@ -4334,9 +4335,9 @@ body.
 
     reg = SkillRegistry(skills_dir=skills_dir)
 
-    # 只提 zebra 关键词 → skill-z 应排第一，其余顺序跟随
+    # wm_pressure=0.1 → wm_pressure_ratio=0.25 >= 0.1 → skill-z 得分 > 0，排第一
     matched = reg.match_for_context(
-        context_text="zebra problem",
+        context_text="",
         has_active_task=False,
         has_next_step=False,
         failure_count=0,
@@ -4344,7 +4345,7 @@ body.
         max_inject=0,
     )
     names = [s.name for s in matched]
-    assert names[0] == "skill-z", "命中 context 的 skill 应排 catalog 顶部"
+    assert names[0] == "skill-z", "state 信号命中的 skill 应排 catalog 顶部"
     # skill-x / skill-y 零分，排在后面（顺序不强制，但都在结果中）
     assert set(names) == {"skill-x", "skill-y", "skill-z"}
 
@@ -4401,25 +4402,24 @@ def test_primary_skill_none_when_no_last_applied():
 
 
 def test_match_for_context_catalog_order_vs_original(tmp_path):
-    """catalog 排序：matched skill 置顶，zero-score skill 跟随，且总数不变。"""
+    """catalog 排序：state-scored skill 置顶，zero-score skill 跟随，且总数不变。"""
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
-    names_terms = [("aa", "apple"), ("bb", "banana"), ("cc", "cherry"), ("dd", "date")]
-    for name, term in names_terms:
+    names_terms = [("aa", False), ("bb", False), ("cc", True), ("dd", False)]
+    for name, has_state in names_terms:
+        state_rules = "wm_pressure_ratio >= 0.1 => 1.0" if has_state else ""
         pkg = skills_dir / name
         pkg.mkdir(parents=True)
         (pkg / "SKILL.md").write_text(
             f"""---
 name: {name}
 description: |
-  {name} handler. Use when: dealing with {term}.
+  {name} handler. Use when: state signal fires.
 compatibility: any
 tags: test
-triggers: ["{term}"]
-match_terms: {term}
-match_rules: ""
-state_rules: ""
+triggers: ["signal"]
+state_rules: {state_rules}
 ---
 body.
 """,
@@ -4429,9 +4429,9 @@ body.
     reg = SkillRegistry(skills_dir=skills_dir)
     total = len(reg.all_skills())
 
-    # context 命中 cherry → cc 应在顶部
+    # wm_pressure=0.1 → wm_pressure_ratio=0.25 ≥ 0.1 → cc 得分 > 0，排第一
     result = reg.match_for_context(
-        context_text="cherry pie",
+        context_text="",
         has_active_task=False,
         has_next_step=False,
         failure_count=0,
@@ -4439,7 +4439,7 @@ body.
         max_inject=0,
     )
     assert len(result) == total, "max_inject=0 时返回所有 skill"
-    assert result[0].name == "cc", "命中 context 的 skill 排第一"
+    assert result[0].name == "cc", "state 信号命中的 skill 排第一"
 
 
 def test_skill_registry_does_not_stick_any_skill_without_signal(tmp_path):
