@@ -65,6 +65,7 @@ class TaskStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._db_opt = await aiosqlite.connect(str(self._path))
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=30000")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._migrate()
         await self._db.executescript(
@@ -77,6 +78,7 @@ class TaskStore:
         )
         await self._db.commit()
         await self._migrate_interlocutor_facts()
+        await self._migrate_ledger_run_id()
 
     async def close(self) -> None:
         if self._db_opt:
@@ -225,6 +227,24 @@ class TaskStore:
             await db.execute("DELETE FROM facts WHERE key=?", (old_key,))
         await db.commit()
         logger.info("[task_store] 已迁移 %d 条旧 person_profile facts 到 interlocutor", len(migrations))
+
+    async def _migrate_ledger_run_id(self) -> None:
+        """为旧 life_ledger 表补加 run_id 列（新建 DB 已由 schema 包含此列）。"""
+        db = self._db_opt
+        assert db is not None
+        async with db.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('life_ledger') WHERE name='run_id'"
+        ) as cur:
+            if not (await cur.fetchone())[0]:
+                await db.execute(
+                    "ALTER TABLE life_ledger ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0"
+                )
+                await db.commit()
+        # 确保索引存在（无论是新建还是迁移路径）
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_life_ledger_run_id ON life_ledger(run_id)"
+        )
+        await db.commit()
 
     # ── 任务操作 ─────────────────────────────────────────────────────────
 
@@ -517,8 +537,9 @@ class TaskStore:
         scope: str = "task",
         source: str = "",
         accepted: bool = True,
+        run_id: int = 0,
     ) -> None:
-        await self._ledger.append(op, key, value, scope=scope, source=source, accepted=accepted)
+        await self._ledger.append(op, key, value, scope=scope, source=source, accepted=accepted, run_id=run_id)
 
     async def ledger_recent(self, limit: int = 50) -> list[dict]:
         """返回最近 N 条生命史记录，供 LLM 感知近期状态变化。"""

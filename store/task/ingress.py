@@ -17,6 +17,7 @@ class _IngressBase:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._path))
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -28,8 +29,12 @@ class IngressWriter(_IngressBase):
     --------
     本类（及其子类 IngressStore）使用同步 sqlite3，供线程侧（channel/webhook）
     写入任务和消息。Runtime 内部的读写通过独立的 aiosqlite 异步路径
-    （store/task/_base.py + TaskStore 等）完成。两条路径共享同一个 SQLite 文件，
-    SQLite WAL 模式保证写者互不阻塞、读写并发安全。不应在同一调用栈混用两条路径。
+    （store/task/_base.py + TaskStore 等）完成。两条路径共享同一个 SQLite 文件。
+
+    SQLite WAL 模式允许读写并发，但写写仍然串行。同一进程内两个连接并发写会触发
+    SQLITE_LOCKED（不同于跨进程的 SQLITE_BUSY），且不受 sqlite3.connect(timeout)
+    控制。因此两条路径均通过 PRAGMA busy_timeout 在 SQLite 层设置等待时间，
+    避免并发写时立即报 "database is locked"。不应在同一调用栈混用两条路径。
     """
 
     def add_chat_message(
