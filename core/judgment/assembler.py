@@ -233,6 +233,28 @@ class JudgmentContextAssembler:
         elif key == "system":
             self._system_prompt = self._cfg.load_prompt("system")
 
+    def _min_routing_input_budget(self) -> int:
+        """取所有路由 tier 中最小 context_window 对应的输入预算。
+
+        prompt 可能被发给任意 tier（reader/reasoner/repair 及其 fallback），
+        应以最小 context_window 为预算上限，避免对小窗口模型（如 128k reader）溢出。
+        """
+        from provider.catalog import resolve_context_window
+        base_budget = self._cfg.judgment_input_token_budget()
+        min_budget = base_budget
+        catalog_path = self._cfg.workspace_dir / "models.json"
+        for tier in ("reader", "reasoner", "repair"):
+            _, model_ref = self._executor._resolve_tier_model(tier)
+            model_id = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+            cw = resolve_context_window(model_id, None, catalog_path=catalog_path)
+            if cw and cw > 0:
+                output_reserve = max(1024, cw // 4)
+                tier_budget = cw - output_reserve
+                if self._cfg.max_judgment_input_tokens is not None:
+                    tier_budget = min(tier_budget, self._cfg.max_judgment_input_tokens)
+                min_budget = min(min_budget, tier_budget)
+        return min_budget
+
     @staticmethod
     def _skills_for_log(skills: list[Skill]) -> str:
         if not skills:
@@ -929,13 +951,13 @@ class JudgmentContextAssembler:
             max_chars=self._cfg.thresholds.chat_history_max_chars,
         )
         _validate_context_schema(ctx)
+        budget = self._min_routing_input_budget()
         ctx = apply_context_budget(
             ctx,
-            self._cfg.judgment_input_token_budget(),
+            budget,
             skill_min_tokens=self._cfg.thresholds.skill_min_budget_tokens,
         )
         # 注入上下文预算信息到自我模型，供后续判断感知上下文压力
-        budget = self._cfg.judgment_input_token_budget()
         if budget:
             used = sum(len(v) for v in ctx.values())
             self._executor.self_model.context_budget = f"{budget // 1000}K" if budget >= 1000 else str(budget)
