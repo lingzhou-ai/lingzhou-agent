@@ -539,8 +539,9 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     capabilities=("completion_mutation",),
         params=[
         ToolParam("path", "string", "文件路径", required=True),
-        ToolParam("edits", "object",
+        ToolParam("edits", "array",
                   "替换操作列表，每项包含 oldText（要替换的原文）和 newText（替换后的内容）。"
+                  "必须是数组，即使只改一处也要用数组包裹。"
                   "例: [{\"oldText\": \"foo\", \"newText\": \"bar\"}, {\"oldText\": \"baz\", \"newText\": \"qux\"}]",
                   required=True),
     ],

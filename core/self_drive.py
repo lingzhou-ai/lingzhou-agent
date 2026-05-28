@@ -23,6 +23,9 @@ from pathlib import Path
 
 _log = logging.getLogger("lingzhou.self_drive")
 
+# 好奇心自然衰减的时间窗口（秒）；elapsed 以此归一化，超过该窗口才触发衰减
+_CURIOSITY_DECAY_WINDOW: int = 600  # 10 分钟
+
 
 @dataclass
 class CuriosityState:
@@ -60,8 +63,8 @@ class CuriosityState:
         """自然衰减 — 久不探索的兴趣会下降。"""
         now = time.monotonic()
         elapsed = now - self.last_exploration_at
-        if elapsed > 600:  # 10 分钟未探索
-            decay_factor = math.exp(-rate * elapsed / 600)
+        if elapsed > _CURIOSITY_DECAY_WINDOW:
+            decay_factor = math.exp(-rate * elapsed / _CURIOSITY_DECAY_WINDOW)
             self.overall *= decay_factor
             for k in self.interests:
                 self.interests[k] *= decay_factor

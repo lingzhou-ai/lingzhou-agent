@@ -43,7 +43,7 @@ refactor: xxx  # 重构
 
 ## 插件开发
 
-见 [docs/PLUGIN.md](docs/PLUGIN.md)
+见 [docs/guide/PLUGIN.md](docs/guide/PLUGIN.md)
 
 ## 测试
 

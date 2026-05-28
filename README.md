@@ -72,12 +72,12 @@ sudo systemctl enable --now lingzhou
 
 每个文档页顶部都带有中英文切换入口。
 
-- [架构设计与当前差距](docs/ARCHITECTURE.md)
-- [自驱力与自主探索](docs/SELF_DRIVE.md)
-- [工具目录](docs/TOOLS.md)
-- [配置参考](docs/CONFIG.md)
-- [探针说明](docs/PROBE.md)
-- [插件开发指南](docs/PLUGIN.md)
+- [架构设计与当前差距](docs/design/ARCHITECTURE.md)
+- [自驱力与自主探索](docs/guide/SELF_DRIVE.md)
+- [工具目录](docs/reference/TOOLS.md)
+- [配置参考](docs/reference/CONFIG.md)
+- [探针说明](docs/guide/PROBE.md)
+- [插件开发指南](docs/guide/PLUGIN.md)
 
 ## 内置工具面
 
@@ -90,7 +90,7 @@ sudo systemctl enable --now lingzhou
 - 网页、浏览器与媒体：`web.*`、`browser.*`、`image.*`、`tts.speak`
 - 技能、探针与通知：`skill.*`、`probe.*`、`wechat.send`
 
-完整清单见 [docs/TOOLS.md](docs/TOOLS.md)。
+完整清单见 [docs/reference/TOOLS.md](docs/reference/TOOLS.md)。
 
 ## 配置
 
@@ -107,7 +107,7 @@ sudo systemctl enable --now lingzhou
 }
 ```
 
-运行时可通过 `config.get` 和 `config.set` 工具读取或调整配置。详见 [docs/CONFIG.md](docs/CONFIG.md)。
+运行时可通过 `config.get` 和 `config.set` 工具读取或调整配置。详见 [docs/reference/CONFIG.md](docs/reference/CONFIG.md)。
 
 - **最小入门配置**：参考 `lingzhou.min.json.example`，仅需嵌入模型和一两个必要字段即可起步。
 - **配置发现**：`lingzhou config keys [group]` 列出指定分组（`loop`/`memory`/`evolution`…）的所有当前键与默认值。
@@ -120,7 +120,10 @@ lingzhou-agent/
 ├── channels/   # 外部通道，如 wechat
 ├── cli/        # chat、gateway、auth、logs、bootstrap
 ├── core/       # 认知循环、判断、执行、进化
-├── docs/       # 设计与运维文档
+├── docs/
+│   ├── design/   # 架构设计文档
+│   ├── guide/    # 操作指南
+│   └── reference/ # 配置与工具参考
 ├── memory/     # 记忆系统 facade
 ├── plugins/    # 插件工作区
 ├── provider/   # 模型 provider

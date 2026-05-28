@@ -800,7 +800,7 @@ Doctor 知道：API key 如何从环境变量、legacy credentials、auth profil
 | ✅ `store/semantic/` | `memory/semantic.py` 迁移 |
 | ✅ `store/task/models.py` | Run/Task/Failure dataclass 下沉到 store 层（修复 S1 逆向依赖） |
 | ✅ 截断常量清除（部分） | `max_chars=0`（无限制）语义建立，事件/episodic/chat 层已清理 |
-| ✅ `docs/BLUEPRINT_DIGITAL_LIFE.md` | 架构蓝图文档提交 |
+| ✅ `docs/design/BLUEPRINT_DIGITAL_LIFE.md` | 架构蓝图文档提交 |
 | ✅ 测试基线 | 366 个测试全部通过 |
 
 | 未完成 | 所在阶段 |

@@ -786,7 +786,7 @@ def _config_doc_defaults(path: Path) -> dict[str, str]:
 def test_config_reference_doc_defaults_match_code_defaults():
     from core.config import config_reference_defaults
 
-    doc_defaults = _config_doc_defaults(_proj_root() / "docs" / "CONFIG.md")
+    doc_defaults = _config_doc_defaults(_proj_root() / "docs" / "reference" / "CONFIG.md")
     expected = config_reference_defaults()
 
     assert {key: doc_defaults.get(key) for key in expected} == expected

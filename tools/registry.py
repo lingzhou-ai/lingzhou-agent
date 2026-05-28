@@ -47,7 +47,7 @@ def _is_discoverable_tool_file(mod_file: Path) -> bool:
 @dataclass(init=False)
 class ToolParam:
     name: str
-    type: str                    # "string" | "number" | "boolean" | "object"
+    type: str                    # "string" | "number" | "boolean" | "object" | "array"
     description: str
     required: bool = True
     default: Any = None

@@ -72,12 +72,12 @@ Reflection ->  Evolution
 
 Each document page now includes a language switch at the top.
 
-- [Architecture and Current Gaps](docs/ARCHITECTURE.en.md)
-- [Self-Drive](docs/SELF_DRIVE.en.md)
-- [Tool Catalog](docs/TOOLS.en.md)
-- [Configuration Reference](docs/CONFIG.en.md)
-- [Probe Guide](docs/PROBE.en.md)
-- [Plugin Guide](docs/PLUGIN.en.md)
+- [Architecture and Current Gaps](docs/design/ARCHITECTURE.en.md)
+- [Self-Drive](docs/guide/SELF_DRIVE.en.md)
+- [Tool Catalog](docs/reference/TOOLS.en.md)
+- [Configuration Reference](docs/reference/CONFIG.en.md)
+- [Probe Guide](docs/guide/PROBE.en.md)
+- [Plugin Guide](docs/guide/PLUGIN.en.md)
 
 ## Built-In Tool Surface
 
@@ -90,7 +90,7 @@ lingzhou currently ships built-in tool endpoints across these groups:
 - web, browser, and media: `web.*`, `browser.*`, `image.*`, `tts.speak`
 - skills, probes, and notifications: `skill.*`, `probe.*`, `wechat.send`
 
-See [docs/TOOLS.en.md](docs/TOOLS.en.md) for the grouped catalog and capability tags.
+See [docs/reference/TOOLS.en.md](docs/reference/TOOLS.en.md) for the grouped catalog and capability tags.
 
 ## Configuration
 
@@ -107,7 +107,7 @@ See [docs/TOOLS.en.md](docs/TOOLS.en.md) for the grouped catalog and capability 
 }
 ```
 
-The runtime can inspect and adjust config through `config.get` and `config.set`. Full details are in [docs/CONFIG.en.md](docs/CONFIG.en.md).
+The runtime can inspect and adjust config through `config.get` and `config.set`. Full details are in [docs/reference/CONFIG.en.md](docs/reference/CONFIG.en.md).
 
 - **Minimal starter config**: copy `lingzhou.min.json.example` and fill in only the model and any required fields.
 - **Key discovery**: `lingzhou config keys [group]` lists all current keys and defaults for a config group such as `loop`, `memory`, or `evolution`.
@@ -120,7 +120,10 @@ lingzhou-agent/
 ├── channels/   # external channels such as wechat
 ├── cli/        # chat, gateway, auth, logs, bootstrap
 ├── core/       # cognition loop, judgment, execution, evolution
-├── docs/       # design and operator docs
+├── docs/
+│   ├── design/    # architecture and design docs
+│   ├── guide/     # operator guides
+│   └── reference/ # config and tool reference
 ├── memory/     # memory system facade
 ├── plugins/    # plugin workspace
 ├── provider/   # model providers
