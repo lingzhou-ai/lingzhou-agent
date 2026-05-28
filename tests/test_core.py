@@ -462,29 +462,32 @@ def test_judgment_output_parse_null_text_fields_as_empty():
 
 
 def test_judgment_prompt_includes_runtime_hint_rules():
+    # 详细规则已外化到 runtime-hints skill，judgment.md 保留 skill 指针摘要
     prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    skill_body = (_proj_root() / "prompts" / "skills" / "runtime-hints" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "runtime hint 响应规则（高优先级）" in prompt
     assert "task_replan" in prompt
     assert "routing_guard" in prompt
-    assert "control:meta_reflection_hint:*" in prompt
-    assert "不要因为 WM 中出现建议就假设 durable failure policy 已经改变" in prompt
+    assert "运行时提示响应矩阵" in skill_body
+    assert "control:meta_reflection_hint:*" in skill_body
 
 
 def test_judgment_prompt_includes_json_first_runtime_db_hint():
-    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    # 详细 SQL 提示已外化到 shell-usage skill
+    skill_body = (_proj_root() / "prompts" / "skills" / "shell-usage" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "runtime.db` 中的 `tasks` 已是 JSON-first" in prompt
-    assert "PRAGMA table_info(tasks)" in prompt
-    assert "json_extract(data, '$.goal')" in prompt
+    assert "runtime.db" in skill_body
+    assert "PRAGMA table_info(tasks)" in skill_body
+    assert "json_extract(data, '$.goal')" in skill_body
 
 
 def test_judgment_prompt_includes_existing_task_dedup_rules():
     prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    skill_body = (_proj_root() / "prompts" / "skills" / "task-decomposition" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "### 其他开放任务" in prompt
     assert "### 相似开放任务" in prompt
-    assert "在调用 `task.add` 或 `delegate_tasks` 前" in prompt
+    assert "调用 `task.add` 或 `delegate_tasks` 前" in skill_body
 
 
 def test_chat_read_line_prefers_text_input(monkeypatch):

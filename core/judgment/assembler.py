@@ -828,9 +828,30 @@ class JudgmentContextAssembler:
 
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
-        skills: list[Skill] = []
         self._last_selected_skills = []
-        _log.debug("[skill] catalog-only mode: runtime 不预选候选 skill，由模型自行 activation")
+        # 结合状态信号 + 上轮 LLM 使用记忆 + 当前任务/消息文本预选候选 skill
+        # 三层优先级：(1) last_applied 记忆热路径，(2) state_rules 信号驱动，(3) context 关键词兜底
+        _wm_pressure = (wm.total_tokens / wm._token_budget) if wm._token_budget > 0 else 0.0
+        _skill_ctx = " ".join(filter(None, [
+            task.title if task else "",
+            task.next_step if task else "",
+            (user_message or "")[:120],
+        ]))
+        skills = self._skills.match_for_context(
+            context_text=_skill_ctx,
+            last_applied=self._last_applied_skill_names,
+            has_active_task=bool(task),
+            has_next_step=bool(task and getattr(task, "next_step", None)),
+            failure_count=len(failures) if failures else 0,
+            wm_pressure=_wm_pressure,
+            failure_threshold=self._cfg.thresholds.skill_failure_threshold,
+            wm_pressure_threshold=self._cfg.thresholds.skill_wm_pressure_threshold,
+            max_inject=3,
+        )
+        self._last_selected_skills = list(skills)
+        # 按得分重排 catalog：候选技能置顶，其余按原顺序跟随
+        _scored_names = {s.name for s in skills}
+        all_skills = skills + [s for s in all_skills if s.name not in _scored_names]
 
         ctx = {
             "task_section": _fmt_task(task),
@@ -882,8 +903,14 @@ class JudgmentContextAssembler:
             "signals_section": _fmt_judgment_signals(judgment_signals),
             "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
             "perception_replay_section": _fmt_perception_replay(perception_replay),
-            "skills_catalog_section": _fmt_skill_catalog(all_skills),
-            "primary_skill_section": _fmt_primary_skill(skills[0] if skills else None),
+            "skills_catalog_section": _fmt_skill_catalog(
+                all_skills, pinned_names=set(self._last_applied_skill_names)
+            ),
+            "primary_skill_section": _fmt_primary_skill(
+                # primary = LLM 上轮明确选用的技能（LLM 自己的记忆），不依赖 keyword 预选
+                self._skills.get(self._last_applied_skill_names[0])
+                if self._last_applied_skill_names else None
+            ),
             "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
