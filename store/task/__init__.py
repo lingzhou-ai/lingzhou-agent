@@ -1,6 +1,7 @@
 """store/task/__init__.py — 统一任务存储入口（TaskStore + 所有子存储）。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -47,6 +48,9 @@ class TaskStore:
     def __init__(self, db_path: Path) -> None:
         self._path = Path(db_path) if isinstance(db_path, str) else db_path
         self._db_opt: aiosqlite.Connection | None = None
+        # 写操作串行锁：防止并行 tick 多链并发写同一 aiosqlite 连接引发 SQLITE_LOCKED
+        # （busy_timeout 只对跨进程 SQLITE_BUSY 有效，同进程内 SQLITE_LOCKED 无效）
+        self._db_write_lock: asyncio.Lock = asyncio.Lock()
         self._chat = ChatMessageStore(lambda: self._db)
         self._facts = FactStore(lambda: self._db)
         self._failures = FailureStore(lambda: self._db)
@@ -453,12 +457,13 @@ class TaskStore:
         progress: str = "",
         extras: dict[str, Any] | None = None,
     ) -> int:
-        return await self._runs.add_run(
-            task_id=task_id, run_type=run_type, worker_type=worker_type, status=status,
-            input_json=input_json, output_json=output_json, log_text=log_text,
-            error_text=error_text, tool_name=tool_name, session_id=session_id,
-            model_tier=model_tier, progress=progress, extras=extras,
-        )
+        async with self._db_write_lock:
+            return await self._runs.add_run(
+                task_id=task_id, run_type=run_type, worker_type=worker_type, status=status,
+                input_json=input_json, output_json=output_json, log_text=log_text,
+                error_text=error_text, tool_name=tool_name, session_id=session_id,
+                model_tier=model_tier, progress=progress, extras=extras,
+            )
 
     async def get_run_by_id(self, run_id: int) -> Run | None:
         return await self._runs.get_run_by_id(run_id)
@@ -486,11 +491,12 @@ class TaskStore:
         progress: str | None = None,
         extras: dict[str, Any] | None = None,
     ) -> None:
-        await self._runs.update_run(
-            run_id, task_id=task_id, status=status, output_json=output_json,
-            log_text=log_text, error_text=error_text, session_id=session_id,
-            model_tier=model_tier, progress=progress, extras=extras,
-        )
+        async with self._db_write_lock:
+            await self._runs.update_run(
+                run_id, task_id=task_id, status=status, output_json=output_json,
+                log_text=log_text, error_text=error_text, session_id=session_id,
+                model_tier=model_tier, progress=progress, extras=extras,
+            )
 
     async def cancel_stale_runs(self, stale_after_seconds: int = 600) -> int:
         """清理进程重启后遗留的非终态 Run（Phase 3d 崩溃恢复）。"""
