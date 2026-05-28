@@ -83,7 +83,10 @@ def _resolve_workdir(raw: Any, ctx: ToolContext | None = None) -> Path:
         if repo_root.exists():
             return repo_root
         return Path.cwd()
-    return Path(str(raw)).expanduser()
+    p = Path(str(raw)).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"workdir 不存在: {p}")
+    return p
 
 
 def _threshold_value(ctx: ToolContext, attr: str, default: Any) -> Any:
@@ -166,7 +169,10 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _sandbox_dir = tempfile.mkdtemp(prefix="lz_sandbox_")
         workdir = Path(_sandbox_dir)
     else:
-        workdir = _resolve_workdir(workdir_raw, ctx)
+        try:
+            workdir = _resolve_workdir(workdir_raw, ctx)
+        except FileNotFoundError as e:
+            return ToolResult(summary=str(e), error="WorkdirNotFound")
 
     # 最小化 env：过滤含 API_KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL / AUTH 的变量
     # 防止提示注入攻击通过 printenv / curl 等命令外泄 API 密钥
