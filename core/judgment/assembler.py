@@ -835,7 +835,7 @@ class JudgmentContextAssembler:
         _skill_ctx = " ".join(filter(None, [
             task.title if task else "",
             task.next_step if task else "",
-            (user_message or "")[:120],
+            user_message or "",
         ]))
         skills = self._skills.match_for_context(
             context_text=_skill_ctx,
