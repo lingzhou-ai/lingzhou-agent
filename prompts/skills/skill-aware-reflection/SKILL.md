@@ -1,11 +1,11 @@
 ---
 name: skill-aware-reflection
+aliases: skill.reflection, embodiskill
 description: "Skill-aware reflection for targeted skill evolution in lingzhou, based on EmbodiSkill (arXiv:2605.10332). When a task fails or underperforms while skills were active, classifies the evidence into 4 types (DISCOVERY / OPTIMIZATION / SKILL_DEFECT / EXECUTION_LAPSE) and applies the correct evolution action. Prevents corrupting valid skill content by separating skill defects from execution lapses. Use when: a task failed or was suboptimal with applied_skills active; before calling skill.evolve after a failure; deciding whether and how to update a skill."
 compatibility: Designed for Lingzhou agent runtime. Requires skill.activate, skill.evolve tools.
+tags: skill, evolution, reflection, failure-analysis
 metadata:
   source: "https://arxiv.org/abs/2605.10332 (adapted for lingzhou)"
-  lingzhou:
-    tags: "skill, evolution, reflection, failure-analysis"
 triggers: skill演化, 技能更新, 失败反思, skill改进, 任务失败后
 match_terms: skill.evolve, applied_skills, EXECUTION_LAPSE, SKILL_DEFECT, skill改进, 技能更新
 match_rules: |

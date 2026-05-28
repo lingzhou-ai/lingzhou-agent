@@ -1,5 +1,6 @@
 ---
 name: anti-loop
+aliases: anti.loop
 description: "反循环执行纪律技能。Use when 检测到重复工具调用、WM 出现循环信号、durable_failure 窗口内、或需要判断是否继续重试时。防止相同(工具,路径)无效循环消耗 token 和 tick。"
 compatibility: Designed for Lingzhou execution loop management.
 tags: anti-loop, execution, discipline, wm

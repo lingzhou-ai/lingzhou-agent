@@ -1,5 +1,6 @@
 ---
 name: memory-stewardship
+aliases: memory.stewardship
 description: "记忆与知识管理技能。Use when 任务完成后、空闲整理时、遇到新事实/经验/可复用流程时，决定用 memory.set_fact / memory.add_semantic / skill.synthesize 哪种方式存储。防止知识浪费和重复探索。"
 compatibility: Designed for Lingzhou memory and skill management.
 tags: memory, knowledge, skill, stewardship

@@ -1,12 +1,12 @@
 ---
 name: darwin-skill
+aliases: darwin.skill
 description: "Lingzhou skill quality evaluator and optimizer, inspired by Karpathy autoresearch and the darwin-skill project (github.com/alchaincyf/darwin-skill). Evaluates SKILL.md files against a 5-dimension rubric (description quality, workflow clarity, failure branches, actionable specificity, effectiveness), runs targeted improvement via skill.evolve, and only keeps changes that measurably improve quality (ratchet mechanism). Use when: user mentions '优化skill', 'skill质量', 'skill评分', 'evaluate skills', 'darwin', 'skill review'; or when a skill repeatedly fails to trigger or produces wrong outputs."
 compatibility: Designed for Lingzhou agent runtime. Requires skill.list, skill.activate, skill.evolve tools.
+tags: skill, evolution, quality, optimization, meta
 metadata:
   source: "https://github.com/alchaincyf/darwin-skill (adapted for lingzhou)"
-  license: MIT
-  lingzhou:
-    tags: "skill, evolution, quality, optimization, meta"
+license: MIT
 triggers: 优化skill, 改进技能, skill质量, skill评分, skill review, darwin
 match_terms: skill.evolve, skill.list, skill质量, darwin, 优化skill, skill评分, skill review
 match_rules: |

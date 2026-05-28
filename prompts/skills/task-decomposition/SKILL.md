@@ -1,5 +1,6 @@
 ---
 name: task-decomposition
+aliases: task.decomposition
 description: "任务拆解与执行纪律技能。Use when 接到新任务首轮执行时、需要决定是否 task.plan、是否复用相似任务、是否使用 parallel_actions 或 delegate_tasks 时。关键词：新任务、task.plan、parallel_actions、delegate_tasks、next_step 拆解。"
 compatibility: Designed for Lingzhou task runtime.
 tags: task, planning, decomposition, parallel
@@ -36,6 +37,7 @@ state_rules: |
 
 - **单步推进**：每轮只执行 1 个最小可验证子步骤；探索完确认再写入，写入后再验证；不把探索+写入+验证压缩在同一轮
 - **多步任务（非平凡、跨多轮）**：完成 1~2 次理解后用 `task.plan` 维护结构化计划；每步更新状态，不只靠 `next_step` 散落
+- **plan 预算真相**：`model_routing_section.continue_phase_policy` 是本 tick 计划预算的 runtime 真相；runtime **不会**替你自动插入 `task.plan`；判断当前该直接执行工具时直接执行，在 `rationale` 说明为何不先 plan
 - **不确定某子步骤是否必要** → `pause` + `rationale` 说明疑虑，而不是跳过或盲目执行
 
 ## parallel_actions vs delegate_tasks

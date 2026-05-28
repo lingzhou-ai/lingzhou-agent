@@ -3778,6 +3778,35 @@ def test_skill_registry_loads_seed_skill_from_file():
     assert "bootstrap_identity" in skill.load_guidance()
 
 
+def test_builtin_skills_follow_unified_frontmatter_spec():
+    from core.skill import SkillRegistry, _iter_skill_files, _split_frontmatter
+
+    skills_dir = _proj_root() / "prompts" / "skills"
+    required = (
+        "name",
+        "description",
+        "compatibility",
+        "tags",
+        "triggers",
+        "match_terms",
+        "match_rules",
+        "state_rules",
+    )
+
+    expected_names: set[str] = set()
+    for path in _iter_skill_files(skills_dir):
+        meta, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+        missing = [key for key in required if not str(meta.get(key, "")).strip()]
+        assert not missing, f"{path} missing frontmatter keys: {missing}"
+        assert "Use when" in str(meta["description"]), f"{path} description must contain 'Use when'"
+        expected_names.add(str(meta["name"]).strip())
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+    loaded_names = {skill.name for skill in reg.all_skills()}
+
+    assert loaded_names == expected_names
+
+
 def test_skill_registry_activate_loads_guidance_and_resources(tmp_path):
     from core.skill import SkillRegistry
 

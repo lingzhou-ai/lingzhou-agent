@@ -1,5 +1,6 @@
 ---
 name: model-routing
+aliases: model.routing
 description: "模型路由与推理档位技能。Use when 需要根据 model_routing_section / tool_tier_mapping / tool_capability_mapping 判断 next_phase_tier、routing_overrides、thinking_override 或 next_idle_gap 时。"
 compatibility: Designed for Lingzhou multi-tier routing and model_strategy decisions.
 tags: routing, model, tier, thinking

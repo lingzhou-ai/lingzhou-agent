@@ -1,5 +1,6 @@
 ---
 name: runtime-hints
+aliases: runtime.hints
 description: "运行时提示响应技能。Use when WM 中出现 task_replan / routing_guard / meta_reflection / crash_recovery / 认知警告 等 runtime 注入的提示信号时，决定如何响应。核心原则：WM 提示是建议，不是已生效真相；认可后才显式写入。"
 compatibility: Designed for Lingzhou runtime hint and cognitive signal handling.
 tags: runtime, hints, cognitive, signals, recovery

@@ -1,14 +1,15 @@
 ---
 name: provider-integration
-aliases: provider.integration
-description: 工具与 provider 集成技能。Use when 工具调用失败、参数名不匹配、文件不存在、或需要先分析错误原因再决定重试策略。
+aliases: provider.integration, ask-evidence
+description: "工具与 provider 集成技能，也包含用户追问守护（ask-evidence）原则。Use when 工具调用失败、参数名不匹配、文件不存在、或需要先分析错误原因再决定重试策略；也用于用户消息含 URL 时、或需要决定是否先本地取证再调用 task.ask 时。"
 compatibility: Designed for Lingzhou tool calling and provider integration flows.
-tags: act, tool_call
-triggers: 工具失败, 参数错误, file not found, 调用失败
-match_terms: FileNotFound, 参数名, 参数类型, tool call fails
+tags: provider, tool-call, ask-evidence
+triggers: 工具失败, 参数错误, file not found, 调用失败, 用户追问, task.ask, URL
+match_terms: FileNotFound, 参数名, 参数类型, tool call fails, ask_evidence, task.ask, web.fetch
 match_rules: |
   any: 工具失败 | 参数错误 | file not found | 调用失败 => 0.7
   any: FileNotFound | 参数名 | 参数类型 | tool call fails => 1.0
+  any: ask_evidence | task.ask | 用户追问 | web.fetch => 0.7
 state_rules: |
   failure_signal_ratio >= 0.1 => 0.8
 ---

@@ -1,7 +1,7 @@
 ---
 name: self-modification
 aliases: code-evolution
-description: 自我修改安全技能。Use when 准备修改 Python 源文件（尤其是 core/ 核心模块）、进行代码进化或工具演化时，必须遵守的验证铁律。
+description: "自我修改安全技能。Use when 准备修改 Python 源文件（尤其是 core/ 核心模块）、进行代码进化或工具演化时，必须遵守的验证铁律。"
 compatibility: Designed for Lingzhou self-evolution workflows.
 tags: evolution, safety, code, verification
 triggers: 修改代码, 进化, 自我修改, Python 文件

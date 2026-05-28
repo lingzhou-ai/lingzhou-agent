@@ -1,5 +1,6 @@
 ---
 name: negative-feedback
+aliases: negative.feedback
 description: "用户否定性反馈内化技能。Use when 收到用户消息时先语义判断是否否定之前的行为/答案/结论/探针；若是，必须触发自我反思任务，不能继续推进原任务。防止因忽视否定而重复犯错。"
 compatibility: Designed for Lingzhou user message handling.
 tags: reflection, user, correction, self-correction
@@ -9,7 +10,7 @@ match_rules: |
   any: 搞错了 | 不对 | 纠正 | 撤回 | 不满意 => 1.0
   any: 否定反馈 | 反思 | 纠正 => 0.8
 state_rules: |
-  has_user_message => 0.6
+  has_active_task => 0.2
 ---
 
 ## 触发判断：语义识别否定性反馈

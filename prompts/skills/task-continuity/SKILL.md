@@ -1,7 +1,7 @@
 ---
 name: task-continuity
 aliases: task.continuity
-description: 任务连续性技能。Use when 当前任务已有 next_step、current_step、task inbox 或 steering 信号，需要决定继续推进还是根据新证据转向。
+description: "任务连续性技能。Use when 当前任务已有 next_step、current_step、task inbox 或 steering 信号，需要决定继续推进还是根据新证据转向。"
 compatibility: Designed for Lingzhou task runtime with active_task / inbox steering.
 tags: continuity, task
 triggers: next_step, 继续推进, 当前任务

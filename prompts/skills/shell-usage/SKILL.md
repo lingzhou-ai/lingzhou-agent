@@ -1,6 +1,6 @@
 ---
 name: shell-usage
-description: Shell 执行技能。Use when 需要用 shell.run 执行命令、查询系统状态、直查 SQLite 或排查运行时问题时，提供关键陷阱与最佳实践。
+description: "Shell 执行技能。Use when 需要用 shell.run 执行命令、查询系统状态、直查 SQLite 或排查运行时问题时，提供关键陷阱与最佳实践。"
 compatibility: Designed for Lingzhou shell.run tool usage.
 tags: shell, execution, runtime
 triggers: shell, 执行命令, bash, SQLite, 超时

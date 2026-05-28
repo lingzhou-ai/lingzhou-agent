@@ -1,6 +1,6 @@
 ---
 name: evidence-first-change
-description: 证据优先修改技能。Use when 准备写文件、执行命令、修改配置或验证变更，需要先确认前提、再做最小修改、最后验证结果。
+description: "证据优先修改技能。Use when 准备写文件、执行命令、修改配置或验证变更，需要先确认前提、再做最小修改、最后验证结果。"
 compatibility: Designed for Lingzhou editing workflows with file and shell tools.
 tags: caution, verification
 triggers: 修改, 写入, 验证, 证据
