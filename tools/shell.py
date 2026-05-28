@@ -69,7 +69,7 @@ _RISKY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 def _check_risky(command: str) -> tuple[bool, str]:
     """检测命令是否含有高风险模式。返回 (is_risky, reason)。"""
     if not isinstance(command, str):
-        return False, ""
+        raise TypeError(f"command 应为字符串，实际收到 {type(command).__name__}")
     for pattern, reason in _RISKY_PATTERNS:
         if pattern.search(command):
             return True, reason
