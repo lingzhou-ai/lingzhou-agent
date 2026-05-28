@@ -276,7 +276,7 @@ def _terminate_info(info: ProcessInfo, *, force: bool = False) -> None:
         info.error = str(e)
 
 
-def _build_capabilities_v2(workdir: str) -> dict[str, Any]:
+def _build_capabilities(workdir: str) -> dict[str, Any]:
     common = (
         "python3", "python", "bash", "sh", "grep", "find", "ls", "cat",
         "sqlite3", "git", "sed", "awk", "jq", "rg",
@@ -304,7 +304,7 @@ def _build_capabilities_v2(workdir: str) -> dict[str, Any]:
     }
 
 
-_CAP_MANIFEST_V2 = ToolManifest(
+_CAP_MANIFEST = ToolManifest(
     name="shell.capabilities",
     description="返回 shell 执行能力画像（可用命令、默认限制、环境语义、exec/process 支持）",
     params=[],
@@ -314,10 +314,10 @@ _CAP_MANIFEST_V2 = ToolManifest(
 )
 
 
-@tool(_CAP_MANIFEST_V2)
+@tool(_CAP_MANIFEST)
 async def shell_capabilities(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     workdir = params.get("workdir", str(Path.cwd()))
-    caps = _build_capabilities_v2(workdir)
+    caps = _build_capabilities(workdir)
     summary = (
         f"shell.capabilities: sandbox={caps['sandbox']} "
         f"background={caps['has_background_exec']} "

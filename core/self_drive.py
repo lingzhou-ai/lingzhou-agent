@@ -171,13 +171,13 @@ class SelfDriveEngine:
         返回:
           DriveSignal: 是否应该探索、建议领域、理由
         """
-        s = self._state
+        state = self._state
 
         # C(t) = α·Novelty + β·Progress + γ·Surprise
         alpha, beta, gamma = 0.4, 0.3, 0.3
-        novelty = 1.0 - s.overall  # 整体兴趣低 = 新鲜度高
-        progress = min(1.0, s.learning_rate)
-        surprise = s.prediction_error_ema
+        novelty = 1.0 - state.overall  # 整体兴趣低 = 新鲜度高
+        progress = min(1.0, state.learning_rate)
+        surprise = state.prediction_error_ema
         C = alpha * novelty + beta * progress + gamma * surprise
 
         # 自适应阈值：首次运行更敏感，后续逐步提高
@@ -207,9 +207,9 @@ class SelfDriveEngine:
             rationale_parts.append(f"好奇心 C={C:.2f}>{EXPLORE_THRESHOLD}")
 
         # 场景4: 惊奇事件  # noqa: ERA001
-        elif s.surprise_count > 0:
+        elif state.surprise_count > 0:
             should_explore = True
-            rationale_parts.append(f"惊奇事件 {s.surprise_count} 个")
+            rationale_parts.append(f"惊奇事件 {state.surprise_count} 个")
 
         # 选择探索领域（冷却期仅作参考，不作硬拦截，由 LLM 感知决策）
         _DOMAIN_COOLDOWN = 3600.0
@@ -217,8 +217,8 @@ class SelfDriveEngine:
             import random
             now_wall = time.time()
             available = sorted(
-                [(d, v) for d, v in s.interests.items()
-                 if now_wall - s.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
+                [(d, v) for d, v in state.interests.items()
+                 if now_wall - state.last_explored_at.get(d, 0.0) >= _DOMAIN_COOLDOWN],
                 key=lambda x: -x[1],
             )
             if available:
@@ -229,8 +229,8 @@ class SelfDriveEngine:
             else:
                 # 全域冷却期内：选最久未探索的，由 LLM 决定是否继续
                 cooldown_ranked = sorted(
-                    s.interests.items(),
-                    key=lambda x: s.last_explored_at.get(x[0], 0.0),
+                    state.interests.items(),
+                    key=lambda x: state.last_explored_at.get(x[0], 0.0),
                 )
                 suggested_domain = cooldown_ranked[0][0]
                 rationale_parts.append(f"所有域在冷却期，最久未探索: {suggested_domain}")
@@ -241,8 +241,8 @@ class SelfDriveEngine:
         import random as _random
         _consolidate = (
             should_explore
-            and s.tasks_completed >= 3
-            and s.prediction_error_ema < 0.15
+            and state.tasks_completed >= 3
+            and state.prediction_error_ema < 0.15
             and _random.random() < 0.30
         )
         drive_type = "consolidate" if _consolidate else "explore"

@@ -113,11 +113,11 @@ class JudgmentExecutor:
     # ── 模型健康 ───────────────────────────────────────────────────────────────
 
     def _get_health(self, model_ref: str) -> ModelHealth:
-        h = self._model_health.get(model_ref)
-        if h is None:
-            h = ModelHealth()
-            self._model_health[model_ref] = h
-        return h
+        health = self._model_health.get(model_ref)
+        if health is None:
+            health = ModelHealth()
+            self._model_health[model_ref] = health
+        return health
 
     def _classify_error_code(self, err_text: str) -> str:
         text = (err_text or "").lower()
