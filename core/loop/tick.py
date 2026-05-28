@@ -77,6 +77,61 @@ console = Console()
 _log = logging.getLogger("lingzhou.loop")
 
 
+@dataclass(slots=True)
+class _ActionResultSummary:
+    """口腔器官所需的结构化执行状态——前语言消息（Levelt 1989）。
+
+    由 tool_history 末尾条目派生，仅在 reply_only=True 阶段注入，
+    让 LLM 直接看到「已成功/失败/跳过」而无需自行从文本推断。
+    """
+    action_ran: bool           # 是否实际执行了工具（非 wait/skip 决策）
+    action_succeeded: bool | None   # True=ok False=error None=skipped/不确定
+    tool_name: str
+    summary: str               # 执行摘要（取自 ToolResult.summary 截断）
+    error: str                 # 错误文本（取自 ToolResult.error）
+
+
+def _build_action_result_summary(
+    action: JudgmentOutput,
+    result: ToolResult,
+    tool_history: list[dict[str, Any]],
+) -> _ActionResultSummary:
+    """从当前 action/result 构建口腔器官所需的结构化执行状态。"""
+    if action.decision != "act":
+        return _ActionResultSummary(
+            action_ran=False,
+            action_succeeded=None,
+            tool_name="",
+            summary="",
+            error="",
+        )
+    # 优先从 tool_history 最后一条读（continue 阶段后 tool_history 已追加）
+    last_entry = tool_history[-1] if tool_history else {}
+    tool_name = str(last_entry.get("tool", "") or action.chosen_action_id or "")
+    entry_status = str(last_entry.get("status", "") or "")
+    if entry_status == "ok":
+        succeeded: bool | None = True
+    elif entry_status == "error":
+        succeeded = False
+    elif entry_status in ("skipped", "compacted"):
+        succeeded = None
+    else:
+        # fallback：直接看 ToolResult
+        if result.skipped:
+            succeeded = None
+        elif result.error:
+            succeeded = False
+        else:
+            succeeded = True
+    return _ActionResultSummary(
+        action_ran=True,
+        action_succeeded=succeeded,
+        tool_name=tool_name,
+        summary=(result.summary or "")[:300],
+        error=(result.error or "")[:200],
+    )
+
+
 def _loop_metabolic(loop: Any) -> Any:
     """获取 loop 的 metabolic 实例；若不存在则创建临时实例（兼容测试 mock）。"""
     metabolic = getattr(loop, "_metabolic", None)
@@ -648,7 +703,7 @@ async def _execute_tick_action(
         # 使 `lingzhou logs runs --type judge/chat_reply` 可筛选纯判断轮次。
         _llm_skipped = (action.rationale or "").startswith("[按请求聚合]")
         if not _llm_skipped and loop._task_store is not None:
-            _rt = "chat_reply" if action.reply_to_user else "judge"
+            _rt = "chat_reply" if action.speech_intent else "judge"
             try:
                 await loop._task_store.add_run(
                     task_id=active_task.id if active_task else 0,
@@ -696,31 +751,24 @@ async def _finalize_tick_user_reply(
     active_task: Any,
     chat_id: str | None,
 ) -> None:
-    """处理 reply_only、fallback reply 与聊天回复落库。"""
-    reply_only = await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task)
+    """口腔器官：基于执行结果生成真正的对外回复，而非直接使用大脑的预写草稿。
 
-    if user_message and not action.reply_to_user and (
-        _should_use_fallback_user_reply(result, reply_only)
-        or action.decision in {"wait", "pause"}  # wait/pause 有 rationale，必须告知用户
-    ):
-        action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
+    大脑（JudgmentPhase）只写 speech_intent（意图草稿），不直接对外发话。
+    口腔器官（decide_continue reply_only）在执行结果已知后生成真正的 reply_to_user。
+    自主 tick（无用户消息）：speech_intent 直接作为主动发言，无需执行后校正。
+    """
+    if user_message:
+        # 有用户消息：口腔器官基于执行结果生成回复，忽略大脑预写草稿
+        action.reply_to_user = ""
+        await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task, result)
+        # 兜底：口腔器官未生成回复（LLM 故障、续判超时等）
+        if not action.reply_to_user:
+            action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
+    elif action.speech_intent and not action.reply_to_user:
+        # 自主 tick：大脑有主动发言意图，直接使用（无执行结果需要校正）
+        action.reply_to_user = action.speech_intent
 
     await _persist_tick_user_reply(loop, action, active_task, chat_id, user_message)
-
-
-def _should_use_fallback_user_reply(
-    result: ToolResult,
-    reply_only: JudgmentOutput | None,
-) -> bool:
-    if result.error:
-        return True
-    task_status = str((result.state_delta or {}).get("task_status") or "").strip()
-    if task_status == "waiting":
-        return True
-    if reply_only is None:
-        return False
-    rationale = str(reply_only.rationale or "")
-    return rationale.startswith(("[reply-only]", "[inner-loop]"))
 
 
 async def _maybe_fill_tick_user_reply(
@@ -729,15 +777,25 @@ async def _maybe_fill_tick_user_reply(
     tool_history: list[dict[str, Any]],
     user_message: str,
     active_task: Any,
+    result: ToolResult | None = None,
 ) -> JudgmentOutput | None:
     cfg = loop._cfg
-    if not user_message or action.reply_to_user:
+    if not user_message:
         return None
-
+    # 构建口腔器官前语言消息（执行状态 + 当前情绪）
+    _ar = _build_action_result_summary(action, result or ToolResult(summary=""), tool_history)
+    _emotion_state = {
+        "dominant": loop._emotion.dominant,
+        "valence": round(loop._emotion.valence, 3),
+        "arousal": round(loop._emotion.arousal, 3),
+        "regulation_strategy": loop._emotion.regulation.strategy,
+    }
+    # 口腔器官：始终基于执行结果生成回复，speech_intent 作为意图背景提示
     reply_only = await loop._judgment.decide_continue(
         tool_history,
         user_message=user_message,
         active_task=active_task,
+        speech_intent=action.speech_intent,
         prefer_tier="reasoner",
         thinking_override=_thinking_floor(
             _resolve_thinking_override(
@@ -749,6 +807,8 @@ async def _maybe_fill_tick_user_reply(
         ),
         routing_overrides=loop._pending_routing_overrides,
         reply_only=True,
+        action_result=_ar,
+        emotion_state=_emotion_state,
     )
     if not reply_only.reply_to_user:
         return reply_only
@@ -760,7 +820,33 @@ async def _maybe_fill_tick_user_reply(
         action.reflection = reply_only.reflection
     if reply_only.next_step and not action.next_step:
         action.next_step = reply_only.next_step
+    # Patch B：内部语音一致性检测（安全网，只记日志不改文本）
+    _check_mouth_consistency(action.reply_to_user, _ar)
     return reply_only
+
+
+def _check_mouth_consistency(reply: str, action_result: _ActionResultSummary) -> None:
+    """内部语音环路检测（Levelt inner loop 轻量实现）。
+
+    当工具已成功执行，但回复措辞仍为未来承诺语气时，写警告日志。
+    只做可观测性，不改文本——真正的修正来自 Patch A 的结构化注入。
+    """
+    if not (action_result.action_ran and action_result.action_succeeded is True):
+        return
+    # 有明确"已完成"语义则通过
+    DONE_MARKERS = ("已经", "完成了", "刚才", "刚刚", "已完成", "已修改", "已创建", "已删除",
+                    "已读", "已写", "成功", "完毕", "好了", "做好")
+    if any(m in reply for m in DONE_MARKERS):
+        return
+    PREMATURE = ("马上", "立即", "现在去", "我将", "接下来我会", "稍后", "我去")
+    for p in PREMATURE:
+        if p in reply:
+            _log.warning(
+                "[mouth-check] 承诺措辞矛盾: tool=%s succeeded=True, but reply contains '%s'. "
+                "Check action_result injection in Patch A.",
+                action_result.tool_name, p,
+            )
+            break
 
 
 async def _persist_tick_user_reply(
@@ -892,6 +978,16 @@ class _TickPerceptionPhase:
         )
         active_task = await _prepare_active_task_for_tick(loop, user_message, chat_id)
         await _inject_tick_side_signals(loop, running_updates)
+        # Patch C：用户消息到达时做显著性门控（全局工作空间 graded competition）
+        # 与消息相关的低优 WM 条目被 boost，无关低优条目丢弃，锚点无条件保留
+        if user_message:
+            _dropped = loop._wm.salience_gate(
+                user_message,
+                preserve_kinds={"bootstrap_identity", "self_awareness", "task_anchor"},
+                priority_floor=loop._cfg.thresholds.wm_pri_signal,
+            )
+            if _dropped:
+                _log.debug("[wm-gate] salience_gate dropped %d low-relevance items", _dropped)
         prep = await _prepare_tick_judgment_state(loop, active_task)
         return prep, active_task
 
@@ -914,7 +1010,13 @@ class _TickJudgmentPhase:
         _inject_plan_alignment_signal(loop, active_task)
         action = await _decide_initial_action(loop, cycle, user_message, active_task, chat_id, prep)
         _log_tick_decision(loop, cycle, action)
-        return await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
+        action = await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
+        # 发言意图提取：大脑在判断阶段输出的 reply_to_user 是执行前草稿，
+        # 降级为 speech_intent，由口腔器官在执行结果已知后再生成真正的对外回复。
+        if action.reply_to_user:
+            action.speech_intent = action.reply_to_user
+            action.reply_to_user = ""
+        return action
 
 
 class _TickExecutionPhase:

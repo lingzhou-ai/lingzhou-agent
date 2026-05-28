@@ -271,6 +271,9 @@ class JudgmentLayer:
         routing_overrides: dict[str, str] | None = None,
         reply_only: bool = False,
         wm_delta: list[dict[str, Any]] | None = None,
+        speech_intent: str = "",
+        action_result: Any | None = None,
+        emotion_state: dict[str, Any] | None = None,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
 
@@ -280,6 +283,8 @@ class JudgmentLayer:
         Args:
             tool_history: [{"tool": str, "params": dict, "result": str}, ...]
             user_message:  原始用户消息（不再次向 LLM 重复，仅用于选择 provider tier）
+            action_result: _ActionResultSummary 实例（口腔器官前语言消息，reply_only 时注入）
+            emotion_state: 当前情绪状态 dict（reply_only 时注入语气上下文）
         """
         if not self._assembler._last_context_text:
             return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
@@ -288,6 +293,9 @@ class JudgmentLayer:
             user_message=user_message,
             reply_only=reply_only,
             wm_delta=wm_delta,
+            speech_intent=speech_intent,
+            action_result=action_result,
+            emotion_state=emotion_state,
         )
         messages = self._assembler._build_messages(continuation_context)
 

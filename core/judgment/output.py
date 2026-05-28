@@ -183,7 +183,8 @@ class JudgmentOutput:
     params: dict[str, Any] = field(default_factory=dict)  # type: ignore[assignment]
     rationale: str = ""                 # 内部推理过程（内部独白）
     reflection: str = ""                # 对最近经历的后验反思（写入语义记忆）
-    reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
+    speech_intent: str = ""             # 大脑发言意图草稿（执行前写入；由口腔器官在执行后确认/修正）
+    reply_to_user: str = ""             # 口腔器官生成的最终对外回复（执行后写入，勿在判断阶段直接设置）
     next_step: str = ""
     model_strategy: dict[str, Any] = field(default_factory=dict)
     applied_skills: list[str] = field(default_factory=list)  # LLM 实际应用的技能名单

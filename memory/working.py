@@ -21,6 +21,41 @@ def _estimate_tokens(text: str) -> int:
     return cjk + max(1, ascii_chars // 4) + max(1, other // 2)
 
 
+def _wm_keywords(text: str) -> frozenset[str]:
+    """从文本提取关键词集合（CJK 2-4字 n-gram + ASCII 词元）。
+
+    不引入外部依赖，专为 salience_gate 设计。
+    """
+    result: set[str] = set()
+    # CJK n-gram（2-4 字）
+    cjk_chars = [c for c in text if "\u4e00" <= c <= "\u9fff"]
+    for n in (2, 3, 4):
+        for i in range(len(cjk_chars) - n + 1):
+            result.add("".join(cjk_chars[i:i + n]))
+    # ASCII 词元（长度 >= 3，过滤停用词）
+    _ASCII_STOP = {"the", "and", "is", "in", "it", "of", "to", "a", "an", "are", "for",
+                   "on", "at", "by", "or", "as", "be", "was", "has", "not", "with"}
+    import re as _re
+    for word in _re.findall(r"[a-zA-Z][a-zA-Z0-9_-]*", text):
+        w = word.lower()
+        if len(w) >= 3 and w not in _ASCII_STOP:
+            result.add(w)
+    return frozenset(result)
+
+
+def _has_wm_overlap(content: str, keywords: frozenset[str]) -> bool:
+    """判断 WM 条目内容与关键词集合是否有实质重叠（至少 1 个关键词命中）。"""
+    if not keywords or not content:
+        return False
+    # keywords 中的 ASCII 词已被 _wm_keywords 做过 lower()，
+    # content 也 lower() 再比较，保证大小写不敏感（CJK 不受影响）。
+    content_lower = content.lower()
+    for kw in keywords:
+        if kw in content_lower:
+            return True
+    return False
+
+
 def _truncate_content(content: str, max_tokens: int) -> str:
     """按 token 估算截断 content，保持在 max_tokens 以内（二分搜索截断点）。"""
     if _estimate_tokens(content) <= max_tokens:
@@ -133,6 +168,49 @@ class WorkingMemory:
             heapq.heapify(self._items)
         else:
             self._items.clear()
+
+    def salience_gate(
+        self,
+        user_message: str = "",
+        *,
+        preserve_kinds: set[str],
+        priority_floor: float = 0.7,
+        keyword_boost: float = 0.15,
+    ) -> int:
+        """显著性门控（全局工作空间理论 graded competition 轻量实现）。
+
+        用户消息到达时调用：与消息内容有关键词重叠的条目被 boost，
+        低优且无相关性的条目被丢弃，preserve_kinds 中的条目无条件保留。
+
+        返回被丢弃的条目数（供日志使用）。
+        """
+        keywords = _wm_keywords(user_message) if user_message.strip() else frozenset()
+        kept: list[WMItem] = []
+        dropped = 0
+        boosted_any = False
+        for item in self._items:
+            if item.kind in preserve_kinds:
+                kept.append(item)
+                continue
+            if item.priority >= priority_floor:
+                kept.append(item)
+                continue
+            if keywords and _has_wm_overlap(item.content, keywords):
+                # 相关性 boost：priority + keyword_boost，上限 1.0
+                boosted = WMItem(
+                    kind=item.kind,
+                    content=item.content,
+                    priority=min(1.0, item.priority + keyword_boost),
+                    created_at=item.created_at,
+                )
+                kept.append(boosted)
+                boosted_any = True
+                continue
+            dropped += 1
+        if dropped or boosted_any:
+            self._items = kept
+            heapq.heapify(self._items)
+        return dropped
 
     def __len__(self) -> int:
         return len(self._items)

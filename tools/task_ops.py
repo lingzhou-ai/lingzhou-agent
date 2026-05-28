@@ -250,7 +250,11 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if _is_completion_mutation_tool(ctx, t))
             # 比最新 mutation 更近的工具（索引更小）
             post_mutation_tools = recent_tools[:latest_mutation_idx]
-            verified_after = any(_is_completion_verify_tool(ctx, t) for t in post_mutation_tools)
+            # file.read 视为轻量验证（回读即确认）；shell.run 等 completion_verify 工具为强验证
+            verified_after = any(
+                _is_completion_verify_tool(ctx, t) or t == "file.read"
+                for t in post_mutation_tools
+            )
             if not verified_after:
                 return ToolResult(
                     summary=(

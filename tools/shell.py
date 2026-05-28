@@ -130,7 +130,7 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     _raw_cmd = params.get("command")
     if _raw_cmd is not None and not isinstance(_raw_cmd, str):
         return ToolResult(
-            summary=f"参数错误: command 应为字符串，实际收到 {type(_raw_cmd).__name__}",
+            summary=f"参数错误: command 应为字符串，实际收到 {type(_raw_cmd).__name__}（值: {repr(_raw_cmd)}）",
             error="InvalidParam",
         )
     command = (_raw_cmd or "").strip()
