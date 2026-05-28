@@ -952,6 +952,11 @@ class JudgmentContextAssembler:
         )
         _validate_context_schema(ctx)
         budget = self._min_routing_input_budget()
+        # 将 WM token 预算同步到实际最小路由窗口比例，确保 WM 压力计算以正确窗口为基准。
+        # effective_wm_token_budget() 在初始化时只看 reasoner（可能是大窗口模型），
+        # 导致 WM 压力长期偏低、consolidation 不触发、大文件内容永久驻留 WM。
+        if budget > 0 and wm is not None and wm._token_budget > 0:
+            wm._token_budget = max(256, int(budget * self._cfg.memory.wm_token_budget_ratio))
         ctx = apply_context_budget(
             ctx,
             budget,
