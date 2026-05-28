@@ -4156,3 +4156,433 @@ description: Diagnose gateway reconnect storms and websocket flapping in worker 
     assert [skill.name for skill in skills] != ["gateway-reconnect"]
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# skill 触发优化回归：last_applied 语义、catalog 排序、primary_skill LLM 记忆
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_last_applied_boost_requires_existing_score(tmp_path):
+    """last_applied 只能加权已有得分的 skill，不能凭空浮出零分 skill。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    # skill-A：有 state_rules 会自然得分
+    pkg_a = skills_dir / "skill-a"
+    pkg_a.mkdir(parents=True)
+    (pkg_a / "SKILL.md").write_text(
+        """---
+name: skill-a
+description: |
+  Handles active tasks. Use when: task is running.
+compatibility: any
+tags: task
+triggers: ["active task"]
+match_terms: ""
+match_rules: ""
+state_rules: |
+    has_active_task => 0.5
+---
+A body.
+""",
+        encoding="utf-8",
+    )
+    # skill-b：无任何匹配规则，完全零分
+    pkg_b = skills_dir / "skill-b"
+    pkg_b.mkdir(parents=True)
+    (pkg_b / "SKILL.md").write_text(
+        """---
+name: skill-b
+description: |
+  Ultra-niche skill. Use when: very rare.
+compatibility: any
+tags: rare
+triggers: ["rare event"]
+match_terms: ""
+match_rules: ""
+state_rules: ""
+---
+B body.
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+
+    # 场景：has_active_task=True，last_applied 包含 skill-b（上轮 LLM 碰巧 activate 过）
+    # skill-b 无任何信号→ 即使在 last_applied 中也不能浮出
+    skills = reg.match_for_context(
+        last_applied=["skill-b"],
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.1,
+        context_text="",
+        max_inject=2,
+    )
+    names = [s.name for s in skills]
+    assert "skill-a" in names, "skill-a 应因 state 信号得分"
+    assert "skill-b" not in names, "skill-b 无信号，last_applied 不能独立浮出它"
+
+
+def test_last_applied_boosts_skill_when_it_already_has_score(tmp_path):
+    """last_applied 加权逻辑：skill 有正分时，last_applied 应让它排名更靠前。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    # skill-weak：context 关键词命中但分低
+    pkg_w = skills_dir / "skill-weak"
+    pkg_w.mkdir(parents=True)
+    (pkg_w / "SKILL.md").write_text(
+        """---
+name: skill-weak
+description: |
+  Weak skill. Use when: debugging.
+compatibility: any
+tags: debug
+triggers: ["debug"]
+match_terms: debug
+match_rules: ""
+state_rules: ""
+---
+Weak body.
+""",
+        encoding="utf-8",
+    )
+    # skill-strong：context 关键词命中且在 last_applied 中（应排第一）
+    pkg_s = skills_dir / "skill-strong"
+    pkg_s.mkdir(parents=True)
+    (pkg_s / "SKILL.md").write_text(
+        """---
+name: skill-strong
+description: |
+  Strong skill. Use when: fixing bug.
+compatibility: any
+tags: bug
+triggers: ["bug fix"]
+match_terms: bug
+match_rules: ""
+state_rules: ""
+---
+Strong body.
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+
+    skills = reg.match_for_context(
+        last_applied=["skill-strong"],
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.1,
+        context_text="debug bug fix",
+        max_inject=2,
+    )
+    names = [s.name for s in skills]
+    assert names[0] == "skill-strong", "last_applied 加权后应排第一"
+    assert "skill-weak" in names
+
+
+def test_skill_catalog_pinned_mark_appears_for_last_applied():
+    """catalog 格式中，last_applied 的 skill 应带 [↑] 标记。"""
+    from core.judgment.context import _fmt_skill_catalog
+    from core.skill import SkillRegistry, Skill
+
+    # 构建两个最小 skill
+    reg = SkillRegistry()
+    all_skills = reg.all_skills()
+    if len(all_skills) < 2:
+        pytest.skip("需要至少 2 个内置 skill")
+
+    skill_a, skill_b = all_skills[0], all_skills[1]
+    catalog_with_pin = _fmt_skill_catalog([skill_a, skill_b], pinned_names={skill_a.name})
+    catalog_no_pin = _fmt_skill_catalog([skill_a, skill_b], pinned_names=None)
+
+    assert "`[↑]`" in catalog_with_pin, "pinned skill 应有 [↑] 标记"
+    assert skill_a.name in catalog_with_pin
+    # skill_b 没有 pin，不应该有 [↑]
+    # 找到 skill_b 那行，确认没有 [↑]
+    b_line = next(l for l in catalog_with_pin.splitlines() if skill_b.name in l)
+    assert "`[↑]`" not in b_line, "未 pinned 的 skill 不应有 [↑] 标记"
+    assert "`[↑]`" not in catalog_no_pin, "无 pinned_names 时不应有 [↑] 标记"
+
+
+def test_skill_catalog_sorted_by_match_score(tmp_path):
+    """match_for_context 返回的 skills 排在 catalog 顶部，其余按原序追加。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    for name, term in [("skill-x", "xray"), ("skill-y", "yoga"), ("skill-z", "zebra")]:
+        pkg = skills_dir / name
+        pkg.mkdir(parents=True)
+        (pkg / "SKILL.md").write_text(
+            f"""---
+name: {name}
+description: |
+  {name} handler. Use when: dealing with {term}.
+compatibility: any
+tags: test
+triggers: ["{term}"]
+match_terms: {term}
+match_rules: ""
+state_rules: ""
+---
+body.
+""",
+            encoding="utf-8",
+        )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+
+    # 只提 zebra 关键词 → skill-z 应排第一，其余顺序跟随
+    matched = reg.match_for_context(
+        context_text="zebra problem",
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.1,
+        max_inject=0,
+    )
+    names = [s.name for s in matched]
+    assert names[0] == "skill-z", "命中 context 的 skill 应排 catalog 顶部"
+    # skill-x / skill-y 零分，排在后面（顺序不强制，但都在结果中）
+    assert set(names) == {"skill-x", "skill-y", "skill-z"}
+
+
+def test_primary_skill_uses_last_applied_memory(tmp_path):
+    """primary_skill_section 应基于 LLM 上轮记忆（last_applied），而不是 keyword 预选。"""
+    from core.judgment.context import _fmt_primary_skill
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    for name, term in [("alpha-skill", "alpha"), ("beta-skill", "beta")]:
+        pkg = skills_dir / name
+        pkg.mkdir(parents=True)
+        (pkg / "SKILL.md").write_text(
+            f"""---
+name: {name}
+description: |
+  {name} processor. Use when: dealing with {term} scenarios.
+compatibility: any
+tags: test
+triggers: ["{term}"]
+match_terms: {term}
+match_rules: ""
+state_rules: ""
+---
+body.
+""",
+            encoding="utf-8",
+        )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+
+    # 模拟 last_applied = ["beta-skill"]，但当前 context 只包含 alpha 关键词
+    # primary_skill 应是 beta-skill（LLM 记忆优先），不是 alpha-skill（keyword 命中）
+    last_applied = ["beta-skill"]
+    primary_skill = reg.get(last_applied[0]) if last_applied else None
+    text = _fmt_primary_skill(primary_skill)
+
+    assert "beta-skill" in text, "primary_skill 应展示 LLM 上轮选择的 beta-skill"
+    assert "skill.activate" in text, "应包含 activation 提示"
+
+    # 当 last_applied 为空时，primary_skill 为 None → 返回兜底文本
+    empty_primary = _fmt_primary_skill(None)
+    assert "无明显 skill 候选" in empty_primary
+
+
+def test_primary_skill_none_when_no_last_applied():
+    """无 last_applied 历史时，primary_skill 降级为空文本提示，不崩溃。"""
+    from core.judgment.context import _fmt_primary_skill
+
+    result = _fmt_primary_skill(None)
+    assert result  # 有内容
+    assert "skill.activate" not in result or "无明显" in result
+
+
+def test_match_for_context_catalog_order_vs_original(tmp_path):
+    """catalog 排序：matched skill 置顶，zero-score skill 跟随，且总数不变。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    names_terms = [("aa", "apple"), ("bb", "banana"), ("cc", "cherry"), ("dd", "date")]
+    for name, term in names_terms:
+        pkg = skills_dir / name
+        pkg.mkdir(parents=True)
+        (pkg / "SKILL.md").write_text(
+            f"""---
+name: {name}
+description: |
+  {name} handler. Use when: dealing with {term}.
+compatibility: any
+tags: test
+triggers: ["{term}"]
+match_terms: {term}
+match_rules: ""
+state_rules: ""
+---
+body.
+""",
+            encoding="utf-8",
+        )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+    total = len(reg.all_skills())
+
+    # context 命中 cherry → cc 应在顶部
+    result = reg.match_for_context(
+        context_text="cherry pie",
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.1,
+        max_inject=0,
+    )
+    assert len(result) == total, "max_inject=0 时返回所有 skill"
+    assert result[0].name == "cc", "命中 context 的 skill 排第一"
+
+
+def test_skill_registry_does_not_stick_any_skill_without_signal(tmp_path):
+    """无 state 无 context 无 last_applied 匹配时，max_inject>0 返回空列表。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    pkg = skills_dir / "niche-skill"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        """---
+name: niche-skill
+description: |
+  Very niche. Use when: extremely rare circumstance.
+compatibility: any
+tags: rare
+triggers: ["ultra rare"]
+match_terms: ultrararekeyword
+match_rules: ""
+state_rules: ""
+---
+body.
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+
+    # 完全冷、无 context、无 last_applied
+    skills = reg.match_for_context(
+        last_applied=[],
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.05,
+        context_text="everyday normal task",
+        max_inject=2,
+    )
+    assert not skills, "无任何匹配信号时 max_inject>0 应返回空（不强行注入）"
+
+
+def test_builtin_skill_catalog_coverage():
+    """所有内置 skill 均应出现在 match_for_context(max_inject=0) 的返回列表中。"""
+    from core.skill import SkillRegistry
+
+    reg = SkillRegistry()
+    all_names = {s.name for s in reg.all_skills()}
+    # max_inject=0 = 返回全量
+    result = reg.match_for_context(
+        context_text="",
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.1,
+        max_inject=0,
+    )
+    result_names = {s.name for s in result}
+    assert result_names == all_names, "max_inject=0 时应包含所有内置 skill"
+
+
+def test_skill_catalog_section_contains_activation_hint():
+    """catalog 格式字符串应包含 skill.activate 提示，告知 LLM 主动激活。"""
+    from core.judgment.context import _fmt_skill_catalog
+    from core.skill import SkillRegistry
+
+    reg = SkillRegistry()
+    catalog = _fmt_skill_catalog(reg.all_skills(), pinned_names=None)
+
+    assert "skill.activate" in catalog
+    assert "AGENT SKILLS CATALOG" in catalog
+
+
+def test_failure_reflection_sticks_with_failures():
+    """有失败信号时，failure-reflection 应正常命中，不被误过滤。"""
+    from core.skill import SkillRegistry
+
+    reg = SkillRegistry()
+    skills = reg.match_for_context(
+        last_applied=[],
+        has_active_task=True,
+        has_next_step=True,
+        failure_count=4,
+        high_error_streak=4,
+        wm_pressure=0.5,
+        context_text="",
+        max_inject=3,
+    )
+    names = [s.name for s in skills]
+    assert "failure-reflection" in names, "有失败信号时 failure-reflection 应被选中"
+
+
+def test_runtime_bootstrap_selected_when_idle():
+    """冷启动（无任务、无失败）时 runtime-bootstrap 应被选中。"""
+    from core.skill import SkillRegistry
+
+    reg = SkillRegistry()
+    skills = reg.match_for_context(
+        context_text="",
+        wm_pressure=0.05,
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        high_error_streak=0,
+    )
+    assert any(s.name == "runtime-bootstrap" for s in skills)
+
+
+def test_last_applied_not_in_result_if_no_signal_and_max_inject_set(tmp_path):
+    """max_inject>0 时，last_applied 里的 skill 若无信号得分，不能进入结果。"""
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    pkg = skills_dir / "ghost-skill"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        """---
+name: ghost-skill
+description: |
+  Ghost skill. Use when: haunted codebase.
+compatibility: any
+tags: ghost
+triggers: ["haunt"]
+match_terms: haunt
+match_rules: ""
+state_rules: ""
+---
+ghost body.
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+    # ghost-skill 上轮 LLM 用过，但本轮没有任何匹配信号
+    result = reg.match_for_context(
+        last_applied=["ghost-skill"],
+        has_active_task=False,
+        has_next_step=False,
+        failure_count=0,
+        wm_pressure=0.05,
+        context_text="totally unrelated context here",
+        max_inject=2,
+    )
+    names = [s.name for s in result]
+    assert "ghost-skill" not in names, "无信号时 last_applied 不能强行注入（score>0 guard）"
+
+

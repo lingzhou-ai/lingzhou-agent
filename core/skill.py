@@ -797,10 +797,9 @@ class SkillRegistry:
 
         if max_inject <= 0:
             selected = ordered + [skill for skill in all_skills if skill not in ordered]
-        elif ordered:
-            selected = ordered[:max_inject]
         else:
-            selected = [skill for skill in all_skills if skill.name in applied_names][:max_inject]
+            # ordered 为空即无任何信号命中，返回空列表（不强行注入 last_applied）
+            selected = ordered[:max_inject]
 
         top_scores = ", ".join(
             f"{skill.name}={score:.2f}" for score, _, skill in scored[:max(3, max_inject or 3)]
