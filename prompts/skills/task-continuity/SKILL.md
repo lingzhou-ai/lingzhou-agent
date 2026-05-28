@@ -38,3 +38,16 @@ state_rules: |
 | 每轮推进但不更新 `next_step` | `task.advance` 必须携带最新 `next_step` |
 | 自驱任务评估完毕后仍续命 | 结论明确 → 立刻 `task.complete` |
 | 多步任务散落在单条 `next_step` | >3 步 → 用 `task.plan` 维护 |
+
+## task.complete 使用守护
+
+**判断标准**：`task.goal` 中描述的产出是否真实存在（文件已写入/命令已执行/用户明确确认）？
+
+| 情形 | 行动 |
+|---|---|
+| 目标产出已真实存在 | `task.complete` |
+| 只是"读了文件/看了目录"未实际写入 | 不应 `task.complete`，用 `task.advance` 继续 |
+| 不确定目标是否达成 | `task.advance(next_step="...")` 继续，而不是提前结束 |
+| `source=self_drive` 任务评估完毕 | **必须立即 `task.complete`**，不管结论是"发现改进点"还是"维持现状" |
+
+> **自驱任务空转陷阱**：不要用 `task.update(next_step="低功耗监听/等待指令")` 续命——这会让任务永远挂 `in_progress`，自驱信号被压制，无法触发新探索。"维持现状"本身就是有效完成结论。

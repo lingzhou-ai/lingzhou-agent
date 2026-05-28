@@ -45,3 +45,21 @@ state_rules: |
 | `ENOENT` 后继续尝试同路径 | `file.list` 确认目录状态，换路径/策略 |
 | 超时后立刻重试 | 等待或 `task.wait`，不立刻重试 |
 | 忽视工具描述中的参数约束 | 调用前必须核对工具描述 |
+
+## 用户追问守护（ask-evidence 原则）
+
+倾向调用 `task.ask` 向用户索取 id/路径/任务号/聊天号等上下文键值时，先检查 `budget_state.ask_evidence_hits` vs `ask_evidence_budget`：
+
+- `hits < budget` → 通常**先本地取证**：`task.list` / `memory.search` / `memory.get_fact` / `file.list/read`（这些工具具有 `ask_evidence` 能力标签）
+- 本地证据仍不足 → 再选择 `task.ask`
+- 选择 `task.ask` 时：必须同时在 `reply_to_user` 给出真正发给用户的话；`task.ask` 的职责是登记"需要外部输入"，不是代替 `reply_to_user`
+
+## URL 处理规则（高优先级）
+
+用户消息中包含 `http://` 或 `https://` 开头的 URL 时：
+
+1. 该 URL 是**外部一次性引用**，本地记忆中不存在此内容，`memory.search` 无法获取
+2. **直接调用 `web.fetch`** 抓取，而不是先 `memory.search` 或 `memory.get_fact`
+3. 消息同时含有指令（如"参考这个链接重写"）→ 首轮**并行执行** `web.fetch` + 创建对应任务，不要等 fetch 结果才建任务
+
+> `ask_evidence` 本地取证规则适用于"用户提到了名字/路径/任务号但没给链接"；用户直接给出 URL 时跳过本地取证，直接 fetch。
