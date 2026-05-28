@@ -68,6 +68,8 @@ _RISKY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 
 def _check_risky(command: str) -> tuple[bool, str]:
     """检测命令是否含有高风险模式。返回 (is_risky, reason)。"""
+    if not isinstance(command, str):
+        return False, ""
     for pattern, reason in _RISKY_PATTERNS:
         if pattern.search(command):
             return True, reason
@@ -125,7 +127,13 @@ def _fingerprint(command: str, workdir: Path, returncode: int, output: str) -> s
 
 @tool(_MANIFEST)
 async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    command = (params.get("command") or "").strip()
+    _raw_cmd = params.get("command")
+    if _raw_cmd is not None and not isinstance(_raw_cmd, str):
+        return ToolResult(
+            summary=f"参数错误: command 应为字符串，实际收到 {type(_raw_cmd).__name__}",
+            error="InvalidParam",
+        )
+    command = (_raw_cmd or "").strip()
     if not command:
         return ToolResult(summary="命令为空", skipped=True)
 
