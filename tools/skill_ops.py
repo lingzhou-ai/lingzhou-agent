@@ -102,7 +102,6 @@ async def skill_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             skill.description or "",
             " ".join(getattr(skill, "tags", []) or []),
             " ".join(getattr(skill, "triggers", []) or []),
-            " ".join(getattr(skill, "match_terms", []) or []),
         ]).lower()
         if query in hay:
             hits.append(skill)

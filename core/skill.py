@@ -42,14 +42,6 @@ class SkillStateRule:
     inhibit: bool = False
 
 
-@dataclass
-class SkillMatchRule:
-    mode: str = "contains"
-    terms: list[str] = field(default_factory=list)
-    weight: float = 1.0
-    inhibit: bool = False
-
-
 # ---------- alias / migration layer -----------------------------------------
 # 历史 dotted 名 → 规范 hyphen 名的映射表。
 # workspace 里如果还存在旧目录，尽量通过这层透明寻找。
@@ -208,8 +200,6 @@ class Skill:
     guidance: str = ""   # 激活后才会读取 / 注入的完整 guidance
     tags: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
-    match_terms: list[str] = field(default_factory=list)
-    match_rules: list[SkillMatchRule] = field(default_factory=list)
     state_bias: dict[str, float] = field(default_factory=dict)
     state_rules: list[SkillStateRule] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)  # 历史各字
@@ -457,75 +447,6 @@ def _extract_trigger_text(description: str, meta: dict[str, str]) -> list[str]:
     return list(dict.fromkeys(t.strip() for t in triggers if t.strip()))
 
 
-def _extract_match_terms(meta: dict[str, str]) -> list[str]:
-    terms: list[str] = []
-    for key in ("match_terms", "matchers", "anchors", "context_terms"):
-        if key in meta:
-            terms.extend(_parse_listish(meta[key]))
-    return list(dict.fromkeys(t.strip() for t in terms if t.strip()))
-
-
-_MATCH_RULE_RE = re.compile(
-    r"^(contains|any|all)\s*:\s*(.+?)(?:\s*(?:=>|:=)\s*(-?\d+(?:\.\d+)?))?$",
-    re.IGNORECASE,
-)
-_MATCH_RULE_INHIBIT_RE = re.compile(r"^inhibit(?:\s+if)?\s+(contains|any|all)\s*:\s*(.+)$", re.IGNORECASE)
-
-
-def _normalize_match_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").lower()).strip()
-
-
-def _parse_match_rule_terms(raw: str) -> list[str]:
-    text = (raw or "").strip()
-    if not text:
-        return []
-    parts = re.split(r"\s*(?:\||,|，|;|；|/|／)\s*", text)
-    return [term for term in (_normalize_match_text(part) for part in parts) if term]
-
-
-def _parse_match_rules(raw: str) -> list[SkillMatchRule]:
-    text = (raw or "").strip()
-    if not text:
-        return []
-    rules: list[SkillMatchRule] = []
-    for part in re.split(r"[\n;；]+", text):
-        chunk = part.strip()
-        if not chunk:
-            continue
-        inhibit = _MATCH_RULE_INHIBIT_RE.match(chunk)
-        if inhibit:
-            terms = _parse_match_rule_terms(inhibit.group(2))
-            if terms:
-                rules.append(SkillMatchRule(mode=inhibit.group(1).lower(), terms=terms, inhibit=True))
-            continue
-        match = _MATCH_RULE_RE.match(chunk)
-        if not match:
-            continue
-        terms = _parse_match_rule_terms(match.group(2))
-        if not terms:
-            continue
-        rules.append(SkillMatchRule(
-            mode=match.group(1).lower(),
-            terms=terms,
-            weight=float(match.group(3) or 1.0),
-        ))
-    return rules
-
-
-def _legacy_match_rules(match_terms: list[str], triggers: list[str]) -> list[SkillMatchRule]:
-    rules: list[SkillMatchRule] = []
-    for term in match_terms:
-        normalized = _normalize_match_text(term)
-        if normalized:
-            rules.append(SkillMatchRule(mode="contains", terms=[normalized], weight=1.0))
-    for term in triggers:
-        normalized = _normalize_match_text(term)
-        if normalized:
-            rules.append(SkillMatchRule(mode="contains", terms=[normalized], weight=0.7))
-    return rules
-
-
 def _trim_guidance(text: str, limit: int = 1600) -> str:
     text = text.strip()
     if len(text) <= limit:
@@ -601,30 +522,6 @@ def _state_condition_matches(condition: SkillStateCondition, state_values: dict[
     return abs(current - expected) <= 1e-9
 
 
-def _context_score(skill: Skill, context_text: str) -> float:
-    hay = _normalize_match_text(context_text)
-    if not hay:
-        return 0.0
-
-    score = 0.0
-    for rule in skill.match_rules or []:
-        if not _match_rule_matches(rule, hay):
-            continue
-        if rule.inhibit:
-            return float("-inf")
-        score += rule.weight
-    return score
-
-
-def _match_rule_matches(rule: SkillMatchRule, hay: str) -> bool:
-    terms = [term for term in rule.terms if term]
-    if not terms:
-        return False
-    if rule.mode == "all":
-        return all(term in hay for term in terms)
-    return any(term in hay for term in terms)
-
-
 def _skill_activation_text(skill: Skill, *, include_frontmatter: bool = False, guidance_limit: int | None = None) -> str:
     content = skill.load_markdown()
     meta, body = _split_frontmatter(content)
@@ -688,8 +585,6 @@ class SkillRegistry:
                 _warn_skill_shape(name, description, md_file)
                 tags = _parse_listish(meta.get("tags", "")) or ["custom"]
                 triggers = _extract_trigger_text(description, meta)
-                match_terms = _extract_match_terms(meta)
-                match_rules = _parse_match_rules(meta.get("match_rules", "")) or _legacy_match_rules(match_terms, triggers)
                 raw_state_bias = meta.get("state_bias", "")
                 raw_state_rules = meta.get("state_rules", "") or raw_state_bias
                 state_bias = _parse_state_bias(raw_state_bias)
@@ -701,8 +596,6 @@ class SkillRegistry:
                     guidance="",
                     tags=tags,
                     triggers=triggers,
-                    match_terms=match_terms,
-                    match_rules=match_rules,
                     state_bias=state_bias,
                     state_rules=state_rules,
                     aliases=aliases,
