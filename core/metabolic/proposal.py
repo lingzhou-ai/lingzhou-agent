@@ -37,4 +37,5 @@ class StateProposal:
     value: Any
     scope: str = "task"
     source: str = ""
+    run_id: int = 0
     extras: dict[str, Any] = field(default_factory=dict)

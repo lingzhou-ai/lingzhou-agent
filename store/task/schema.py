@@ -203,7 +203,8 @@ CREATE TABLE IF NOT EXISTS life_ledger (
     value      TEXT    NOT NULL DEFAULT '',
     scope      TEXT    NOT NULL DEFAULT 'task',
     source     TEXT    NOT NULL DEFAULT '',
-    accepted   INTEGER NOT NULL DEFAULT 1  -- 0=被免疫器官拒绝
+    accepted   INTEGER NOT NULL DEFAULT 1,  -- 0=被免疫器官拒绝
+    run_id     INTEGER NOT NULL DEFAULT 0   -- 产生此条目的 Run ID（0=未关联）
 );
 CREATE INDEX IF NOT EXISTS idx_life_ledger_ts
     ON life_ledger(ts DESC);

@@ -134,14 +134,28 @@ class RunDriver:
                     _log.debug("[poll] dispatcher queue full, pending Run #%d 回退到 pending", run.id)
                     await task_store.update_run(run.id, status="pending", log_text="[poll] queue full, requeue")
                     return None
-                _log.debug("[poll] pending Run #%d → running，已注入 TickJob cycle=%d", run.id, dispatch_cycle)
+                # TickJob 已入队，bootstrap Run 使命完成 → succeeded
+                with contextlib.suppress(Exception):
+                    await task_store.update_run(
+                        run.id,
+                        status="succeeded",
+                        log_text="[poll] TickJob enqueued, bootstrap Run completed",
+                    )
+                _log.debug("[poll] pending Run #%d → succeeded，已注入 TickJob cycle=%d", run.id, dispatch_cycle)
                 return dispatch_cycle
             else:
                 # 无 dispatcher 时直接 tick
                 new_cycle = cycle + 1
                 with contextlib.suppress(Exception):
                     await loop._tick(new_cycle)
-                _log.debug("[poll] pending Run #%d → running，直接 tick cycle=%d", run.id, new_cycle)
+                # 直接 tick 也算完成
+                with contextlib.suppress(Exception):
+                    await task_store.update_run(
+                        run.id,
+                        status="succeeded",
+                        log_text="[poll] direct tick completed, bootstrap Run completed",
+                    )
+                _log.debug("[poll] pending Run #%d → succeeded，直接 tick cycle=%d", run.id, new_cycle)
                 return new_cycle
         except Exception:
             _log.exception("[poll_pending_runs] 失败，跳过")

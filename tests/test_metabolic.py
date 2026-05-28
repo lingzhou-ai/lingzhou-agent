@@ -385,3 +385,124 @@ def test_ethos_floor_values_always_enforced():
     )
     assert state.values.truth >= ec.floor_truth, "truth 不应低于 floor"
     assert state.values.caution >= ec.floor_caution, "caution 不应低于 floor"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task 3 — run_id 写入生命史账本
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_state_proposal_has_run_id_field():
+    """StateProposal 应有 run_id 字段，默认为 0。"""
+    from core.metabolic.proposal import StateProposal
+
+    p = StateProposal(op="set_fact", key="x", value="v")
+    assert hasattr(p, "run_id"), "StateProposal 应有 run_id 字段"
+    assert p.run_id == 0, "默认 run_id 应为 0"
+    p2 = StateProposal(op="set_fact", key="x", value="v", run_id=42)
+    assert p2.run_id == 42
+
+
+def test_ledger_append_stores_run_id():
+    """LedgerStore.append 写入 run_id，recent() 可读回。"""
+    asyncio.run(_ledger_append_stores_run_id())
+
+
+async def _ledger_append_stores_run_id():
+    import tempfile
+    from pathlib import Path
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            await store.ledger_append(
+                "set_fact", "run_id_test_key", "run_id_test_val",
+                scope="task", source="pytest", accepted=True, run_id=99,
+            )
+            rows = await store.ledger_recent(limit=5)
+            assert rows, "账本应有记录"
+            last = rows[0]
+            assert last.get("run_id") == 99, f"run_id 应为 99，实际 {last.get('run_id')!r}"
+        finally:
+            await store.close()
+
+
+def test_metabolic_engine_propagates_run_id_to_ledger():
+    """MetabolicEngine.submit 应把 proposal.run_id 写入账本。"""
+    asyncio.run(_metabolic_engine_propagates_run_id_to_ledger())
+
+
+async def _metabolic_engine_propagates_run_id_to_ledger():
+    import tempfile
+    from pathlib import Path
+    from core.metabolic import MetabolicEngine
+    from core.metabolic.proposal import StateProposal
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            engine = MetabolicEngine(store)
+            proposal = StateProposal(
+                op="set_fact",
+                key="engine_run_id_key",
+                value="engine_run_id_val",
+                scope="task",
+                source="pytest",
+                run_id=77,
+            )
+            await engine.submit(proposal)
+            rows = await store.ledger_recent(limit=5)
+            assert rows, "账本应有记录"
+            last = rows[0]
+            assert last.get("run_id") == 77, f"run_id 应为 77，实际 {last.get('run_id')!r}"
+        finally:
+            await store.close()
+
+
+def test_life_ledger_migration_adds_run_id_column():
+    """旧 DB（无 run_id 列）在 open() 后应自动迁移增加该列。"""
+    asyncio.run(_life_ledger_migration_adds_run_id_column())
+
+
+async def _life_ledger_migration_adds_run_id_column():
+    import tempfile
+    import aiosqlite
+    from pathlib import Path
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        db_path = Path(d) / "old.db"
+        # 手工建一张没有 run_id 列的 life_ledger 表，模拟旧 DB
+        async with aiosqlite.connect(str(db_path)) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS life_ledger (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts       TEXT NOT NULL DEFAULT (datetime('now')),
+                    op       TEXT NOT NULL,
+                    key      TEXT NOT NULL,
+                    value    TEXT NOT NULL DEFAULT '',
+                    scope    TEXT NOT NULL DEFAULT 'task',
+                    source   TEXT NOT NULL DEFAULT '',
+                    accepted INTEGER NOT NULL DEFAULT 1
+                )
+            """)
+            await db.commit()
+
+        # 正常 open() 应触发 _migrate_ledger_run_id
+        store = TaskStore(db_path)
+        await store.open()
+        try:
+            # 写入并读回，验证列存在且可存储
+            await store.ledger_append(
+                "set_fact", "migration_key", "migration_val",
+                run_id=55,
+            )
+            rows = await store.ledger_recent(limit=5)
+            assert rows and rows[0].get("run_id") == 55, \
+                f"迁移后 run_id 应可读，实际 {rows[0] if rows else '[]'!r}"
+        finally:
+            await store.close()

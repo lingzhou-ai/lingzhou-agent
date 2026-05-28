@@ -86,6 +86,7 @@ class MetabolicEngine:
                 scope=proposal.scope,
                 source=proposal.source,
                 accepted=accepted,
+                run_id=proposal.run_id,
             )
         except Exception as exc:
             _log.warning("[metabolic] 生命史账本写入失败（不影响主流程）: %s", exc)

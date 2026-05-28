@@ -417,7 +417,7 @@ async def test_poll_pending_runs_claims_judge_run_and_enqueues_tick():
 
         run = await store.get_run_by_id(run_id)
         assert run is not None
-        assert run.status == "running"
+        assert run.status == "succeeded"  # TickJob 已入队，bootstrap Run 使命完成
 
 
 @pytest.mark.asyncio
