@@ -129,6 +129,19 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not command:
         return ToolResult(summary="命令为空", skipped=True)
 
+    try:
+        return await _shell_run_impl(params, ctx, command)
+    except FileNotFoundError as e:
+        return ToolResult(summary=str(e), error="WorkdirNotFound")
+    except (ValueError, TypeError) as e:
+        return ToolResult(summary=f"参数错误: {e}", error="InvalidParam")
+    except OSError as e:
+        return ToolResult(summary=f"启动进程失败: {e}", error="OSError")
+    except Exception as e:
+        return ToolResult(summary=f"工具执行异常: {type(e).__name__}: {e}", error=type(e).__name__)
+
+
+async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str) -> ToolResult:
     timeout_raw = params.get("timeout")
     timeout = float(
         _threshold_value(ctx, "shell_timeout", _DEFAULT_TIMEOUT)
@@ -169,10 +182,7 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _sandbox_dir = tempfile.mkdtemp(prefix="lz_sandbox_")
         workdir = Path(_sandbox_dir)
     else:
-        try:
-            workdir = _resolve_workdir(workdir_raw, ctx)
-        except FileNotFoundError as e:
-            return ToolResult(summary=str(e), error="WorkdirNotFound")
+        workdir = _resolve_workdir(workdir_raw, ctx)  # FileNotFoundError 由外层捕获
 
     # 最小化 env：过滤含 API_KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL / AUTH 的变量
     # 防止提示注入攻击通过 printenv / curl 等命令外泄 API 密钥
