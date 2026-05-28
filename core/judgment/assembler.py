@@ -835,17 +835,12 @@ class JudgmentContextAssembler:
         elif should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily:
             recall_mode = "daily_gap_fill"
 
-        axioms_fact, ethos_fact = await asyncio.gather(
-            task_store.get_fact("soul:hard_axioms"),
-            task_store.get_fact("soul:ethos_baseline"),
-        )
-        axioms_val, _ = axioms_fact
+        ethos_fact = await task_store.get_fact("soul:ethos_baseline")
         ethos_val, _ = ethos_fact
+        # hard_axioms 已由宪法层代码硬阻断，不再注入 prompt。
         soul_section = _fmt_soul(
-            axioms_val,
             ethos_val,
             json.dumps(self._cfg.soul.ethos.baseline.as_dict(), ensure_ascii=False, sort_keys=True),
-            json.dumps(self._cfg.soul.hard_axioms, ensure_ascii=False),
         )
 
         _wm_items = wm.get_top(15)

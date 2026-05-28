@@ -849,15 +849,12 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
 def test_fmt_soul_uses_config_ethos_fallback_when_db_missing():
     from core.judgment.context import _fmt_soul
 
+    # hard_axioms 已由宪法层硬阻断，不再注入 prompt；只验证 ethos_baseline fallback
     text = _fmt_soul(
         "",
-        "",
         '{"truth": 0.85, "caution": 0.70}',
-        '["不绕过监督"]',
     )
 
-    assert "绝对禁忌（hard_axioms，config fallback）" in text
-    assert '"不绕过监督"' in text
     assert "价值基线（ethos_baseline，config fallback）" in text
     assert '"truth": 0.85' in text
 

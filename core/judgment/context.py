@@ -765,22 +765,15 @@ def _fmt_percept(percept: Percept) -> str:
 
 
 def _fmt_soul(
-    axioms_val: str,
     ethos_val: str,
     config_ethos_val: str = "",
-    config_axioms_val: str = "",
 ) -> str:
-    cache_key = (
-        f"_fmt_soul:{hash(axioms_val)}:{hash(ethos_val)}:"
-        f"{hash(config_ethos_val)}:{hash(config_axioms_val)}"
-    )
+    cache_key = f"_fmt_soul:{hash(ethos_val)}:{hash(config_ethos_val)}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
     parts: list[str] = []
-    if axioms_val:
-        parts.append(f"绝对禁忌（hard_axioms）: {axioms_val}")
-    elif config_axioms_val:
-        parts.append(f"绝对禁忌（hard_axioms，config fallback）: {config_axioms_val}")
+    # hard_axioms 已由宪法层（immune/constitution.py + policy.py）在代码层硬阻断，
+    # 不再注入 prompt 作为软约束。
     if ethos_val:
         parts.append(f"价值基线（ethos_baseline）: {ethos_val}")
     elif config_ethos_val:
