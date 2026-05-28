@@ -290,7 +290,7 @@ class LoopConfig(BaseModel):
         ),
     )
     wechat_coalesce_delay: float = Field(
-        default=1.5, ge=0.0,
+        default=3.0, ge=0.0,
         description=(
             "wechat 通道图文合并等待窗口（秒）。"
             "用户连续发文字+图片时，iLink 将两条消息独立下发，图片需要下载解密才能写入 DB。"

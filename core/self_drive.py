@@ -115,6 +115,8 @@ class SelfDriveEngine:
             Path(db_path).parent / "self_drive_state.json"
         )
         self._state = CuriosityState()
+        # 跨链共享冷却时间戳：防止多条 global 链并发注入重复自驱 WM 信号
+        self._last_injected_at: float = 0.0
         self._load()
 
     def _load(self) -> None:

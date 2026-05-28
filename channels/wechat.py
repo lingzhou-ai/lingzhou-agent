@@ -227,30 +227,45 @@ class WechatChannel:
     def _check_and_reply(self) -> None:
         rows = self._ingress.list_pending_assistant_messages(chat_prefix="wechat:", limit=20)
 
+        # 按 from_user 分组，将同一轮询周期内的多条回复合并为一条发送，
+        # 避免 bot 多轮 tick 产生的进度更新变成独立消息堆叠。
+        by_user: dict[str, list[dict]] = {}
         for row in rows:
             mid = int(row["id"])
             if mid in self._replied:
                 continue
-
-            content = str(row["content"] or "")
             chat_id = str(row["chat_id"] or "")
             from_user = chat_id.replace("wechat:", "", 1)
-
-            if not from_user or not content:
+            if not from_user:
                 continue
+            by_user.setdefault(from_user, []).append(row)
+
+        for from_user, user_rows in by_user.items():
+            # 合并同用户所有待发内容，空行分隔
+            parts = [str(r["content"] or "").strip() for r in user_rows if str(r["content"] or "").strip()]
+            if not parts:
+                continue
+            content = "\n\n".join(parts)
+            all_mids = [int(r["id"]) for r in user_rows]
 
             ctx_token = self._get_ctx_token(from_user)
-            log.info("[wechat] -> iLink msg=%d to=%s len=%d", mid, from_user[:16], len(content))
+            log.info(
+                "[wechat] -> iLink to=%s msgs=%s len=%d",
+                from_user[:16],
+                all_mids,
+                len(content),
+            )
 
             for attempt in range(MAX_REPLY_RETRIES):
                 try:
                     send_text(self._cfg.base_url, self._cfg.token, from_user, content, ctx_token)
-                    self._replied.add(mid)
-                    self._mark_delivered(mid)
-                    log.info("[wechat] 回复成功 msg=%d", mid)
+                    for mid in all_mids:
+                        self._replied.add(mid)
+                        self._mark_delivered(mid)
+                    log.info("[wechat] 回复成功 msgs=%s", all_mids)
                     break
                 except Exception as e:
-                    log.warning("[wechat] 回复失败 msg=%d attempt=%d: %s", mid, attempt + 1, e)
+                    log.warning("[wechat] 回复失败 msgs=%s attempt=%d: %s", all_mids, attempt + 1, e)
                     time.sleep(1)
 
     def _get_ctx_token(self, from_user: str) -> str:

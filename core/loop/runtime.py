@@ -439,6 +439,8 @@ class CognitionLoop:
 
             view = copy.copy(self)
             self._mount_chain_view(view, state)
+            # 记录当前链标识，供 _maybe_inject_self_drive 判断链类型
+            view._current_chain_key = job.chain_key
             # provider 热切换后，链内 judgment 始终跟随当前 provider
             view._judgment._provider = self._provider
             if self._routing_providers:
@@ -490,6 +492,16 @@ class CognitionLoop:
         注意：这里不直接创建任务。是否将自驱信号落实为任务，交给 LLM
         在 judgment 阶段根据 WM 自主决定。
         """
+        import time as _time
+        # 只有 global:* 链才负责全局空转探索；chat/task 链有专职工作，不触发自驱
+        _chain_key = getattr(self, '_current_chain_key', '')
+        if _chain_key and not _chain_key.startswith('global:'):
+            return
+        # 跨链共享冷却（120s）：防止多个 global:* 链并发注入重复自驱 WM 信号
+        _now = _time.monotonic()
+        if _now - self._self_drive._last_injected_at < 120.0:
+            return
+
         # 检查是否有真的活跃任务（非 waiting 状态）
         has_real_work = (
             self._last_decision == "act"
@@ -532,7 +544,6 @@ class CognitionLoop:
             return
 
         # 感知上下文：未完成 self_drive 任务数 + 上次完成时间，注入 WM 供 LLM 感知决策
-        import time as _time
         from datetime import datetime as _dt
         runnable = await self._task_store.list_runnable_tasks(limit=20)
         _pending_sd = [t for t in runnable if getattr(t, "source", None) == "self_drive"]
@@ -590,6 +601,8 @@ class CognitionLoop:
             content=drive_content,
             priority=self._cfg.thresholds.wm_pri_signal,
         ))
+        # 更新共享冷却时间戳，阻止其他 global 链在 120s 内重复注入
+        self._self_drive._last_injected_at = _time.monotonic()
         # 自驱探索：强制下一 tick 使用 high thinking 以保障推理深度
         self._pending_thinking_override = "high"
 
