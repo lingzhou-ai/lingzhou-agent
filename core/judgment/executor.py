@@ -348,28 +348,19 @@ class JudgmentExecutor:
         return max(1, int(cjk * 1.8 + ascii_chars * 0.3 + other * 1.0))
 
     def _compress_text_to_budget(self, text: str, keep_tokens: int) -> str:
-        raw = (text or "").strip()
-        if not raw:
-            return ""
         if keep_tokens <= 0:
             return ""
-        approx_tokens = self._estimate_text_tokens(raw)
-        if approx_tokens <= keep_tokens:
-            return raw
-
-        keep_ratio = max(0.0, min(1.0, keep_tokens / float(max(approx_tokens, 1))))
-        keep_chars = max(6000, int(len(raw) * keep_ratio))
-        head_chars = max(2000, int(keep_chars * 0.7))
-        tail_chars = max(2000, keep_chars - head_chars)
-        if head_chars + tail_chars >= len(raw):
-            return raw
-
-        omitted = len(raw) - head_chars - tail_chars
-        return (
-            f"{raw[:head_chars]}\n\n"
-            f"...[prompt 已压缩，省略 {omitted} 字符]...\n\n"
-            f"{raw[-tail_chars:]}"
-        )
+        if self._estimate_text_tokens(text) <= keep_tokens:
+            return text
+        # 以字符比例做一次保守压缩，确保超限重试时内容实质变短。
+        estimated = max(1, self._estimate_text_tokens(text))
+        ratio = max(0.01, min(1.0, keep_tokens / float(estimated)))
+        keep_chars = max(1, int(len(text) * ratio * 0.9))
+        trimmed = text[:keep_chars]
+        # 兜底：极端估算误差下至少砍半，避免返回原文导致重试无效。
+        if len(trimmed) >= len(text):
+            trimmed = text[: max(1, len(text) // 2)]
+        return trimmed
 
     def _trim_messages_for_prompt_limit(
         self,

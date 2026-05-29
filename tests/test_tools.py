@@ -220,6 +220,33 @@ async def _file_edit_errors():
         assert r4.error == "NonUniqueOldText"
 
 
+def test_file_edit_fuzzy_respects_blank_lines():
+    """file.edit 模糊匹配应保留空行约束，避免跨空行误命中。"""
+    asyncio.run(_file_edit_fuzzy_respects_blank_lines())
+
+
+async def _file_edit_fuzzy_respects_blank_lines():
+    from tools.file import file_edit, file_write
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = _tool_ctx(workspace_dir=d)
+        fpath = root / "blank.py"
+        await file_write({"path": str(fpath), "content": "a = 1\n# note\nb = 2\n"}, ctx)
+
+        # oldText 中包含空行，目标文件无空行时不应误匹配。
+        res = await file_edit(
+            {
+                "path": str(fpath),
+                "edits": [{"oldText": "a = 1\n\nb = 2", "newText": "a = 10\n\nb = 20"}],
+            },
+            ctx,
+        )
+
+        assert res.skipped is True
+        assert res.error == "OldTextNotFound"
+
+
 def test_skill_list_and_search():
     """skill.list 和 skill.search 工具正常返回。"""
     asyncio.run(_skill_list_and_search())

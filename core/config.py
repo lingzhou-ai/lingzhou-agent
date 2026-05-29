@@ -14,8 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .config_models import (
     EmotionConfig,
     EvolutionConfig,
-    EthosBaseline,
-    EthosConfig,
     GatewayConfig,
     LoopConfig,
     MemoryConfig,
@@ -23,13 +21,12 @@ from .config_models import (
     ProviderDefinition,
     SoulConfig,
     ThresholdsConfig,
-)  # noqa: F401
+)
 
 
 class Config(BaseModel):
     """所有配置的统一入口。改行为 = 改 lingzhou.json，不改代码。"""
 
-    # noqa: F401
     model_config = ConfigDict(extra="ignore")  # 忽略 lingzhou.json 中未知字段，拼写错误不会静默生效
 
     # ── Provider 层 ─────────────────────────────────────────────────────────

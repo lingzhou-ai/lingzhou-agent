@@ -103,9 +103,7 @@ def _fuzzy_find(content: str, old_text: str) -> int:
     for i in range(len(content_lines) - len(old_stripped) + 1):
         match = True
         for j, os_line in enumerate(old_stripped):
-            if not os_line:  # 跳过空行
-                continue
-            if content_lines[i + j].strip() != os_line:  # 严格逐行相等
+            if content_lines[i + j].strip() != os_line:  # 严格逐行相等（包含空行）
                 match = False
                 break
         if match:
