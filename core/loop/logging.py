@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.execution import action_key_param
-from core.judgment import JudgmentOutput
-from store.task import Task
-from tools.registry import ToolResult
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
+    from store.task import Task
+    from tools.registry import ToolResult
 
 DEFAULT_LOG_REPLY_CHARS = 240
 

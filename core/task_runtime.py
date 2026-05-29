@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.judgment import JudgmentOutput
 from core.metabolic import StateProposal
 from memory.working import WMItem, WorkingMemory
-from store.task import Task, TaskStore
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
+    from store.task import Task, TaskStore
 
 _log = logging.getLogger("lingzhou.loop")
 

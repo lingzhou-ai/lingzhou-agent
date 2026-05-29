@@ -28,7 +28,6 @@ _log = logging.getLogger("lingzhou.execution")
 if TYPE_CHECKING:
     from core.config import Config
     from core.judgment import JudgmentOutput
-    from store.task import TaskStore
     from tools.registry import ToolRegistry
     from tools.view_protocols import TaskStoreViewProtocol
 
@@ -246,6 +245,20 @@ def _run_progress_text(result: ToolResult) -> str:
     if progress:
         return progress[:2000]
     return (result.summary or "").strip()[:2000]
+
+
+async def _resolve_execution_active_task(ctx: ToolContext) -> Any:
+    active_task = await ctx.get_active_task()
+    if active_task is not None:
+        return active_task
+    task_store = getattr(ctx, "task_store", None)
+    getter = getattr(task_store, "get_active", None)
+    if getter is None:
+        return None
+    try:
+        return await getter()
+    except Exception:
+        return None
 
 
 def _meta_reflection_decision(target_kind: str, loop_level: str, text: str) -> str:
@@ -562,7 +575,7 @@ class ExecutionLayer:
         run_id: int | None = None
         run_type = "tool_chain"
         worker_type = "tool-chain-worker"
-        active_task = await ctx.get_active_task()
+        active_task = await _resolve_execution_active_task(ctx)
         active_task_id = active_task.id if active_task else 0
         run_task_id = _planned_run_task_id(action, active_task_id)
         task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""

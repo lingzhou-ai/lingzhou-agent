@@ -549,6 +549,48 @@ def test_similar_tasks_section_exposes_similarity_and_context():
     assert "next=等待新的 crash.log 后继续比对" in text
 
 
+@pytest.mark.asyncio
+async def test_load_similar_tasks_snapshot_excludes_self_drive_for_non_self_drive_task():
+    from core.judgment.assembler import _load_similar_tasks_snapshot
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "similar-context.db")
+        await store.open()
+        try:
+            active_id = await store.add_task(
+                "当前用户任务",
+                goal="分析 crash.log",
+                source="external",
+                status="in_progress",
+            )
+            external_id = await store.add_task(
+                "排查远程运行重启循环",
+                goal="分析 crash.log 并修复重启循环",
+                source="external",
+            )
+            self_drive_id = await store.add_task(
+                "排查远程运行重启循环",
+                goal="自驱分析 crash.log 并修复重启循环",
+                source="self_drive",
+            )
+            active_task = await store.get_task_by_id(active_id)
+
+            hits = await _load_similar_tasks_snapshot(
+                store,
+                "解决远程运行重启循环",
+                active_task=active_task,
+                limit=5,
+                min_score=0.45,
+            )
+
+            hit_ids = [task.id for task, _ in hits]
+            assert external_id in hit_ids
+            assert self_drive_id not in hit_ids
+        finally:
+            await store.close()
+
+
 def test_model_routing_section_uses_effective_thinking():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -1867,7 +1909,7 @@ async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
         reply_only=True,
     )
 
-    assert out.decision == "pause"
+    assert out.decision == "wait"
     assert out.chosen_action_id == ""
     assert out.params == {}
     assert out.reply_to_user == "这是最终回复。"
@@ -1918,6 +1960,51 @@ async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime
     assert out.chosen_action_id == ""
     assert out.params == {}
     assert out.rationale == "act 决策缺少 chosen_action_id"
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_continue_normalizes_chat_reply_pseudo_tool():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.calls += 1
+            return '{"decision":"act","chosen_action_id":"chat_reply","reply_to_user":"我先直接回答你这张图里有一只猫。","rationale":"已经有足够证据，直接答复用户"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    layer = JudgmentLayer(provider, _tool_registry(), cfg)
+    layer._assembler._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "image.analyze", "params": {"images": 1}, "result": "图中是一只猫坐在窗边"}],
+        user_message="图里是什么",
+        prefer_tier="reasoner",
+    )
+
+    assert out.decision == "wait"
+    assert out.chosen_action_id == ""
+    assert out.reply_to_user == "我先直接回答你这张图里有一只猫。"
     assert provider.calls == 1
 
 
@@ -2391,6 +2478,93 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
             )
 
             assert "帮我检查当前状态" in text
+        finally:
+            await store.close()
+
+
+def test_assemble_context_with_active_task_skips_global_open_task_overview_fetches():
+    asyncio.run(_assemble_context_with_active_task_skips_global_open_task_overview_fetches())
+
+
+async def _assemble_context_with_active_task_skips_global_open_task_overview_fetches():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    class _GuardedTaskStore:
+        def __init__(self, base: Any) -> None:
+            self._base = base
+
+        async def list_runnable_tasks(self, limit: int = 20):
+            raise AssertionError("active task context should not fetch runnable task overview")
+
+        async def list_tasks(self, status: str | None = None, limit: int = 50):
+            if status == "waiting":
+                raise AssertionError("active task context should not fetch waiting task overview")
+            return await self._base.list_tasks(status=status, limit=limit)
+
+        async def find_similar_open_tasks(self, *args: Any, **kwargs: Any):
+            raise AssertionError("active task context should not fetch similar open tasks")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._base, name)
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx-active-task.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "当前焦点任务",
+                goal="只围绕当前任务推进",
+                next_step="继续核对当前任务证据",
+                status="in_progress",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            guarded_store = _GuardedTaskStore(store)
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=cast("Any", guarded_store),
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=task,
+                user_message="继续当前任务",
+            )
+
+            assert "当前焦点任务" in text
         finally:
             await store.close()
 

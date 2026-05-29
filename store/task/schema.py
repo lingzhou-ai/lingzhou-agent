@@ -1,9 +1,11 @@
 """store/task/schema.py — DDL 常量与任务层工具函数。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from store.task.models import Task
+
+if TYPE_CHECKING:
+    from store.task.models import Task
 
 # ── 公开常量 ────────────────────────────────────────────────────────────────
 

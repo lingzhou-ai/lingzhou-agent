@@ -13,9 +13,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from core.immune.policy import check_tool_blocked
-from core.metabolic.proposal import StateProposal
 
 if TYPE_CHECKING:
+    from core.metabolic.proposal import StateProposal
     from tools.view_protocols import TaskStoreViewProtocol
 
 _log = logging.getLogger("lingzhou.metabolic")

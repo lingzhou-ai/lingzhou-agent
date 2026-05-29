@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.judgment import JudgmentOutput
 from memory.working import WMItem
 
 from .common import (
@@ -19,6 +18,9 @@ from .common import (
     _tool_history_entry,
 )
 from .progress import action_key_param
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -145,10 +147,14 @@ async def _run_continue_phase(
             loop._behavior.on_act_result(cont.chosen_action_id or "", cont_result.summary or "")
             tool_history.append(_tool_history_entry(cont, cont_result))
 
+        if cont.reply_to_user:
+            cont.speech_intent = cont.reply_to_user
+            cont.reply_to_user = ""
+
         action = cont
         result = cont_result
         _inner += 1
-        if action.reply_to_user or not _should_continue_within_tick(action, registry=loop._registry):
+        if action.speech_intent or not _should_continue_within_tick(action, registry=loop._registry):
             break
         # PlanUnchanged：计划结构没变，继续循环只会死锁；跳出让下一 tick 直接执行具体工具。
         if cont_result.error == "PlanUnchanged":

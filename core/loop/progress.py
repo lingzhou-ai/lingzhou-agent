@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 
 from core.execution import action_key_param
-from core.judgment import JudgmentOutput
 from tools.registry import ToolRegistry, ToolResult, default_tool_registry, tool_has_capability
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
 
 
 def _tool_progress_category(tool_name: str, registry: ToolRegistry | None = None) -> str:

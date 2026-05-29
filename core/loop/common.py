@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.config import Config
 from core.judgment import JudgmentOutput, tool_tier
 from core.perception import PerceptionReplaySummary
-from store.task import Task
-from tools.registry import ToolResult
+
+if TYPE_CHECKING:
+    from tools.registry import ToolResult
+    from store.task import Task
+    from core.config import Config
 
 # 判断层执行 tier（用于 task 模型档位校验，不含 reader）
 _JUDGMENT_TIERS: frozenset[str] = frozenset({"reasoner", "repair"})

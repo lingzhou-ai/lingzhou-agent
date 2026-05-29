@@ -4,7 +4,6 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from core.config import Config
@@ -19,6 +18,7 @@ from .run_driver import RunDriver
 from .startup import _build_routing_providers
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from .runtime import CognitionLoop
 
 _log = logging.getLogger("lingzhou.loop")

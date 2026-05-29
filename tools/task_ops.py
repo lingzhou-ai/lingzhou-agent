@@ -7,20 +7,34 @@ from typing import Any
 
 _log_task_ops = _logging.getLogger("lingzhou.task_ops")
 
+
+async def _resolve_active_task(ctx: ToolContext):
+    task = await ctx.get_active_task()
+    if task is not None:
+        return task
+    task_store = getattr(ctx, "task_store", None)
+    getter = getattr(task_store, "get_active", None)
+    if getter is None:
+        return None
+    try:
+        return await getter()
+    except Exception:
+        return None
+
 async def _resolve_task(task_id: Any, ctx: ToolContext):
     """解析 task_id -> Task。None 时返回活跃任务；格式/查找错误时记录 warning 并回退。"""
     if task_id is None:
-        return await ctx.get_active_task()
+        return await _resolve_active_task(ctx)
     try:
         tid = int(task_id)
     except (ValueError, TypeError):
         _log_task_ops.warning("[task_ops] task_id=%r 格式无效（期望整数），回退到活跃任务", task_id)
-        return await ctx.get_active_task()
+        return await _resolve_active_task(ctx)
     try:
         return await ctx.task_store.get_task_by_id(tid)
     except Exception:
         _log_task_ops.warning("[task_ops] task_id=%d 不存在，回退到活跃任务", tid)
-        return await ctx.get_active_task()
+        return await _resolve_active_task(ctx)
 
 from store.semantic import MemoryNode
 from store.task import build_task_similarity_query
@@ -53,6 +67,13 @@ def _is_completion_verify_tool(ctx: ToolContext, tool_name: str) -> bool:
 
 def _task_metadata(task: Any) -> dict[str, Any]:
     return {"task_id": task.id, "chain_id": task.chain_id}
+
+
+def _similar_task_source_filters(source: str) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
+    normalized_source = str(source or "").strip() or "external"
+    if normalized_source == "self_drive":
+        return ("self_drive",), None
+    return None, ("self_drive",)
 
 
 @tool(ToolManifest(
@@ -127,10 +148,13 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     model_tier = (params.get("model_tier") or "").strip()
     finder: Any = getattr(ctx.task_store, "find_similar_open_tasks", None)
     if finder is not None:
+        allowed_sources, excluded_sources = _similar_task_source_filters(source)
         similar_tasks = await finder(
             build_task_similarity_query(title, goal, next_step),
             limit=1,
             min_score=ctx.config.thresholds.task_duplicate_reuse_score,
+            allowed_sources=allowed_sources,
+            excluded_sources=excluded_sources,
         )
         if similar_tasks:
             existing, score = similar_tasks[0]

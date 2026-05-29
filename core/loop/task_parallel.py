@@ -83,6 +83,8 @@ class _ScopedTaskStore:
         limit: int = 5,
         min_score: float = 0.45,
         exclude_task_ids: list[int] | tuple[int, ...] | set[int] | None = None,
+        allowed_sources: list[str] | tuple[str, ...] | set[str] | None = None,
+        excluded_sources: list[str] | tuple[str, ...] | set[str] | None = None,
         statuses: tuple[str, ...] | list[str] | None = None,
     ) -> list[Any]:
         return await self._call(
@@ -91,6 +93,8 @@ class _ScopedTaskStore:
             limit=limit,
             min_score=min_score,
             exclude_task_ids=exclude_task_ids,
+            allowed_sources=allowed_sources,
+            excluded_sources=excluded_sources,
             statuses=statuses,
         )
 
@@ -335,6 +339,11 @@ async def run_tasks_parallel(
 
     _log.info("[task_parallel] 并行启动 %d 个任务: %s", len(valid_specs), [s["id"] for s in valid_specs])
 
+    parent_task = await loop._task_store.get_task_by_id(parent_task_id) if parent_task_id else None
+    parent_source = str(getattr(parent_task, "source", "") or "").strip()
+    allowed_sources = ("self_drive",) if parent_source == "self_drive" else None
+    excluded_sources = None if parent_source == "self_drive" else ("self_drive",)
+
     def _reused_entry(spec: dict[str, Any], task: Task, score: float) -> dict[str, Any]:
         spec_id = str(spec.get("id") or task.id)
         result_text = (
@@ -362,6 +371,8 @@ async def run_tasks_parallel(
                 limit=1,
                 min_score=loop._cfg.thresholds.task_duplicate_reuse_score,
                 exclude_task_ids=[parent_task_id] if parent_task_id else None,
+                allowed_sources=allowed_sources,
+                excluded_sources=excluded_sources,
             )
             if similar_tasks:
                 existing, score = similar_tasks[0]

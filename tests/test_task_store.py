@@ -130,6 +130,20 @@ async def _task_store_find_similar_open_tasks():
         assert hits[0][0].id == open_id
         assert all(task.status != "done" for task, _ in hits)
 
+        self_drive_id = await store.add_task(
+            "解决远程运行重启循环",
+            goal="self drive 中的相似诊断任务",
+            source="self_drive",
+        )
+        filtered_hits = await store.find_similar_open_tasks(
+            "解决远程运行重启循环",
+            limit=5,
+            excluded_sources=("self_drive",),
+        )
+
+        assert filtered_hits
+        assert all(task.id != self_drive_id for task, _ in filtered_hits)
+
         await store.close()
 
 
@@ -165,6 +179,41 @@ async def _task_add_reuses_similar_open_task():
         assert result.metadata.get("reused_existing_task") is True
         tasks = await store.list_tasks(limit=10)
         assert len(tasks) == 1
+
+        await store.close()
+
+
+def test_task_add_does_not_reuse_self_drive_task_for_external_request():
+    asyncio.run(_task_add_does_not_reuse_self_drive_task_for_external_request())
+
+
+async def _task_add_does_not_reuse_self_drive_task_for_external_request():
+    from store.task import TaskStore
+    from tools.task_ops import task_add
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "task-add-no-self-drive-reuse.db")
+        await store.open()
+
+        await store.add_task(
+            "排查远程运行重启循环",
+            goal="自驱诊断远程运行重启问题",
+            source="self_drive",
+        )
+        ctx = _tool_ctx(task_store=store)
+
+        result = await task_add(
+            {
+                "title": "解决远程运行一直重启",
+                "goal": "分析 crash.log 并修复远程运行重启循环",
+            },
+            ctx,
+        )
+
+        assert result.skipped is False
+        assert result.metadata.get("reused_existing_task") is not True
+        tasks = await store.list_tasks(limit=10)
+        assert len(tasks) == 2
 
         await store.close()
 

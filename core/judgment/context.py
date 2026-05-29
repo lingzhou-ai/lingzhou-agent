@@ -635,7 +635,6 @@ def _fmt_config_snapshot(cfg: Config) -> str:
         f"  min_act_gap: {lo.min_act_gap}ms",
         f"  active_idle_gap: {lo.active_idle_gap}ms",
         f"  max_idle_gap: {lo.max_idle_gap}ms",
-        f"  chat_reply_timeout: {lo.chat_reply_timeout}s",
         "",
         "## Emotion guardrails (emotion.*)",
         f"  failure_normalization_count: {em.failure_normalization_count}",

@@ -5,14 +5,13 @@ import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
-from provider.base import Message
 from provider.catalog import lookup_model
+from provider.base import Message
 from store.auth import (
     load_copilot_token_cache,
     resolve_copilot_token,
@@ -20,6 +19,7 @@ from store.auth import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from core.config import Config
 
 _log = logging.getLogger("lingzhou.provider.openai_compat")
@@ -78,6 +78,42 @@ def _extract_responses_text(data: dict[str, Any]) -> str:
                 if isinstance(text, str) and text:
                     text_parts.append(text)
     return "\n".join(text_parts).strip()
+
+
+def _normalize_responses_content_part(part: dict[str, Any]) -> dict[str, Any]:
+    part_type = str(part.get("type") or "")
+    if part_type in {"text", "input_text"}:
+        return {
+            "type": "input_text",
+            "text": str(part.get("text") or ""),
+        }
+
+    if part_type in {"image_url", "input_image"}:
+        image_value = part.get("image_url")
+        detail = str(part.get("detail") or "").strip()
+        if isinstance(image_value, dict):
+            detail = str(image_value.get("detail") or detail).strip()
+            image_value = image_value.get("url")
+        normalized: dict[str, Any] = {"type": "input_image"}
+        if isinstance(image_value, str) and image_value.strip():
+            normalized["image_url"] = image_value.strip()
+        if detail:
+            normalized["detail"] = detail
+        return normalized if "image_url" in normalized else dict(part)
+
+    return dict(part)
+
+
+def _normalize_responses_message_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return content
+    normalized: list[dict[str, Any]] = []
+    for item in content:
+        if isinstance(item, dict):
+            normalized.append(_normalize_responses_content_part(item))
+    return normalized
 
 
 def _build_copilot_ide_headers(*, include_api_version: bool = False) -> dict[str, str]:
@@ -161,33 +197,6 @@ class _ModeAdapter:
     async def request_headers(self) -> dict[str, str]:
         return {}  # openai 模式：Authorization 已在 client headers
 
-    async def handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
-        return None  # openai 模式：不需要 token 刷新
-
-    def apply_completion_limits(self, payload: dict[str, Any]) -> None:
-        pass  # openai 模式：不需要 completion_limit 参数
-
-    def uses_responses_api(self, model_spec: dict[str, Any]) -> bool:
-        return False
-
-    def build_chat_payload(
-        self,
-        messages: list[Message],
-        model: str,
-        temperature: float,
-        thinking_level: str,
-        thinking_override: str | None,
-        extra_body: dict[str, Any],
-        model_spec: dict[str, Any],
-    ) -> dict[str, Any]:
-        """构建 chat/completions 请求 payload。"""
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
-            "temperature": temperature,
-        }
-        return payload
-
     def embedding_url(self) -> str:
         return "/embeddings"
 
@@ -222,59 +231,6 @@ class _CopilotMode(_ModeAdapter):
     async def request_headers(self) -> dict[str, str]:
         token = await self._ensure_copilot_token()
         return _build_copilot_ide_headers() | {"Authorization": f"Bearer {token}"}
-
-    async def handle_auth_error(self, resp: httpx.Response) -> httpx.Response | None:
-        body = resp.text
-        if "Personal Access Tokens are not supported" in body:
-            raise RuntimeError(
-                "当前 GitHub token 没有成功走完 Copilot token exchange。\n"
-                "请重新执行 `lingzhou auth login-copilot`。"
-            )
-        return None  # 实际重试逻辑在 chat() 中处理
-
-    def apply_completion_limits(self, payload: dict[str, Any]) -> None:
-        if "max_completion_tokens" in payload or "max_tokens" in payload:
-            return
-        # 从模型规格读取 limit
-        param_name = "max_completion_tokens"  # copilot 默认用这个
-        payload[param_name] = _MAX_COMPLETION_TOKENS_DEFAULT
-
-    def uses_responses_api(self, model_spec: dict[str, Any]) -> bool:
-        return model_spec.get("api") == "responses"
-
-    def build_chat_payload(
-        self,
-        messages: list[Message],
-        model: str,
-        temperature: float,
-        thinking_level: str,
-        thinking_override: str | None,
-        extra_body: dict[str, Any],
-        model_spec: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Copilot responses API 格式。"""
-        level = thinking_override if thinking_override is not None else thinking_level
-        instructions_parts: list[str] = []
-        input_items: list[dict[str, Any]] = []
-        for m in messages:
-            if m.role == "system":
-                if isinstance(m.content, str) and m.content.strip():
-                    instructions_parts.append(m.content)
-                continue
-            input_items.append({"role": m.role, "content": m.content})
-
-        payload: dict[str, Any] = {
-            "model": model,
-            "input": input_items or [{"role": "user", "content": ""}],
-        }
-        payload["temperature"] = temperature
-        if instructions_parts:
-            payload["instructions"] = "\n\n".join(instructions_parts)
-        if model_spec.get("reasoning") and level != "off":
-            payload["reasoning"] = {"effort": _copilot_reasoning_effort(level)}
-        if extra_body:
-            payload.update(extra_body)
-        return payload
 
     # ── Copilot 内部方法 ─────────────────────────────────────────────────
 
@@ -495,7 +451,10 @@ class OpenAICompatProvider:
                 if isinstance(m.content, str) and m.content.strip():
                     instructions_parts.append(m.content)
                 continue
-            input_items.append({"role": m.role, "content": m.content})
+            input_items.append({
+                "role": m.role,
+                "content": _normalize_responses_message_content(m.content),
+            })
         payload: dict[str, Any] = {
             "model": self._model,
             "input": input_items or [{"role": "user", "content": ""}],
@@ -666,7 +625,7 @@ class OpenAICompatProvider:
         await self._client.aclose()
         self._sync_client.close()
 
-    async def ping(self, timeout: float = 8.0) -> tuple[bool, int, str | None]:
+    async def ping(self, timeout: float = 8.0) -> tuple[bool, int, str | None]:  # noqa: ASYNC109
         """连通性探测：根据模型 spec 选择正确端点，返回 (success, latency_ms, error_or_None)。"""
         import time as _time
         _t0 = _time.monotonic()

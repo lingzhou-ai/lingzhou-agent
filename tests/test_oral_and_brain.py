@@ -150,7 +150,11 @@ def _fake_loop(
     async def _get_fact(key: str):
         return (None, False)
 
-    task_store = SimpleNamespace(get_fact=_get_fact, add_chat_message=AsyncMock())
+    task_store = SimpleNamespace(
+        get_fact=_get_fact,
+        add_chat_message=AsyncMock(),
+        get_recent_chat_messages=AsyncMock(return_value=[]),
+    )
 
     return SimpleNamespace(
         _cfg=cfg,
@@ -464,16 +468,16 @@ class TestOralOrganFieldPropagation:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestSpeechIntentDemotion:
-    """JudgmentPhase 输出的 reply_to_user 应降级为 speech_intent，不直接对外发话。"""
+    """JudgmentPhase 输出的 reply_to_user 仅在 act 时降级为 speech_intent。"""
 
     def test_reply_demoted_to_speech_intent(self):
         from core.judgment.output import JudgmentOutput
-        action = JudgmentOutput(decision="wait", chosen_action_id="")
+        action = JudgmentOutput(decision="act", chosen_action_id="file.edit")
         action.reply_to_user = "我马上帮你修改"
         action.speech_intent = ""
 
         # 模拟 _TickJudgmentPhase.run 中的降级逻辑
-        if action.reply_to_user:
+        if action.decision == "act" and action.reply_to_user:
             action.speech_intent = action.reply_to_user
             action.reply_to_user = ""
 
@@ -486,25 +490,120 @@ class TestSpeechIntentDemotion:
         action.reply_to_user = ""
         action.speech_intent = ""
 
-        if action.reply_to_user:
+        if action.decision == "act" and action.reply_to_user:
             action.speech_intent = action.reply_to_user
             action.reply_to_user = ""
 
         assert action.speech_intent == ""
         assert action.reply_to_user == ""
 
+    def test_wait_reply_is_not_demoted(self):
+        from core.judgment.output import JudgmentOutput
+
+        action = JudgmentOutput(decision="wait", chosen_action_id="")
+        action.reply_to_user = "这是最终答复"
+        action.speech_intent = ""
+
+        if action.decision == "act" and action.reply_to_user:
+            action.speech_intent = action.reply_to_user
+            action.reply_to_user = ""
+
+        assert action.speech_intent == ""
+        assert action.reply_to_user == "这是最终答复"
+
     def test_existing_speech_intent_overwritten_on_demotion(self):
         """若大脑已有旧 speech_intent，reply_to_user 降级应覆盖它。"""
         from core.judgment.output import JudgmentOutput
-        action = JudgmentOutput(decision="wait", chosen_action_id="")
+        action = JudgmentOutput(decision="act", chosen_action_id="file.edit")
         action.reply_to_user = "新的回复意图"
         action.speech_intent = "旧的意图"
 
-        if action.reply_to_user:
+        if action.decision == "act" and action.reply_to_user:
             action.speech_intent = action.reply_to_user
             action.reply_to_user = ""
 
         assert action.speech_intent == "新的回复意图"
+
+
+class TestContinuePhaseAndAutonomousReplyGuard:
+    @pytest.mark.asyncio
+    async def test_continue_phase_demotes_reply_to_speech_intent(self):
+        from core.loop.continue_phase import _run_continue_phase
+
+        cont = _make_judgment_output(decision="act", reply_to_user="我继续处理这张图")
+        cont.chosen_action_id = "image.analyze"
+
+        loop = SimpleNamespace(
+            _cfg=SimpleNamespace(
+                thinking=None,
+                loop=SimpleNamespace(chat_thinking=None, autonomous_thinking=None),
+                thresholds=SimpleNamespace(
+                    continue_tool_history_compact_threshold=8,
+                    continue_tool_history_keep_last=4,
+                    wm_pri_insight=0.8,
+                )
+            ),
+            _emotion=SimpleNamespace(valence=0.1, arousal=0.2),
+            _task_store=SimpleNamespace(has_pending_chat_message=AsyncMock(return_value=False)),
+            _judgment=SimpleNamespace(decide_continue=AsyncMock(return_value=cont)),
+            _behavior=SimpleNamespace(
+                on_act=lambda *args, **kwargs: [],
+                apply_cognitive_probe=lambda *args, **kwargs: None,
+                on_act_result=lambda *args, **kwargs: None,
+                on_edit_failure=lambda *args, **kwargs: [],
+            ),
+            _execution=SimpleNamespace(dispatch=AsyncMock(return_value=_make_tool_result(summary="分析完成"))),
+            _wm=SimpleNamespace(add=lambda *args, **kwargs: None),
+            _episodic=SimpleNamespace(record=lambda *args, **kwargs: None),
+            _registry=MagicMock(),
+            _pending_routing_overrides=None,
+        )
+
+        with patch("core.loop.continue_phase._maybe_reconcile_bootstrap", new=AsyncMock()):
+            final_action, final_result = await _run_continue_phase(
+                loop=loop,
+                ctx=MagicMock(),
+                user_message="请看图",
+                active_task=SimpleNamespace(id=42),
+                cognitive_signals=MagicMock(),
+                action=_make_judgment_output(decision="act"),
+                result=_make_tool_result(),
+                tool_history=[],
+            )
+
+        assert final_action.speech_intent == "我继续处理这张图"
+        assert final_action.reply_to_user == ""
+        assert final_result.summary == "分析完成"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_autonomous_reply_is_suppressed(self):
+        from core.loop.tick import _persist_tick_user_reply
+
+        task_store = SimpleNamespace(
+            add_chat_message=AsyncMock(),
+            get_recent_chat_messages=AsyncMock(
+                return_value=[
+                    {"id": 1, "role": "assistant", "content": "图片分析工具暂时报错。", "created_at": "2026-05-29 10:41:24"}
+                ]
+            ),
+        )
+        loop = SimpleNamespace(
+            _task_store=task_store,
+            _episodic=None,
+            _emotion=SimpleNamespace(valence=0.0, arousal=0.0),
+        )
+        action = _make_judgment_output(decision="wait", reply_to_user="图片分析工具暂时报错。")
+
+        with patch("core.loop.tick._resolve_reply_chat_id", new=AsyncMock(return_value="wechat:user-1")):
+            await _persist_tick_user_reply(
+                loop,
+                action,
+                SimpleNamespace(id=1127),
+                "wechat:user-1",
+                "",
+            )
+
+        task_store.add_chat_message.assert_not_awaited()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

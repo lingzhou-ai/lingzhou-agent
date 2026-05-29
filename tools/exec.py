@@ -772,9 +772,9 @@ async def process_log(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")
     offset = int(params.get("offset") or 0)
     limit = int(params.get("limit") or 2000)
-    if info.log_path and Path(info.log_path).exists():
+    if info.log_path and await asyncio.to_thread(Path(info.log_path).exists):
         try:
-            output = Path(info.log_path).read_text(encoding="utf-8", errors="replace")
+            output = await asyncio.to_thread(Path(info.log_path).read_text, encoding="utf-8", errors="replace")
             info.stdout = output
         except Exception:
             output = info.stdout

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from provider.base import Provider
 from provider.openai_compat import OpenAICompatProvider
 
 if TYPE_CHECKING:
+    from provider.base import Provider
     from core.config import Config
 
 

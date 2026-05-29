@@ -10,7 +10,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from rich.console import Console
 
@@ -32,7 +32,6 @@ from core.task_runtime import (
 from memory.working import WMItem
 from store.episodic import EpisodicMemory
 from store.semantic import MemoryNode
-from store.task import Task
 from tools.registry import ToolResult
 
 from .chat import _bind_chat_id, _resolve_reply_chat_id
@@ -79,6 +78,9 @@ from .progress import (
     _result_fingerprint,
     action_key_param,
 )
+
+if TYPE_CHECKING:
+    from store.task import Task
 
 console = Console()
 _log = logging.getLogger("lingzhou.loop")
@@ -767,11 +769,18 @@ async def _finalize_tick_user_reply(
     """
     if user_message:
         # 有用户消息：口腔器官基于执行结果生成回复，忽略大脑预写草稿
+        reply_draft = str(action.reply_to_user or "").strip()
         action.reply_to_user = ""
-        await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task, result)
+        reply_only = await _maybe_fill_tick_user_reply(loop, action, tool_history, user_message, active_task, result)
         # 兜底：口腔器官未生成回复（LLM 故障、续判超时等）
-        if not action.reply_to_user:
-            action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
+        reply_only_rationale = str(getattr(reply_only, "rationale", "") or "").strip()
+        reply_only_failed = (
+            bool(result.error)
+            or not reply_only_rationale
+            or reply_only_rationale.startswith(("[reply-only]", "[inner-loop]"))
+        )
+        if not action.reply_to_user and reply_only_failed:
+            action.reply_to_user = reply_draft or _fallback_reply_for_user(action, result, active_task)
     elif action.speech_intent and not action.reply_to_user:
         # 自主 tick：只有 pause / wait 决策（需要用户介入或主动告知里程碑）才主动发言。
         # act 决策（正在执行工具）属于中间执行态，不向外发进度更新，避免多轮刷屏。
@@ -794,12 +803,16 @@ async def _maybe_fill_tick_user_reply(
         return None
     # 构建口腔器官前语言消息（执行状态 + 当前情绪）
     _ar = _build_action_result_summary(action, result or ToolResult(summary=""), tool_history)
-    _emotion_state = {
-        "dominant": loop._emotion.dominant,
-        "valence": round(loop._emotion.valence, 3),
-        "arousal": round(loop._emotion.arousal, 3),
-        "regulation_strategy": loop._emotion.regulation.strategy,
-    }
+    emotion = getattr(loop, "_emotion", None)
+    _emotion_state = None
+    if emotion is not None:
+        regulation = getattr(getattr(emotion, "regulation", None), "strategy", "")
+        _emotion_state = {
+            "dominant": getattr(emotion, "dominant", ""),
+            "valence": round(float(getattr(emotion, "valence", 0.0) or 0.0), 3),
+            "arousal": round(float(getattr(emotion, "arousal", 0.0) or 0.0), 3),
+            "regulation_strategy": str(regulation or ""),
+        }
     # 口腔器官：始终基于执行结果生成回复，speech_intent 作为意图背景提示
     reply_only = await loop._judgment.decide_continue(
         tool_history,
@@ -859,6 +872,35 @@ def _check_mouth_consistency(reply: str, action_result: _ActionResultSummary) ->
             break
 
 
+async def _should_skip_duplicate_autonomous_reply(
+    loop: Any,
+    *,
+    outbound_chat_id: str,
+    reply: str,
+) -> bool:
+    task_store = getattr(loop, "_task_store", None)
+    getter = getattr(task_store, "get_recent_chat_messages", None)
+    if getter is None:
+        return False
+    try:
+        recent = await getter(limit=6, chat_id=outbound_chat_id)
+    except TypeError:
+        recent = await getter(6, outbound_chat_id)
+    except Exception:
+        return False
+    if not isinstance(recent, list):
+        return False
+    for row in reversed(recent):
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "")
+        if role == "assistant":
+            return str(row.get("content") or "") == reply
+        if role == "user":
+            return False
+    return False
+
+
 async def _persist_tick_user_reply(
     loop: Any,
     action: JudgmentOutput,
@@ -878,6 +920,17 @@ async def _persist_tick_user_reply(
     )
     outbound_chat_id = await _resolve_reply_chat_id(loop, active_task, chat_id)
     if outbound_chat_id is not None:
+        if not user_message and await _should_skip_duplicate_autonomous_reply(
+            loop,
+            outbound_chat_id=outbound_chat_id,
+            reply=action.reply_to_user,
+        ):
+            _log.info(
+                "[task-reply] suppress duplicate autonomous reply task=%s chat=%s",
+                active_task.id if active_task else 0,
+                outbound_chat_id,
+            )
+            return
         await loop._task_store.add_chat_message(
             "assistant",
             action.reply_to_user,
@@ -1021,9 +1074,10 @@ class _TickJudgmentPhase:
         action = await _decide_initial_action(loop, cycle, user_message, active_task, chat_id, prep)
         _log_tick_decision(loop, cycle, action)
         action = await _review_delegate_tasks(loop, ctx, action, user_message, active_task)
-        # 发言意图提取：大脑在判断阶段输出的 reply_to_user 是执行前草稿，
+        # 发言意图提取：只有 act 决策的 reply_to_user 才视为执行前草稿，
         # 降级为 speech_intent，由口腔器官在执行结果已知后再生成真正的对外回复。
-        if action.reply_to_user:
+        # pause / wait 的 reply_to_user 已经是最终回复，不应在这里清空。
+        if action.decision == "act" and action.reply_to_user:
             action.speech_intent = action.reply_to_user
             action.reply_to_user = ""
         return action

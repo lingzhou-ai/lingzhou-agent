@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import py_compile
 from pathlib import Path
 from typing import Any
@@ -322,7 +323,7 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     ],
 ))
 async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = resolve_read_path(Path(params.get("path") or "").expanduser(), ctx)
+    path = _resolve_mutation_path(Path(os.path.expanduser(params.get("path") or "")), ctx)  # noqa: ASYNC240
     limit = int(params.get("limit") or 200)
     include_hidden = bool(params.get("include_hidden", False))
 
@@ -383,7 +384,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not raw_path:
         return ToolResult(summary="path 不能为空", error="EmptyPath", skipped=True)
 
-    path = resolve_read_path(Path(raw_path).expanduser(), ctx)
+    path = resolve_read_path(Path(os.path.expanduser(raw_path)), ctx)  # noqa: ASYNC240
     max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)
@@ -464,7 +465,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ],
 ))
 async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_mutation_path(Path(params.get("path") or "").expanduser(), ctx)
+    path = _resolve_mutation_path(Path(os.path.expanduser(params.get("path") or "")), ctx)  # noqa: ASYNC240
     content = params.get("content")
 
     if content is None:
@@ -549,7 +550,7 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ],
 ))
 async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_mutation_path(Path(params.get("path") or "").expanduser(), ctx)
+    path = _resolve_mutation_path(Path(os.path.expanduser(params.get("path") or "")), ctx)  # noqa: ASYNC240
     edits_raw = params.get("edits")
 
     # 兼容 LLM 错误传递顶层 old_text/new_text 的情况
@@ -743,7 +744,7 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     ],
 ))
 async def file_delete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_mutation_path(Path(params.get("path") or "").expanduser(), ctx)
+    path = _resolve_mutation_path(Path(os.path.expanduser(params.get("path") or "")), ctx)  # noqa: ASYNC240
 
     if not path.exists():
         return ToolResult(summary=f"文件不存在: {path}", error="FileNotFound", skipped=True)

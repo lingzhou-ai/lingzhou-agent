@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.judgment import JudgmentOutput
 from core.metabolic import StateProposal
-from store.task import Task, TaskStore
 from tools.registry import ToolRegistry, ToolResult, tool_has_capability
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
+    from store.task import Task, TaskStore
 
 _log = logging.getLogger("lingzhou.loop")
 

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.metabolic import StateProposal
 from memory.working import WMItem
-from store.task import Task
 
 from .dispatcher import TickJob
 from .focus import resolve_focus_task
 from .logging import _strip_memory_context
+
+if TYPE_CHECKING:
+    from store.task import Task
 
 _log = logging.getLogger("lingzhou.loop")
 

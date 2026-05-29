@@ -220,14 +220,6 @@ class LoopConfig(BaseModel):
     arousal_sensitivity: float = Field(default=0.4, ge=0.0, le=2.0, description="arousal 调制灵敏度（偏离中性每单位对应的因子变化量）")
     arousal_neutral: float = Field(default=0.5, ge=0.0, le=1.0, description="arousal 中性基准值（对应调制因子 = 1.0）")
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
-    chat_reply_timeout: int = Field(
-        default=300, ge=30,
-        description=(
-            "chat 交互模式下等待 loop 回复的最长秒数（默认 300s = 5分钟）。"
-            "LLM thinking=high + 多轮工具调用单次 tick 可能需要 60-120s，"
-            "建议设为预期最长 tick 时长的 2-3 倍。"
-        ),
-    )
     chat_thinking: str = Field(
         default="low",
         description=(
@@ -1230,7 +1222,6 @@ def config_reference_defaults() -> dict[str, str]:
         "loop.max_idle_gap": _format_config_doc_default(loop.max_idle_gap),
         "loop.active_idle_gap": _format_config_doc_default(loop.active_idle_gap),
         "loop.min_act_gap": _format_config_doc_default(loop.min_act_gap),
-        "loop.chat_reply_timeout": _format_config_doc_default(loop.chat_reply_timeout),
         "loop.judge_every": _format_config_doc_default(loop.judge_every),
         "loop.max_consecutive_errors": _format_config_doc_default(loop.max_consecutive_errors),
         "loop.evolve_every": _format_config_doc_default(loop.evolve_every),

@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING, Any, cast as _cast
 _log = logging.getLogger("lingzhou.subagent")
 
 if TYPE_CHECKING:
+    from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentLayer
-    from store.task import TaskStore
     from tools.registry import ToolContext, ToolRegistry
 
 # ── 免疫器官：工具阻断策略（已迁移到 core/immune/policy.py）──────────────────────────
@@ -36,7 +36,6 @@ from core.immune.policy import (
 from core.immune.policy import (
     is_readonly_blocked_tool as _is_readonly_blocked_tool,
 )
-from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
 
 _LOCAL_FACT_PREFIXES: tuple[str, ...] = (
     "durable_failure:",
@@ -864,9 +863,9 @@ class SubagentRunner:
                 output = await self._judgment.decide(
                     percept,
                     sub_wm,
-                    _cast(_TaskStore, task_store_view),
-                    _cast(_EpisodicMemory, episodic_view),
-                    _cast(_SemanticMemory, semantic_view),
+                    _cast("_TaskStore", task_store_view),
+                    _cast("_EpisodicMemory", episodic_view),
+                    _cast("_SemanticMemory", semantic_view),
                     neutral_emotion,
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos

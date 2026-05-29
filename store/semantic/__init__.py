@@ -17,14 +17,16 @@ import logging as _log_sem
 import math
 import re
 import sqlite3
-from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from memory.quality_checker import evaluate_retrieval_quality
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Callable
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 

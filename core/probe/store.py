@@ -8,10 +8,12 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, TYPE_CHECKING
 
 from .types import ProbeConfig, ProbeDataBack, ProbeKind, normalize_probe_coverage_tags
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _log = logging.getLogger("lingzhou.probe")
 

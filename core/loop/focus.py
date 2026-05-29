@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.judgment import JudgmentOutput
-from store.task import Task
-from tools.registry import ToolResult
+
+if TYPE_CHECKING:
+    from core.judgment import JudgmentOutput
+    from tools.registry import ToolResult
+    from store.task import Task
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -222,7 +224,7 @@ async def resolve_focus_task(
     *,
     chat_id: str | None = None,
     include_waiting: bool = False,
-    fallback_active: bool = True,
+    fallback_active: bool = False,
 ) -> Task | None:
     task_store = getattr(loop, "_task_store", None)
     normalized_chat_id = _normalize_chat_id(chat_id)

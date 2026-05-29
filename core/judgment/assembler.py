@@ -150,11 +150,16 @@ async def _load_similar_tasks_snapshot(
     if finder is None or not str(query or "").strip():
         return []
     exclude_task_ids = [active_task.id] if active_task is not None else None
+    active_source = str(getattr(active_task, "source", "") or "").strip()
+    allowed_sources = ("self_drive",) if active_source == "self_drive" else None
+    excluded_sources = None if active_source == "self_drive" else ("self_drive",)
     return await finder(
         query,
         limit=limit,
         min_score=min_score,
         exclude_task_ids=exclude_task_ids,
+        allowed_sources=allowed_sources,
+        excluded_sources=excluded_sources,
     )
 
 
@@ -654,6 +659,7 @@ class JudgmentContextAssembler:
         )
         effective_registry = self._effective_registry(registry_override)
         task = await _resolve_context_task(task_store, active_task, chat_id)
+        include_open_task_overview = task is None
 
         task_id_str = str(task.id) if task else None
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
@@ -709,8 +715,14 @@ class JudgmentContextAssembler:
             asyncio.create_task(task_store.list_runs(task_id=task.id, limit=6))
             if task else None
         )
-        runnable_tasks_task = asyncio.create_task(_load_runnable_tasks_snapshot(task_store, limit=8))
-        waiting_tasks_task = asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
+        runnable_tasks_task = (
+            asyncio.create_task(_load_runnable_tasks_snapshot(task_store, limit=8))
+            if include_open_task_overview else None
+        )
+        waiting_tasks_task = (
+            asyncio.create_task(task_store.list_tasks(status="waiting", limit=5))
+            if include_open_task_overview else None
+        )
         durable_failure_task = asyncio.create_task(_load_durable_failure_snapshot(task_store))
         context_facts_task = asyncio.create_task(_load_context_facts_snapshot(
             task_store,
@@ -746,9 +758,11 @@ class JudgmentContextAssembler:
             parallel_fetches.append(("speaker_hint", speaker_hint_task))
         if recent_runs_task is not None:
             parallel_fetches.append(("recent_runs", recent_runs_task))
+        if runnable_tasks_task is not None:
+            parallel_fetches.append(("runnable_tasks", runnable_tasks_task))
+        if waiting_tasks_task is not None:
+            parallel_fetches.append(("waiting_tasks", waiting_tasks_task))
         parallel_fetches.extend([
-            ("runnable_tasks", runnable_tasks_task),
-            ("waiting_tasks", waiting_tasks_task),
             ("durable_failure_snapshot", durable_failure_task),
             ("context_facts", context_facts_task),
             ("failures", failures_task),
@@ -777,8 +791,8 @@ class JudgmentContextAssembler:
         chat_memories = parallel_data.get("chat_memories", [])
         speaker_hint = parallel_data.get("speaker_hint", ("", False))
         recent_runs = parallel_data.get("recent_runs", [])
-        runnable_tasks = parallel_data["runnable_tasks"]
-        waiting_tasks = parallel_data["waiting_tasks"]
+        runnable_tasks = parallel_data.get("runnable_tasks", [])
+        waiting_tasks = parallel_data.get("waiting_tasks", [])
         durable_failure_snapshot = parallel_data["durable_failure_snapshot"]
         context_facts = parallel_data["context_facts"]
         probes = parallel_data.get("probes", [])
@@ -786,10 +800,12 @@ class JudgmentContextAssembler:
 
         if chat_continuity_text.strip() == episodic_text.strip():
             chat_continuity_text = ""
-        similar_tasks = await _load_similar_tasks_snapshot(
-            task_store, search_query, active_task=task, limit=5,
-            min_score=self._cfg.thresholds.task_similarity_context_score,
-        )
+        similar_tasks = []
+        if include_open_task_overview:
+            similar_tasks = await _load_similar_tasks_snapshot(
+                task_store, search_query, active_task=task, limit=5,
+                min_score=self._cfg.thresholds.task_similarity_context_score,
+            )
         cross_task_episodic_text = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if task_id_str and search_query else ""

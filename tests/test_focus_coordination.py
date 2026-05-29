@@ -43,7 +43,6 @@ async def _resolve_focus_task_prefers_chat_bound_task_over_unrelated_current_foc
             loop,
             chat_id="chat:test",
             include_waiting=True,
-            fallback_active=False,
         )
         resolved_current = await resolve_focus_task(loop)
 
@@ -51,6 +50,38 @@ async def _resolve_focus_task_prefers_chat_bound_task_over_unrelated_current_foc
         assert resolved_chat.id == waiting_chat_id
         assert resolved_current is not None
         assert resolved_current.id == unrelated_id
+        await store.close()
+
+
+def test_resolve_focus_task_with_chat_id_is_fail_closed_by_default():
+    asyncio.run(_resolve_focus_task_with_chat_id_is_fail_closed_by_default())
+
+
+async def _resolve_focus_task_with_chat_id_is_fail_closed_by_default():
+    from core.loop.focus import resolve_focus_task
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "focus-fail-closed.db")
+        await store.open()
+        for index in range(55):
+            await store.add_task(
+                f"普通任务{index}",
+                goal=f"占满 open task 扫描窗口 {index}",
+                status="in_progress",
+            )
+        matched_id = await store.add_task(
+            "窗口外会话任务",
+            goal="等待同会话继续反馈",
+            status="in_progress",
+        )
+        await store.set_fact(f"task:{matched_id}:chat_id", "chat:test", scope="task")
+        await store.set_fact("focus:current_task_id", str(matched_id), scope="system")
+
+        loop = SimpleNamespace(_task_store=store)
+        resolved = await resolve_focus_task(loop, chat_id="chat:test")
+
+        assert resolved is None
         await store.close()
 
 

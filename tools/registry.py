@@ -19,11 +19,11 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
 
 _log = logging.getLogger("lingzhou.registry")
 
 if TYPE_CHECKING:
+    from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
     from core.config import Config
     from core.perception import EmotionState
     from memory.working import WorkingMemory

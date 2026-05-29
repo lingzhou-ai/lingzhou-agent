@@ -80,7 +80,7 @@ def _find_browser() -> str | None:
     return None
 
 
-async def _browser_run(*args: str, timeout: int = BROWSER_TIMEOUT) -> tuple[int, str, str]:
+async def _browser_run(*args: str, timeout: int = BROWSER_TIMEOUT) -> tuple[int, str, str]:  # noqa: ASYNC109
     """异步运行 agent-browser 命令。"""
     cmd = BROWSER_ARGS + list(args)
     env = os.environ.copy()

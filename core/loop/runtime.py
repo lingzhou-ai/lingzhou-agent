@@ -17,7 +17,7 @@ import logging
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from rich.console import Console
 from rich.panel import Panel
@@ -25,7 +25,6 @@ from rich.panel import Panel
 _log = logging.getLogger("lingzhou.loop")
 
 from core.behavior_tracker import BehaviorTracker
-from core.config import Config
 from core.evolution import EvolutionEngine
 from core.execution import (
     ExecutionLayer,
@@ -66,6 +65,9 @@ from .tick import (
     _post_tick_memory_impl,
     _tick_impl,
 )
+
+if TYPE_CHECKING:
+    from core.config import Config
 
 console = Console()
 

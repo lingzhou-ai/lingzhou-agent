@@ -1,9 +1,12 @@
 """store/memory/_base.py — 异步 Store 基类。"""
 from __future__ import annotations
 
-from collections.abc import Callable
 
-import aiosqlite
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import aiosqlite
+    from collections.abc import Callable
 
 
 class BaseAsyncStore:

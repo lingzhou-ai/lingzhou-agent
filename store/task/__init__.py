@@ -364,6 +364,8 @@ class TaskStore:
         limit: int = 5,
         min_score: float = TASK_SIMILARITY_CONTEXT_SCORE,
         exclude_task_ids: list[int] | tuple[int, ...] | set[int] | None = None,
+        allowed_sources: list[str] | tuple[str, ...] | set[str] | None = None,
+        excluded_sources: list[str] | tuple[str, ...] | set[str] | None = None,
         statuses: tuple[str, ...] | list[str] | None = None,
     ) -> list[tuple[Task, float]]:
         from store.task.schema import _task_similarity_score as score_fn
@@ -377,6 +379,16 @@ class TaskStore:
             for task_id in (exclude_task_ids or [])
             if str(task_id).strip()
         }
+        normalized_allowed_sources = {
+            str(source).strip()
+            for source in (allowed_sources or [])
+            if str(source).strip()
+        }
+        normalized_excluded_sources = {
+            str(source).strip()
+            for source in (excluded_sources or [])
+            if str(source).strip()
+        }
         scan_limit = min(
             _TASK_SIMILARITY_SCAN_LIMIT,
             max(int(limit) * 6, 24),
@@ -385,6 +397,11 @@ class TaskStore:
         scored: list[tuple[Task, float]] = []
         for task in candidates:
             if task.id in exclude_ids:
+                continue
+            task_source = str(getattr(task, "source", "") or "").strip()
+            if normalized_allowed_sources and task_source not in normalized_allowed_sources:
+                continue
+            if normalized_excluded_sources and task_source in normalized_excluded_sources:
                 continue
             score = score_fn(query_text, task)
             if score < float(min_score):

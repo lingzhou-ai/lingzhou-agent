@@ -6,13 +6,15 @@ import contextlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from core.config import Config
 from core.metabolic import StateProposal
 from core.self_model import SelfModel
 from provider import create_provider_with_model
 from provider.models_gen import ensure_models_json
+
+if TYPE_CHECKING:
+    from core.config import Config
 
 _log = logging.getLogger("lingzhou.loop")
 

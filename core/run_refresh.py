@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from core.execution import (
     build_meta_reflection,
@@ -10,10 +10,12 @@ from core.execution import (
     record_run_outcome_memory,
 )
 from core.metabolic import StateProposal
-from store.episodic import EpisodicMemory
-from store.semantic import SemanticMemory
 from store.task import Run, TaskStore, build_task_run_result_patch
 from tools.registry import ToolResult
+
+if TYPE_CHECKING:
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
 
 _log = logging.getLogger("lingzhou.loop")
 

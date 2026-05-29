@@ -26,10 +26,10 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from core.config import Config
 
 from provider import catalog as _catalog

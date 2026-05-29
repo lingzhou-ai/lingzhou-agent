@@ -29,7 +29,6 @@ _log = logging.getLogger("lingzhou.evolution")
 
 if TYPE_CHECKING:
     from core.config import Config
-    from provider.base import Provider
     from store.task import Failure
     from tools.registry import ToolContext, ToolRegistry
 
@@ -452,8 +451,10 @@ print("SMOKE_OK")
             backup_path = Path(str(payload.get("backup_path") or ""))
             tool_path = Path(str(payload.get("tool_path") or ""))
             rolled_back = False
-            if self._cfg.evolution.auto_rollback_on_regression and backup_path.exists() and tool_path.exists():
-                previous_src = backup_path.read_text(encoding="utf-8")
+            if (self._cfg.evolution.auto_rollback_on_regression
+                    and await asyncio.to_thread(backup_path.exists)
+                    and await asyncio.to_thread(tool_path.exists)):
+                previous_src = await asyncio.to_thread(backup_path.read_text, encoding="utf-8")
                 self._restore_text(tool_path, previous_src)
                 self._reload_module_from_path(f"tools.{tool_path.stem}", tool_path)
                 rolled_back = True
@@ -942,7 +943,7 @@ print("SMOKE_OK")
 
     async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: ToolContext | None = None) -> EvolutionResult:
         """根据反馈重写工具，热替换。"""
-        current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        current_src = await asyncio.to_thread(tool_path.read_text, encoding="utf-8") if await asyncio.to_thread(tool_path.exists) else ""
 
         # 三审-审一（免疫器官）：目标模块是否受宪法保护？
         from core.immune.policy import audit_evolution_target
@@ -987,10 +988,8 @@ print("SMOKE_OK")
 
                 # 备份
                 backup_path = tool_path.with_suffix(".py.bak")
-                if self._cfg.evolution.backup and tool_path.exists():
-                    backup_path.write_text(
-                        previous_src, encoding="utf-8"
-                    )
+                if self._cfg.evolution.backup and await asyncio.to_thread(tool_path.exists):
+                    await asyncio.to_thread(backup_path.write_text, previous_src, encoding="utf-8")
                     # 自动清理旧备份
                     _clean_old_backups(tool_path, keep=self._cfg.evolution.backup_keep)
 
@@ -1014,7 +1013,7 @@ print("SMOKE_OK")
                         messages.append(_Msg(role="user", content=f"代码运行时验证失败，请修复：{smoke_err[:500]}"))
                     continue
 
-                tool_path.write_text(new_src, encoding="utf-8")
+                await asyncio.to_thread(tool_path.write_text, new_src, encoding="utf-8")
 
                 # 热重载 + 载荷校验：必须能重新注册目标工具，否则回滚
                 module_name = f"tools.{tool_path.stem}"
@@ -1045,11 +1044,11 @@ print("SMOKE_OK")
                         _errors.append(f"{_rp}: {_e}")
                 if not _all_ok:
                     _log.warning("[evolution] post-evolution check failed (%d files), rolling back: %s", len(_errors), _errors[:3])
-                    if tool_path.exists() and current_src:
+                    if await asyncio.to_thread(tool_path.exists) and current_src:
                         self._restore_text(tool_path, current_src)
                         self._reload_module_from_path(module_name, tool_path)
                     continue
-                if ctx is not None and self._cfg.evolution.backup and backup_path.exists():
+                if ctx is not None and self._cfg.evolution.backup and await asyncio.to_thread(backup_path.exists):
                     await self._record_pending_verification(
                         ctx,
                         target=tool_name,
@@ -1066,7 +1065,7 @@ print("SMOKE_OK")
                     messages.append(Message(role="assistant", content=new_src))
                     messages.append(Message(role="user", content=f"代码有语法错误，请修复：{reason}"))
             except Exception:
-                if tool_path.exists() and current_src:
+                if await asyncio.to_thread(tool_path.exists) and current_src:
                     self._restore_text(tool_path, current_src)
                     with contextlib.suppress(Exception):
                         self._reload_module_from_path(f"tools.{tool_path.stem}", tool_path)
@@ -1158,7 +1157,7 @@ print("SMOKE_OK")
         if num_candidates > 4:
             num_candidates = 4  # 上限 4 个，避免 API 开销
 
-        current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        current_src = await asyncio.to_thread(tool_path.read_text, encoding="utf-8") if await asyncio.to_thread(tool_path.exists) else ""
         evolution_template = self._cfg.load_prompt("evolution")
 
         base_prompt = evolution_template.replace("{{tool_name}}", tool_name)
@@ -1252,15 +1251,15 @@ print("SMOKE_OK")
         score: int,
     ) -> EvolutionResult:
         """将通过竞争评估的候选代码直接写入生产路径并热加载。"""
-        current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        current_src = await asyncio.to_thread(tool_path.read_text, encoding="utf-8") if await asyncio.to_thread(tool_path.exists) else ""
 
         # 备份
         backup_path = tool_path.with_suffix(".py.bak")
-        if self._cfg.evolution.backup and tool_path.exists():
-            backup_path.write_text(current_src, encoding="utf-8")
+        if self._cfg.evolution.backup and await asyncio.to_thread(tool_path.exists):
+            await asyncio.to_thread(backup_path.write_text, current_src, encoding="utf-8")
             _clean_old_backups(tool_path, keep=self._cfg.evolution.backup_keep)
 
-        tool_path.write_text(code, encoding="utf-8")
+        await asyncio.to_thread(tool_path.write_text, code, encoding="utf-8")
 
         module_name = f"tools.{tool_path.stem}"
         try:

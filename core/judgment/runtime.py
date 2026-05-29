@@ -29,6 +29,9 @@ from .parser import (
     coerce_reply_only_output as _coerce_reply_only_output_fn,
 )
 from .parser import (
+    normalize_reply_pseudo_tool as _normalize_reply_pseudo_tool,
+)
+from .parser import (
     simulate_safe_output as _simulate_safe_output_fn,
 )
 
@@ -46,7 +49,6 @@ if TYPE_CHECKING:
         PerceptionReplaySummary,
     )
     from memory.working import WorkingMemory
-    from provider.base import Provider
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
@@ -380,6 +382,7 @@ class JudgmentLayer:
             elif record_parse_failure is not None:
                 await record_parse_failure("judgment_parse", output.rationale)
 
+        output = _normalize_reply_pseudo_tool(output)
         if output.decision not in ("act", "pause", "wait"):
             return JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id \

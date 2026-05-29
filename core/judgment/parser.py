@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 _MEMORY_ASSERTIVE_PHRASE_RE = re.compile(
     r"(我还?记得|我记着|你之前说过|之前你说过|你之前提过|之前你提过)"
 )
+_REPLY_PSEUDO_TOOLS = {"chat_reply"}
 
 
 def simulate_safe_output(
@@ -39,7 +40,7 @@ def coerce_reply_only_output(output: JudgmentOutput) -> JudgmentOutput:
     if not output.reply_to_user.strip():
         return JudgmentOutput.wait(reason="[reply-only] reply_to_user 不能为空")
     return JudgmentOutput(
-        decision=output.decision if output.decision in {"pause", "wait"} else "pause",
+        decision=output.decision if output.decision in {"pause", "wait"} else "wait",
         chosen_action_id="",
         params={},
         rationale=output.rationale,
@@ -47,6 +48,30 @@ def coerce_reply_only_output(output: JudgmentOutput) -> JudgmentOutput:
         reply_to_user=output.reply_to_user,
         next_step=output.next_step,
         model_strategy=dict(output.model_strategy or {}),
+    )
+
+
+def normalize_reply_pseudo_tool(output: JudgmentOutput) -> JudgmentOutput:
+    """将误写成工具的直接回复动作归一化回 reply 链路。"""
+    tool_name = str(output.chosen_action_id or "").strip().lower()
+    if output.decision != "act" or tool_name not in _REPLY_PSEUDO_TOOLS:
+        return output
+
+    reply = str(output.reply_to_user or output.speech_intent or "").strip()
+    if not reply:
+        return JudgmentOutput.wait(reason=f"伪工具 {tool_name!r} 缺少 reply_to_user")
+
+    return JudgmentOutput(
+        decision="wait",
+        chosen_action_id="",
+        params={},
+        rationale=output.rationale,
+        reflection=output.reflection,
+        speech_intent=output.speech_intent,
+        reply_to_user=reply,
+        next_step=output.next_step,
+        model_strategy=dict(output.model_strategy or {}),
+        applied_skills=list(output.applied_skills or []),
     )
 
 

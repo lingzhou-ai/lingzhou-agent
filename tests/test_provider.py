@@ -639,6 +639,51 @@ def test_copilot_gpt5_responses_payload_omits_temperature():
     assert "temperature" not in payload
 
 
+def test_copilot_gpt5_responses_payload_normalizes_multimodal_parts():
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "gpt-5.4-mini"
+    provider._temperature = 0.7
+    provider._thinking_level = "high"
+    provider._extra_body = {}
+
+    payload = provider._build_responses_payload(  # type: ignore[attr-defined]
+        [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "请分析这张图"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.com/cat.png",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            )
+        ],
+        temperature=0.0,
+    )
+
+    assert payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "请分析这张图"},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.com/cat.png",
+                    "detail": "high",
+                },
+            ],
+        }
+    ]
+
+
 def test_copilot_gpt5_responses_400_surfaces_error_body():
     import httpx
 

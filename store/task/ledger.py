@@ -5,11 +5,14 @@
 """
 from __future__ import annotations
 
-from collections.abc import Callable
 
-import aiosqlite
 
 from ._base import BaseAsyncStore
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import aiosqlite
+    from collections.abc import Callable
 
 
 class LedgerStore(BaseAsyncStore):

@@ -21,7 +21,7 @@ _log = logging.getLogger("lingzhou.probe")
 DEFAULT_TIMEOUT_SEC = 30
 
 
-async def execute_probe(cfg: ProbeConfig, timeout: int = DEFAULT_TIMEOUT_SEC) -> tuple[str, str | None]:
+async def execute_probe(cfg: ProbeConfig, timeout: int = DEFAULT_TIMEOUT_SEC) -> tuple[str, str | None]:  # noqa: ASYNC109
     """执行探针，返回 (output, error)。output 为空字符串表示无输出。"""
     try:
         if cfg.kind == "shell":
@@ -39,7 +39,7 @@ async def execute_probe(cfg: ProbeConfig, timeout: int = DEFAULT_TIMEOUT_SEC) ->
         return "", str(exc)
 
 
-async def _run_shell(cmd: str, timeout: int) -> tuple[str, str | None]:
+async def _run_shell(cmd: str, timeout: int) -> tuple[str, str | None]:  # noqa: ASYNC109
     def _blocking() -> tuple[str, str | None]:
         try:
             result = subprocess.run(
@@ -60,7 +60,7 @@ async def _run_shell(cmd: str, timeout: int) -> tuple[str, str | None]:
     return await asyncio.to_thread(_blocking)
 
 
-async def _run_http(url: str, timeout: int) -> tuple[str, str | None]:
+async def _run_http(url: str, timeout: int) -> tuple[str, str | None]:  # noqa: ASYNC109
     try:
         import httpx  # type: ignore[import]
     except ImportError:
@@ -97,7 +97,7 @@ async def _run_builtin(spec: str) -> tuple[str, str | None]:
     return await asyncio.to_thread(_blocking)
 
 
-async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:
+async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:  # noqa: ASYNC109
     """在受限沙盒中执行 Python 代码片段。stdout 作为输出。
 
     沙盒限制：只开放 print / len / range / int / float / str / list / dict /
@@ -147,4 +147,4 @@ async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:
         except Exception as exc:
             return buf.getvalue().strip(), str(exc)
 
-    return await asyncio.to_thread(_blocking)
+    return await asyncio.wait_for(asyncio.to_thread(_blocking), timeout=timeout)

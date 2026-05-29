@@ -141,7 +141,6 @@
     "max_idle_gap": 60000,
     "wake_poll_interval": 500,
     "wake_on_task_change": true,
-    "chat_reply_timeout": 300,
     "chat_thinking": "low",
     "autonomous_thinking": "medium",
     "db_path": "~/.lingzhou/state/runtime.db",

@@ -5,14 +5,16 @@ ProbeManager 是探针系统的唯一对外接口，由 CognitionLoop 持有。
 """
 from __future__ import annotations
 
-import asyncio
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .runner import ProbeRunner
 from .store import ProbeStore
 from .types import ProbeConfig, ProbeResult
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    import asyncio
 
 _log = logging.getLogger("lingzhou.probe")
 

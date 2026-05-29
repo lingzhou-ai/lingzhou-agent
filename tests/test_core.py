@@ -462,6 +462,25 @@ def test_judgment_output_parse_null_text_fields_as_empty():
     assert out.next_step == ""
 
 
+def test_coerce_reply_only_output_demotes_act_to_wait():
+    from core.judgment import JudgmentOutput
+    from core.judgment.parser import coerce_reply_only_output
+
+    out = coerce_reply_only_output(
+        JudgmentOutput(
+            decision="act",
+            chosen_action_id="file.edit",
+            params={"path": "/tmp/demo.txt"},
+            reply_to_user="这是最终回复。",
+        )
+    )
+
+    assert out.decision == "wait"
+    assert out.chosen_action_id == ""
+    assert out.params == {}
+    assert out.reply_to_user == "这是最终回复。"
+
+
 def test_judgment_prompt_includes_runtime_hint_rules():
     # 详细规则已外化到 runtime-hints skill，judgment.md 保留 skill 指针摘要
     prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
