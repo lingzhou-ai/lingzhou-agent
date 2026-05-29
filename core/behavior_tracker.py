@@ -30,10 +30,8 @@ _SEQ_WINDOW_GAP_RATIO = 0.25  # 25% 窗口大小内视作连续
 
 # rationale 指纹：连续相同结论超过此阈值时触发"信念固化"警告
 _BELIEF_STALE_THRESHOLD = 4
-# rationale 指纹窗口大小（deque maxlen）
+# rationale 指纹窗口大小（deque maxlen)
 _BELIEF_WINDOW = 8
-# rationale 前缀截取长度（指纹只取前 N 字符，减少随机微小措辞差异的影响）
-_BELIEF_HASH_PREFIX = 120
 
 
 class BehaviorTracker:
@@ -49,7 +47,6 @@ class BehaviorTracker:
         seq_window_gap_ratio: float = _SEQ_WINDOW_GAP_RATIO,
         belief_stale_threshold: int = _BELIEF_STALE_THRESHOLD,
         belief_window: int = _BELIEF_WINDOW,
-        belief_hash_prefix: int = _BELIEF_HASH_PREFIX,
     ) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
@@ -68,7 +65,6 @@ class BehaviorTracker:
         self._seq_window_warn_at: int = max(1, seq_window_warn_at)
         self._seq_window_gap_ratio: float = seq_window_gap_ratio
         self._belief_stale_threshold: int = max(1, belief_stale_threshold)
-        self._belief_hash_prefix: int = max(10, belief_hash_prefix)
         # 同文件顺序窗口探测追踪
         self._seq_window_path: str | None = None
         self._seq_window_count: int = 0
@@ -90,10 +86,6 @@ class BehaviorTracker:
         self._pri_edit_caution: float = float(_pri.get("edit_caution", 0.93))
         self._pri_belief_stale: float = float(_pri.get("belief_stale", 0.96))
         self._registry = registry
-
-    def _tool_has_capability(self, tool_id: str, capability: str) -> bool:
-        return tool_has_capability(self._registry, tool_id, capability)
-
     @property
     def wait_streak(self) -> int:
         """公开接口：连续 wait/pause 决策次数。"""
@@ -103,7 +95,6 @@ class BehaviorTracker:
     def read_streak_count(self) -> int:
         """公开接口：连续读取相同内容的次数。"""
         return self._read_streak_count
-
     @property
     def list_streak_count(self) -> int:
         """公开接口：连续列出相同目录结果的次数。"""
@@ -168,14 +159,14 @@ class BehaviorTracker:
 
         items: list[WMItem] = []
 
-        if self._tool_has_capability(tool_id, "result_streak_only"):
+        if tool_has_capability(self._registry, tool_id, "result_streak_only"):
             return items  # file.read / file.list streak 由结果感知处理
         if not task_id:
             return items
 
         # 对编辑类工具，把内容指纹混入 key，避免同文件不同内容的连续误判为循环
         _effective_key = key_param
-        if self._tool_has_capability(tool_id, "completion_mutation") and params:
+        if tool_has_capability(self._registry, tool_id, "completion_mutation") and params:
             _p = params or {}
             _content_sig = str(_p.get("old_text") or _p.get("content") or "")[:80]
             if _content_sig:
@@ -211,7 +202,7 @@ class BehaviorTracker:
 
         未防止属于 file.read / file.list （它们由各自的 on_read / on_list 处理）。
         """
-        if self._tool_has_capability(tool_id, "result_streak_only"):
+        if tool_has_capability(self._registry, tool_id, "result_streak_only"):
             return
         fp = hashlib.md5((result_summary or "").encode("utf-8", errors="replace")).hexdigest()[:12]
         if fp and fp != self._last_act_result_fp:
@@ -396,8 +387,8 @@ class BehaviorTracker:
         if not rationale or not rationale.strip():
             return items
 
-        # 规范化：去首尾空白、折叠空白、取前 N 字符、转小写
-        normalized = " ".join(rationale.strip().split())[:self._belief_hash_prefix].lower()
+        # 规范化：去首尾空白、折叠空白、转小写
+        normalized = " ".join(rationale.strip().split()).lower()
         fp = hashlib.md5(normalized.encode("utf-8", errors="replace")).hexdigest()[:12]
 
         self._rationale_hashes.append(fp)

@@ -254,7 +254,7 @@ def test_emotion_derive_updates_dominant_name():
 
 
 def _default_ethos_cfg() -> Any:
-    from core.config import EthosConfig
+    from core.config_models import EthosConfig
     return EthosConfig()
 
 

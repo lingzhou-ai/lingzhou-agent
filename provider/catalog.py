@@ -3,10 +3,9 @@
 设计思路：
   - 内置模板（provider/models.json）：随源码发布，记录 context_window / max_tokens /
     thinking 等静态参数，作为种子文件。
-  - 运行时文件（workspace_dir/models.json）：由 provider.models_gen.ensure_models_json()
-    在每次启动时生成；融入 lingzhou.json 中的 provider 连接参数，用指纹
-    决定 skip / noop / write。
-    - 主运行时路径优先显式传入 catalog_path；set_runtime_path() 仅保留兼容 fallback。
+    - 运行时文件（workspace_dir/models.json）：由 provider.models_gen.ensure_models_json()
+        在每次启动时生成；融入 lingzhou.json 中的 provider 连接参数，用指纹
+        决定 skip / noop / write。
 """
 from __future__ import annotations
 
@@ -20,15 +19,7 @@ BUILTIN_CATALOG_PATH: Path = Path(__file__).parent / "models.json"
 
 # 运行时路径（兼容 fallback；主运行时应优先显式传 catalog_path）
 _runtime_path: Path = BUILTIN_CATALOG_PATH
-
-
-def set_runtime_path(path: Path) -> None:
-    """兼容设置默认运行时 catalog 路径，并清除缓存。"""
-    global _runtime_path
-    if _runtime_path == path:
-        return
-    _runtime_path = path
-    _load.cache_clear()
+_context_window_hints: dict[str, int] = {}
 
 
 @functools.lru_cache(maxsize=8)
@@ -160,7 +151,26 @@ def resolve_context_window(model_id: str, override: int | None, *, catalog_path:
     """
     if override is not None:
         return override
+    hinted = _context_window_hints.get(model_id)
     m = lookup_model(model_id, catalog_path=catalog_path)
     if m:
-        return m.get("context_window")
+        context_window = m.get("context_window")
+        if isinstance(context_window, int) and context_window > 0 and hinted is not None:
+            return min(context_window, hinted)
+        if isinstance(context_window, int) and context_window > 0:
+            return context_window
+    if hinted is not None:
+        return hinted
     return None
+
+
+def set_context_window_hint(model_id: str, context_window: int) -> None:
+    """记录运行期观测到的更严格 context_window 上限。
+
+    该 hint 仅在当前进程生效，用于在线收敛预算，避免后续请求重复触发超限。
+    """
+    if context_window <= 0:
+        return
+    prev = _context_window_hints.get(model_id)
+    if prev is None or context_window < prev:
+        _context_window_hints[model_id] = context_window

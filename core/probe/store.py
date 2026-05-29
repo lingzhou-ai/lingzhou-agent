@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any, cast, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from .types import ProbeConfig, ProbeDataBack, ProbeKind, normalize_probe_coverage_tags
 

@@ -65,8 +65,8 @@ def _evaluate_alert(cfg: ProbeConfig, output: str) -> tuple[bool, str]:
     try:
         triggered = _safe_eval_alert(cfg.alert_expr, output)
         if triggered:
-            msg = (cfg.alert_message or f"[探针告警] {cfg.name}: {output[:200]}").replace(
-                "{output}", output[:500]
+            msg = (cfg.alert_message or f"[探针告警] {cfg.name}: {output}").replace(
+                "{output}", output
             )
             return True, msg
     except Exception as exc:
@@ -242,10 +242,10 @@ class ProbeRunner:
         await self._store.update_run_result(
             cfg.name,
             last_run_at=now_iso,
-            last_result=output[:2000] if output else None,
-            last_error=error[:500] if error else None,
+            last_result=output if output else None,
+            last_error=error if error else None,
             last_confidence=confidence,
-            last_confidence_reason=confidence_reason[:300],
+            last_confidence_reason=confidence_reason,
             last_suspect=suspect_setup,
             last_alerted=alerted,
             last_alert_detail=alert_detail if alerted else None,
@@ -298,5 +298,5 @@ def _format_summary(cfg: ProbeConfig, result: ProbeResult) -> str:
     confidence = f"confidence={result.confidence:.2f}"
     if result.error:
         return f"{header}\n❌ 错误: {result.error}\n{confidence} ({result.confidence_reason})"
-    body = result.output[:1000] if result.output else "(无输出)"
+    body = result.output if result.output else "(无输出)"
     return f"{header}\n{body}\n{confidence} ({result.confidence_reason})"

@@ -6,7 +6,7 @@ import contextlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.metabolic import StateProposal
 from core.self_model import SelfModel
@@ -385,7 +385,7 @@ def _inject_crash_recovery(loop: Any) -> None:
             f"  中断前活跃任务: 「{task_title}」\n"
         )
         if task_goal:
-            content += f"  任务目标: {task_goal[:100]}\n"
+            content += f"  任务目标: {task_goal}\n"
         content += (
             f"  最后动作: {last_action}\n"
             f"  情绪状态: valence={valence} arousal={arousal}\n"

@@ -290,7 +290,7 @@ async def _run_one_task(
 
     # 构建返回给主 tick 的 history entry
     steps_text = "\n".join(
-        f"  [{h['tool']}] {h.get('result', '')[:200]}"
+        f"  [{h['tool']}] {h.get('result', '')}"
         for h in tool_history[1:]
     )
     result_text = (
@@ -304,11 +304,11 @@ async def _run_one_task(
 
     summary_prefix = f"[{spec_id}/task:{task.id}]"
     if error:
-        summary = f"{summary_prefix} error: {(error or final_rationale or '(无结论)')[:200]}"
+        summary = f"{summary_prefix} error: {(error or final_rationale or '(无结论)')}"
     elif terminal_decision in {"wait", "pause"}:
-        summary = f"{summary_prefix} {terminal_decision}: {(final_rationale or '(无结论)')[:200]}"
+        summary = f"{summary_prefix} {terminal_decision}: {(final_rationale or '(无结论)')}"
     else:
-        summary = f"{summary_prefix} {ok_steps} 步完成: {(final_rationale or '(无结论)')[:200]}"
+        summary = f"{summary_prefix} {ok_steps} 步完成: {(final_rationale or '(无结论)')}"
 
     entry_status = "error" if error else (terminal_decision if terminal_decision in {"wait", "pause"} else "ok")
     return {
@@ -356,7 +356,7 @@ async def run_tasks_parallel(
             "tool": f"task.parallel.{spec_id}",
             "params": {"goal": spec.get("goal") or task.goal, "task_id": task.id},
             "result": result_text,
-            "summary": f"[{spec_id}/task:{task.id}] reused existing {task.status}: {task.title[:200]}",
+            "summary": f"[{spec_id}/task:{task.id}] reused existing {task.status}: {task.title}",
             "error": "",
             "status": "ok",
         }
@@ -378,7 +378,7 @@ async def run_tasks_parallel(
                 existing, score = similar_tasks[0]
                 scheduled.append(_reused_entry(spec, existing, score))
                 continue
-        title = f"[并行:{spec['id']}] {spec['goal'][:60]}"
+        title = f"[并行:{spec['id']}] {spec['goal']}"
         task_id = await loop._task_store.add_task(
             title,
             str(spec["goal"]),

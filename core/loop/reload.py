@@ -19,6 +19,7 @@ from .startup import _build_routing_providers
 
 if TYPE_CHECKING:
     from pathlib import Path
+
     from .runtime import CognitionLoop
 
 _log = logging.getLogger("lingzhou.loop")
@@ -174,10 +175,13 @@ async def _commit_hot_reload_candidate(
 
 
 async def _maybe_hot_reload_provider_impl(loop: CognitionLoop) -> None:
-    if not loop._cfg_file.exists():
+    cfg_file = getattr(loop, "_cfg_file", None)
+    if cfg_file is None:
+        return
+    if not cfg_file.exists():
         return
 
-    cfg_mtime = _file_mtime(loop._cfg_file)
+    cfg_mtime = _file_mtime(cfg_file)
     auth_mtime = _file_mtime(loop._auth_profiles_path)
     cfg_changed = cfg_mtime > loop._cfg_mtime
     auth_changed = auth_mtime > loop._auth_profiles_mtime
@@ -185,7 +189,7 @@ async def _maybe_hot_reload_provider_impl(loop: CognitionLoop) -> None:
         return
 
     try:
-        new_cfg = Config.load(loop._cfg_file)
+        new_cfg = Config.load(cfg_file)
     except Exception as exc:
         _log.warning("[hot-reload] 配置解析失败,保留旧运行时: %s", exc)
         return

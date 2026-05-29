@@ -86,8 +86,8 @@ def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple
             "tool": str(item.get("tool") or ""),
             "status": status,
             "key": str(key),
-            "summary": summary[:400],
-            "error": error[:240],
+            "summary": summary,
+            "error": error,
             "error_category": str(item.get("error_category") or ""),
             "state_delta": state_delta,
         })
@@ -95,15 +95,15 @@ def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple
         if key:
             parts.append(f"key={key}")
         if summary:
-            parts.append(f"summary={summary[:240]}")
+            parts.append(f"summary={summary}")
         if error:
-            parts.append(f"error={error[:180]}")
+            parts.append(f"error={error}")
         if state_delta:
             try:
                 state_text = json.dumps(state_delta, ensure_ascii=False, sort_keys=True)
             except Exception:
                 state_text = str(state_delta)
-            parts.append(f"state_delta={state_text[:200]}")
+            parts.append(f"state_delta={state_text}")
         history_parts.append(" | ".join(parts))
     return (
         json.dumps(structured_window, ensure_ascii=False, indent=2),
@@ -245,7 +245,7 @@ class JudgmentOutput:
             if stripped != text:
                 text = stripped.strip()
         if not text or ("{" not in text and "decision" not in text):
-            return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original[:120]}")
+            return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original}")
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
         if match:
             text = match.group(1).strip()

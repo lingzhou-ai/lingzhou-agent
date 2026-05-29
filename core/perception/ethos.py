@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from core.perception.emotion import clamp01
 
 if TYPE_CHECKING:
-    from core.config import EthosConfig
+    from core.config_models import EthosConfig
 
 
 ETHOS_DIMENSIONS = ("truth", "caution", "continuity", "curiosity", "care")

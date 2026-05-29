@@ -10,13 +10,19 @@
 """
 from __future__ import annotations
 
-import asyncio
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
 from core.self_model import SelfModel
 
+from ._executor_helpers import (
+    _chat_with_retry_impl,
+    _repair_output_impl,
+    _select_provider_impl,
+    _trim_messages_for_prompt_limit_impl,
+)
 from .output import JudgmentOutput, ModelHealth, ModelSelection
 
 if TYPE_CHECKING:
@@ -24,6 +30,7 @@ if TYPE_CHECKING:
     from provider.base import Provider
 
 _log = logging.getLogger("lingzhou.judgment")
+_PROMPT_LIMIT_RE = re.compile(r"prompt token count of\s*(\d+)\s*exceeds the limit of\s*(\d+)", re.IGNORECASE)
 
 
 class JudgmentExecutor:
@@ -256,55 +263,16 @@ class JudgmentExecutor:
         thinking_override: str | None = None,
         routing_overrides: dict[str, str] | None = None,
     ) -> tuple[Provider, ModelSelection]:
-        # 显式 prefer_tier 始终生效；仅在没有 prefer_tier 时，reasoner-only phase 排除 reader
-        _effective_prefer_tier = prefer_tier
-        tier = self._select_tier(
+        return _select_provider_impl(
+            self,
             phase=phase,
             user_message=user_message,
             current_action=current_action,
             tool_history=tool_history,
-            prefer_tier=_effective_prefer_tier,
+            prefer_tier=prefer_tier,
+            thinking_override=thinking_override,
+            routing_overrides=routing_overrides,
         )
-        chosen_tier = tier
-        chosen_model = self._cfg.model
-        provider: Provider = self._provider
-        selected = False
-
-        exclude_reader = phase in self._REASONER_ONLY_PHASES and _effective_prefer_tier is None
-
-        # 先试当前 tier，再按 tier fallback 试其他 tier。
-        # 每个 tier 内按：override -> routing 主模型 -> model_fallbacks -> 顶层 model。
-        for cand_tier in (tier, *self._fallback_tiers(tier, exclude_reader=exclude_reader)):
-            for model_ref in self._tier_model_candidates(cand_tier, routing_overrides=routing_overrides):
-                if not self._is_model_available(model_ref):
-                    continue
-                try:
-                    provider = self._find_or_create_provider(model_ref)
-                    chosen_tier = cand_tier
-                    chosen_model = model_ref
-                    selected = True
-                    break
-                except Exception as e:
-                    _log.warning("[routing] tier=%s model=%s provider 构建失败，跳过: %s", cand_tier, model_ref, e)
-                    continue
-            if selected:
-                break
-
-        # 全部候选冷却：不降级到 reader，选冷却最短的 reasoner/repair 模型（忽略冷却限制）
-        if not selected and exclude_reader:
-            fallback_ref = self._least_bad_model(tier, routing_overrides, exclude_reader=True)
-            if fallback_ref:
-                try:
-                    provider = self._find_or_create_provider(fallback_ref)
-                    chosen_tier = tier
-                    chosen_model = fallback_ref
-                    selected = True
-                    _log.info("[routing] 全部 reasoner 冷却，强制使用冷却最短模型: %s", fallback_ref)
-                except Exception as e:
-                    _log.warning("[routing] least-bad model %s 构建失败: %s", fallback_ref, e)
-
-        thinking = thinking_override if thinking_override is not None else self._cfg.thinking
-        return provider, ModelSelection(phase=phase, tier=chosen_tier, model_ref=chosen_model, thinking=thinking)
 
     # ── 成本/延迟信息（供 context 展示用）─────────────────────────────────────
 
@@ -356,6 +324,67 @@ class JudgmentExecutor:
                 completion=usage.get("completion_tokens", 0),
             )
 
+    @staticmethod
+    def _extract_model_id(model_ref: str) -> str:
+        return model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+
+    @staticmethod
+    def _extract_prompt_limit(err_text: str) -> tuple[int | None, int | None]:
+        match = _PROMPT_LIMIT_RE.search(err_text or "")
+        if not match:
+            return None, None
+        try:
+            prompt = int(match.group(1))
+            limit = int(match.group(2))
+            return prompt, limit
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _estimate_text_tokens(text: str) -> int:
+        cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        ascii_chars = sum(1 for c in text if ord(c) < 128)
+        other = len(text) - cjk - ascii_chars
+        return max(1, int(cjk * 1.8 + ascii_chars * 0.3 + other * 1.0))
+
+    def _compress_text_to_budget(self, text: str, keep_tokens: int) -> str:
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        if keep_tokens <= 0:
+            return ""
+        approx_tokens = self._estimate_text_tokens(raw)
+        if approx_tokens <= keep_tokens:
+            return raw
+
+        keep_ratio = max(0.0, min(1.0, keep_tokens / float(max(approx_tokens, 1))))
+        keep_chars = max(6000, int(len(raw) * keep_ratio))
+        head_chars = max(2000, int(keep_chars * 0.7))
+        tail_chars = max(2000, keep_chars - head_chars)
+        if head_chars + tail_chars >= len(raw):
+            return raw
+
+        omitted = len(raw) - head_chars - tail_chars
+        return (
+            f"{raw[:head_chars]}\n\n"
+            f"...[prompt 已压缩，省略 {omitted} 字符]...\n\n"
+            f"{raw[-tail_chars:]}"
+        )
+
+    def _trim_messages_for_prompt_limit(
+        self,
+        messages: list[Any],
+        prompt_limit: int,
+        *,
+        prompt_count: int | None = None,
+    ) -> list[Any]:
+        return _trim_messages_for_prompt_limit_impl(
+            self,
+            messages,
+            prompt_limit,
+            prompt_count=prompt_count,
+        )
+
     async def _chat_with_retry(
         self,
         *,
@@ -374,95 +403,26 @@ class JudgmentExecutor:
         primary_skill_name: str | None = None,
         primary_skill_guidance: bool | None = None,
     ) -> tuple[str | None, ModelSelection, Exception | None]:
-        raw: str | None = None
-        last_error: Exception | None = None
-        for _attempt in range(2):
-            self._set_last_call_meta(
-                selection,
-                thinking_override=thinking_override,
-                skills=skills,
-                primary_skill_name=primary_skill_name,
-                primary_skill_guidance=primary_skill_guidance,
-            )
-            try:
-                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
-                self._mark_model_success(selection.model_ref)
-                self._track_token_usage(selected_provider)
-                return raw, selection, None
-            except Exception as exc:
-                last_error = exc
-                _err = str(exc) or repr(exc)
-                self._mark_model_failure(selection.model_ref, _err)
-                if _attempt == 0:
-                    _fallback_tier = fallback_prefer_tier or self._fallback_tiers(selection.tier)[0]
-                    fb_provider, fb_selection = self._select_provider(
-                        phase=phase,
-                        user_message=user_message,
-                        current_action=current_action,
-                        tool_history=tool_history,
-                        prefer_tier=_fallback_tier,
-                        thinking_override=thinking_override,
-                        routing_overrides=routing_overrides,
-                    )
-                    if fb_selection.model_ref != selection.model_ref:
-                        _log.warning(
-                            "%s LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
-                            log_prefix,
-                            selection.model_ref,
-                            selection.tier,
-                            fb_selection.model_ref,
-                            fb_selection.tier,
-                            _err,
-                        )
-                        selected_provider, selection = fb_provider, fb_selection
-                        continue
-                    _log.warning("%s LLM 调用失败，1s 后重试: %s", log_prefix, _err)
-                    await asyncio.sleep(1.0)
-                    continue
-                _log.warning("%s LLM 调用失败: %s", log_prefix, _err)
-        return raw, selection, last_error
+        return await _chat_with_retry_impl(
+            self,
+            selected_provider=selected_provider,
+            selection=selection,
+            messages=messages,
+            phase=phase,
+            user_message=user_message,
+            thinking_override=thinking_override,
+            routing_overrides=routing_overrides,
+            log_prefix=log_prefix,
+            current_action=current_action,
+            tool_history=tool_history,
+            fallback_prefer_tier=fallback_prefer_tier,
+            skills=skills,
+            primary_skill_name=primary_skill_name,
+            primary_skill_guidance=primary_skill_guidance,
+        )
 
     # ── 输出修复（二次 LLM 调用）──────────────────────────────────────────────
 
     async def _repair_output(self, context_text: str, raw: str) -> JudgmentOutput | None:
         """对被截断或损坏的 JSON 做一次二次修复。"""
-        from provider.base import Message
-
-        repair_messages = [
-            Message(
-                role="system",
-                content=(
-                    "你是一个严格的 JSON 修复器。"
-                    "只输出合法 JSON，不要解释，不要使用 markdown 代码块。"
-                    "必须遵循这个 schema: {decision, chosen_action_id, params, parallel_actions, delegate_tasks, rationale, reflection, reply_to_user, next_step, model_strategy}."
-                    "如果原输出被截断，请根据上下文重新生成一个完整、简短的 JSON。"
-                    "如果 broken_output 是裸代码（bash/python 脚本等），将代码原文放入 reply_to_user 字段，decision 设为 pause，rationale 说明代码已封装。"
-                ),
-            ),
-            Message(
-                role="user",
-                content=(
-                    "下面是原始判断上下文和一段损坏/截断的模型输出，请修复为合法 JSON。\n\n"
-                    f"[context]\n{context_text}\n\n"
-                    f"[broken_output]\n{raw[:4000]}\n\n"
-                    "只返回 JSON，不要用 markdown 代码块包裹。"
-                ),
-            ),
-        ]
-
-        try:
-            repaired_raw = await self._provider.chat(
-                repair_messages,
-                temperature=0.0,
-            )
-        except Exception as exc:
-            _log.warning("[judgment] repair request failed: %s", exc)
-            return None
-
-        repaired = JudgmentOutput.from_llm(repaired_raw)
-        if repaired.rationale.startswith("LLM 输出解析失败"):
-            _log.warning("[judgment] repair failed: %s", repaired.rationale)
-            return None
-
-        _log.info("[judgment] malformed JSON repaired via second pass")
-        return repaired
+        return await _repair_output_impl(self, context_text, raw)

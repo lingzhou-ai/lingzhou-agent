@@ -360,7 +360,7 @@ async def test_reference_resolver_llm_reason_exposes_candidate_created_at():
             return "[]"
 
     resolver = ReferenceResolver(provider=cast("Any", ProviderStub()))
-    await resolver._llm_reason(
+    await resolver._reason_about_candidates_with_llm(
         "昨天那个方案",
         {
             "node-1": {
@@ -693,6 +693,7 @@ def test_loop_logging_reply_not_truncated():
     text = "x" * 600
 
     assert _clip_reply_for_log(text) == text
+    assert _clip_reply_for_log(text, limit=10) == text
 
 
 def test_cli_help_includes_onboard_command():
@@ -1150,6 +1151,92 @@ def test_judgment_error_classification_and_cooldown():
     assert layer._executor._cooldown_seconds("400", 2) >= 90
 
 
+def test_catalog_runtime_context_window_hint_is_effective():
+    from provider.catalog import resolve_context_window, set_context_window_hint
+
+    model_id = "adaptive-runtime-test-model"
+    assert resolve_context_window(model_id, None) is None
+    set_context_window_hint(model_id, 128000)
+    assert resolve_context_window(model_id, None) == 128000
+    assert resolve_context_window(model_id, 64000) == 64000
+
+
+def test_judgment_executor_retries_with_trimmed_prompt_on_limit_error():
+    asyncio.run(_judgment_executor_retries_with_trimmed_prompt_on_limit_error())
+
+
+async def _judgment_executor_retries_with_trimmed_prompt_on_limit_error():
+    from core.config import Config
+    from core.judgment.executor import JudgmentExecutor
+    from core.judgment.output import ModelSelection
+    from provider.base import Message
+    from provider.catalog import resolve_context_window
+
+    class _Provider:
+        model_ref = "copilot/adaptive-mini"
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.lengths: list[int] = []
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.calls += 1
+            self.lengths.append(len(str(messages[-1].content)))
+            if self.calls == 1:
+                raise RuntimeError(
+                    "Client error '400 Bad Request' for url 'https://api.individual.githubcopilot.com/responses' "
+                    "body={\"error\":{\"message\":\"prompt token count of 153330 exceeds the limit of 128000\","
+                    "\"code\":\"model_max_prompt_tokens_exceeded\"}}"
+                )
+            return '{"decision":"wait","rationale":"ok"}'
+
+        async def close(self):
+            return None
+
+        async def ping(self, timeout: float = 8.0):
+            return True, 1, None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "base_url": "https://api.individual.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            }
+        },
+        "model": "copilot/adaptive-mini",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    provider = _Provider()
+    executor = JudgmentExecutor(provider, cfg)
+
+    huge_context = "a" * 520000
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content=huge_context),
+    ]
+    selection = ModelSelection(phase="initial", tier="reasoner", model_ref="copilot/adaptive-mini", thinking="high")
+
+    raw, final_selection, last_error = await executor._chat_with_retry(
+        selected_provider=provider,
+        selection=selection,
+        messages=messages,
+        phase="initial",
+        user_message="hi",
+        thinking_override="high",
+        routing_overrides=None,
+        log_prefix="[test]",
+    )
+
+    assert last_error is None
+    assert final_selection.model_ref == "copilot/adaptive-mini"
+    assert raw == '{"decision":"wait","rationale":"ok"}'
+    assert provider.calls == 2
+    assert provider.lengths[1] < provider.lengths[0]
+    assert resolve_context_window("adaptive-mini", None) == 128000
+
+
 def test_evolution_verification_outcome():
     from core.evolution import _verification_outcome
 
@@ -1525,7 +1612,7 @@ async def _evolution_pending_verification_becomes_verified():
         await store.add_run(tool_name="file.read", status="succeeded")
 
         engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
-        results = await engine._maybe_evaluate_verifications(cast("Any", SimpleNamespace(task_store=store)))
+        results = await engine._process_pending_verifications(cast("Any", SimpleNamespace(task_store=store)))
         assert len(results) == 1
         assert results[0].success is True
         assert results[0].target == "verify:file.read"
@@ -1599,7 +1686,7 @@ async def _evolution_regression_triggers_rollback():
         await store.record_failure("demo.tool", "still broken again")
 
         engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
-        results = await engine._maybe_evaluate_verifications(cast("Any", SimpleNamespace(task_store=store)))
+        results = await engine._process_pending_verifications(cast("Any", SimpleNamespace(task_store=store)))
         assert len(results) == 1
         assert results[0].success is True
         assert results[0].target == "rollback:demo.tool"
@@ -1607,6 +1694,142 @@ async def _evolution_regression_triggers_rollback():
 
         _, found = await store.get_fact(_verification_fact_key("demo.tool"))
         assert not found
+        await store.close()
+
+
+def test_evolution_expired_breaker_fact_is_cleaned_on_check():
+    asyncio.run(_evolution_expired_breaker_fact_is_cleaned_on_check())
+
+
+async def _evolution_expired_breaker_fact_is_cleaned_on_check():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from core.config import Config
+    from core.evolution import EvolutionEngine
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        model_ref = "dummy/provider"
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return ""
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.set_fact(
+            "evolution:breaker:file.read",
+            json.dumps({
+                "target": "file.read",
+                "failure_streak": 2,
+                "cooldown_until": 0,
+            }, ensure_ascii=False),
+            scope="system",
+        )
+
+        engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
+        is_open, remain, streak = await engine._is_target_breaker_cooling_down(
+            cast("Any", SimpleNamespace(task_store=store)),
+            "file.read",
+        )
+        assert is_open is False
+        assert remain == 0
+        assert streak == 2
+        _, found = await store.get_fact("evolution:breaker:file.read")
+        assert not found
+        await store.close()
+
+
+def test_evolution_verification_regression_updates_breaker_streak():
+    asyncio.run(_evolution_verification_regression_updates_breaker_streak())
+
+
+async def _evolution_verification_regression_updates_breaker_streak():
+    from types import SimpleNamespace
+    from typing import cast
+
+    from core.config import Config
+    from core.evolution import EvolutionEngine, _verification_fact_key
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        model_ref = "dummy/provider"
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return ""
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "evolution": {
+            "verify_min_runs": 2,
+            "auto_rollback_on_regression": False,
+            "breaker_fail_threshold": 2,
+        },
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        created_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        await store.set_fact(
+            _verification_fact_key("demo.tool"),
+            json.dumps({
+                "target": "demo.tool",
+                "tool_path": str(Path(d) / "demo_tool.py"),
+                "backup_path": str(Path(d) / "demo_tool.py.bak"),
+                "created_at": created_at,
+                "baseline": {"runs": 2, "failures": 1, "successes": 1},
+            }, ensure_ascii=False),
+            scope="system",
+        )
+        await store.add_run(tool_name="demo.tool", status="failed")
+        await store.add_run(tool_name="demo.tool", status="failed")
+        await store.record_failure("demo.tool", "broken")
+        await store.record_failure("demo.tool", "broken again")
+
+        engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
+        results = await engine._process_pending_verifications(cast("Any", SimpleNamespace(task_store=store)))
+        assert len(results) == 1
+        assert results[0].success is False
+        assert results[0].target == "verify:demo.tool"
+
+        breaker_raw, found = await store.get_fact("evolution:breaker:demo.tool")
+        assert found
+        payload = json.loads(breaker_raw)
+        assert payload["failure_streak"] >= 1
+        _, verify_found = await store.get_fact(_verification_fact_key("demo.tool"))
+        assert not verify_found
         await store.close()
 
 
@@ -1645,10 +1868,10 @@ def test_smoke_failure_summary_uses_single_header_line():
     from core.evolution import _smoke_failure_summary
 
     text = (
-        "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log | preview=RuntimeError boom\n\n"
+        "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log\n\n"
         "returncode=1\n\n[stderr]\nTraceback..."
     )
-    assert _smoke_failure_summary(text) == "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log | preview=RuntimeError boom"
+    assert _smoke_failure_summary(text) == "smoke test failed | module=tools/image_gen.py | failed_log=/tmp/x.log"
 
 
 def test_evolution_skill_targets_workspace_skill_file(tmp_path):
@@ -1807,7 +2030,7 @@ async def _competitive_evolve_routes_based_on_config():
 
         called: list[str] = []
 
-        async def _fake_competitive(tool_name, tool_path, feedback, num_candidates=2):
+        async def _fake_competitive(tool_name, tool_path, feedback, num_candidates=2, ctx=None):
             called.append("competitive")
             return EvolutionResult(success=True, target=tool_name)
 
@@ -1824,7 +2047,7 @@ async def _competitive_evolve_routes_based_on_config():
         engine.competitive_evolve_tool = _fake_competitive  # type: ignore[method-assign]
         engine.evolve_tool = _fake_evolve  # type: ignore[method-assign]
         engine.evolve_ethos = _fake_ethos  # type: ignore[method-assign]
-        engine._maybe_evaluate_verifications = _fake_verif  # type: ignore[method-assign]
+        engine._process_pending_verifications = _fake_verif  # type: ignore[method-assign]
 
         # registry.get() 需返回非 None，直接 mock
         mock_entry = MagicMock()
@@ -1833,6 +2056,7 @@ async def _competitive_evolve_routes_based_on_config():
 
         ctx_obj = _types.SimpleNamespace(task_store=store, config=cfg)
         await engine.run(ctx_obj)  # type: ignore[arg-type]
+        await store.close()
 
     assert "competitive" in called, f"Expected competitive_evolve_tool called, got: {called}"
 
@@ -2191,6 +2415,7 @@ def test_catalog_resolve_context_window():
     assert resolve_context_window("qwen3.6-plus", None) == 1000000
     assert resolve_context_window("qwen3.5-plus", None) == 131072
     assert resolve_context_window("kimi-k2.5", None) == 262144
+    assert resolve_context_window("gpt-5-mini", None) == 128000
 
     # 显式 override 优先于目录值
     assert resolve_context_window("qwen3.6-plus", 32768) == 32768
@@ -2241,16 +2466,11 @@ def test_catalog_explicit_path_isolated_from_global_runtime_path(tmp_path):
         encoding="utf-8",
     )
 
-    previous_runtime = catalog_mod._runtime_path
-    try:
-        catalog_mod.set_runtime_path(runtime_a)
-        assert catalog_mod.resolve_context_window("alpha", None) == 111
-        assert catalog_mod.resolve_context_window("alpha", None, catalog_path=runtime_b) == 222
-        explicit = catalog_mod.lookup_model("alpha", catalog_path=runtime_b)
-        assert explicit is not None
-        assert explicit["context_window"] == 222
-    finally:
-        catalog_mod.set_runtime_path(previous_runtime)
+    assert catalog_mod.resolve_context_window("alpha", None, catalog_path=runtime_a) == 111
+    assert catalog_mod.resolve_context_window("alpha", None, catalog_path=runtime_b) == 222
+    explicit = catalog_mod.lookup_model("alpha", catalog_path=runtime_b)
+    assert explicit is not None
+    assert explicit["context_window"] == 222
 
 
 def test_catalog_budget_auto_lookup():
@@ -4447,7 +4667,7 @@ def test_skill_catalog_pinned_mark_appears_for_last_applied():
     assert skill_a.name in catalog_with_pin
     # skill_b 没有 pin，不应该有 [↑]
     # 找到 skill_b 那行，确认没有 [↑]
-    b_line = next(l for l in catalog_with_pin.splitlines() if skill_b.name in l)
+    b_line = next(line_text for line_text in catalog_with_pin.splitlines() if skill_b.name in line_text)
     assert "`[↑]`" not in b_line, "未 pinned 的 skill 不应有 [↑] 标记"
     assert "`[↑]`" not in catalog_no_pin, "无 pinned_names 时不应有 [↑] 标记"
 

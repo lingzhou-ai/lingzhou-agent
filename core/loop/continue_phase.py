@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from memory.working import WMItem
 
@@ -36,7 +36,7 @@ def _compact_tool_history(history: list[dict[str, Any]], *, keep_last: int) -> l
     for entry in older:
         tool = entry.get("tool", "?")
         status = entry.get("status", "?")
-        result = str(entry.get("result", "")).strip()[:80]
+        result = str(entry.get("result", "")).strip()
         summary_lines.append(f"{tool}[{status}]: {result}")
     compact: dict[str, Any] = {
         "tool": "[compacted]",

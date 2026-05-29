@@ -49,22 +49,6 @@ from tools.registry import (
 )
 
 
-def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:
-    return tool_has_capability(ctx.registry, tool_name, capability)
-
-
-def _is_completion_info_tool(ctx: ToolContext, tool_name: str) -> bool:
-    return _has_capability(ctx, tool_name, "completion_info_only")
-
-
-def _is_completion_mutation_tool(ctx: ToolContext, tool_name: str) -> bool:
-    return _has_capability(ctx, tool_name, "completion_mutation")
-
-
-def _is_completion_verify_tool(ctx: ToolContext, tool_name: str) -> bool:
-    return _has_capability(ctx, tool_name, "completion_verify")
-
-
 def _task_metadata(task: Any) -> dict[str, Any]:
     return {"task_id": task.id, "chain_id": task.chain_id}
 
@@ -109,8 +93,8 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     next_step = (params.get("next_step") or "").strip() or task.next_step
     await ctx.task_store.update_status(task.id, "in_progress", next_step)
     return ToolResult(
-        summary=f"任务 [{task.id}] 已推进至 in_progress: {task.title[:60]}",
-        evidence=f"task_id={task.id} next_step={next_step[:80]}",
+        summary=f"任务 [{task.id}] 已推进至 in_progress: {task.title}",
+        evidence=f"task_id={task.id} next_step={next_step}",
         resource_key=str(task.id),
         state_delta={"task_status": "in_progress", "next_step": next_step},
         metadata={"task_id": task.id, "next_step": next_step, "chain_id": task.chain_id},
@@ -249,7 +233,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             r.tool_name for r in recent_runs
             if r.status == "succeeded" and r.tool_name and not r.tool_name.startswith("task.")
         ]
-        only_info_browsing = bool(recent_tools) and all(_is_completion_info_tool(ctx, t) for t in recent_tools)
+        only_info_browsing = bool(recent_tools) and all(tool_has_capability(ctx.registry, t, "completion_info_only") for t in recent_tools)
         explicit_progress = bool((task.current_step or "").strip() or str(task.result_json.get("summary") or "").strip())
         if only_info_browsing and not explicit_progress:
             return ToolResult(
@@ -267,15 +251,15 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         # 要求其后至少有一个成功的验证动作（如跑测试）。
         # 注意：list_runs 返回的是 ORDER BY id DESC（最新在前），
         # 因此用 min(idx) 找最新 mutation，[:idx] 取比它更新的工具。
-        has_mutation = any(_is_completion_mutation_tool(ctx, t) for t in recent_tools)
+        has_mutation = any(tool_has_capability(ctx.registry, t, "completion_mutation") for t in recent_tools)
         if has_mutation:
             # 最新 mutation 的索引（DESC 顺序下 min = 最近）
-            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if _is_completion_mutation_tool(ctx, t))
+            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if tool_has_capability(ctx.registry, t, "completion_mutation"))
             # 比最新 mutation 更近的工具（索引更小）
             post_mutation_tools = recent_tools[:latest_mutation_idx]
             # file.read 视为轻量验证（回读即确认）；shell.run 等 completion_verify 工具为强验证
             verified_after = any(
-                _is_completion_verify_tool(ctx, t) or t == "file.read"
+                tool_has_capability(ctx.registry, t, "completion_verify") or t == "file.read"
                 for t in post_mutation_tools
             )
             if not verified_after:
@@ -312,8 +296,8 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         node = MemoryNode(
             id=f"skill-{uuid.uuid4().hex[:12]}",
             kind="learned_skill",
-            title=f"完成: task#{task.id} {task.title[:80]}",
-            body=narrative[:1200],
+            title=f"完成: task#{task.id} {task.title}",
+            body=narrative,
             activation=0.8,
             valence=0.5,
         )
@@ -403,7 +387,7 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     )
     return ToolResult(
         summary=f"任务 [{task.id}] 已更新: status={status}",
-        evidence=f"task_id={task.id} next_step={next_step[:80]}",
+        evidence=f"task_id={task.id} next_step={next_step}",
         resource_key=str(task.id),
         state_delta={"task_status": status, "next_step": next_step, "current_step": current_step, "model_tier": model_tier},
         metadata={"task_id": task.id, "chain_id": task.chain_id},
@@ -434,12 +418,12 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     await ctx.task_store.record_failure(
         kind="task_failure",
         summary=reason,
-        context=f"task_id={task.id} title={task.title[:80]}",
+        context=f"task_id={task.id} title={task.title}",
         task_id=str(task.id),
     )
     return ToolResult(
-        summary=f"任务 [{task.id}] 已标记失败: {reason[:80]}",
-        evidence=f"task_id={task.id} reason={reason[:120]}",
+        summary=f"任务 [{task.id}] 已标记失败: {reason}",
+        evidence=f"task_id={task.id} reason={reason}",
         resource_key=str(task.id),
         state_delta={"task_status": "failed", "reason": reason},
         metadata={"task_id": task.id, "chain_id": task.chain_id},

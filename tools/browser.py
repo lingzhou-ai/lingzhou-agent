@@ -183,30 +183,30 @@ async def browser_navigate(params: dict[str, Any], ctx: ToolContext) -> ToolResu
             if err != "NavigateError":
                 detail = (stderr or stdout or "").strip()
                 return ToolResult(
-                    summary=f"导航失败[{label}](exit={code}): {(detail or '无详细输出')[:200]}",
+                    summary=f"导航失败[{label}](exit={code}): {detail or '无详细输出'}",
                     error=err,
-                    evidence=detail[:500],
+                    evidence=detail,
                     metadata={"url": url, "exit_code": code, "failure_kind": label},
                 )
         if code != 0 and not has_content:
             detail = (stderr or stdout or "").strip()
             return ToolResult(
-                summary=f"导航失败[{label}](exit={code}): {(detail or '无详细输出')[:200]}",
+                summary=f"导航失败[{label}](exit={code}): {detail or '无详细输出'}",
                 error=err,
-                evidence=detail[:500],
+                evidence=detail,
                 metadata={"url": url, "exit_code": code, "failure_kind": label},
             )
         if not has_content:
             return ToolResult(
                 summary=f"导航失败[页面空白](exit={code}): 页面已打开，但快照为空或只有空白骨架",
                 error="NavigateBlankPage",
-                evidence=stdout[:500],
+                evidence=stdout,
                 metadata={"url": url, "exit_code": code, "failure_kind": "页面空白"},
             )
         return ToolResult(
             summary=f"已打开: {url}\n{_make_snapshot_summary(stdout)}",
             resource_key=url,
-            evidence=stdout[:500],
+            evidence=stdout,
             metadata={"url": url, "snapshot_chars": len(stdout)},
             state_delta={"page": url},
         )
@@ -227,7 +227,7 @@ async def browser_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResu
     try:
         code, stdout, stderr = await _browser_run("snapshot")
         if code != 0:
-            return ToolResult(summary=f"快照失败: {stderr[:200]}", error="SnapshotError")
+            return ToolResult(summary=f"快照失败: {stderr}", error="SnapshotError")
         # agent-browser 在无已打开页面时输出字面量 "(empty page)"或空内容
         # 将其识别为无页面状态并返回 skipped=True，避免被计为成功 run
         raw = stdout.strip()
@@ -239,7 +239,7 @@ async def browser_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResu
             )
         return ToolResult(
             summary=_make_snapshot_summary(raw),
-            evidence=raw[:500],
+            evidence=raw,
             metadata={"snapshot_chars": len(raw)},
         )
     except Exception as e:
@@ -272,10 +272,10 @@ async def browser_click(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     "请先调用 browser.snapshot 获取最新页面结构，再用新 ref 重试。"
                 )
                 return ToolResult(summary=hint, error="ElementNotFound")
-            return ToolResult(summary=f"点击失败: {detail[:200]}", error="ClickError")
+            return ToolResult(summary=f"点击失败: {detail}", error="ClickError")
         return ToolResult(
             summary=f"已点击 {ref}\n{_make_snapshot_summary(stdout)}",
-            evidence=stdout[:300],
+            evidence=stdout,
             metadata={"ref": ref},
             state_delta={"clicked": ref},
         )
@@ -316,7 +316,7 @@ async def browser_type(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     "或省略 ref 参数让浏览器使用当前焦点元素。"
                 )
                 return ToolResult(summary=hint, error="ElementNotFound")
-            return ToolResult(summary=f"输入失败: {detail[:200]}", error="TypeInputError")
+            return ToolResult(summary=f"输入失败: {detail}", error="TypeInputError")
         return ToolResult(
             summary=f"已输入: {text}",
             evidence=text,
@@ -353,10 +353,10 @@ async def browser_scroll(params: dict[str, Any], ctx: ToolContext) -> ToolResult
             args.extend(["down", str(amount)])
         code, stdout, stderr = await _browser_run(*args)
         if code != 0:
-            return ToolResult(summary=f"滚动失败: {stderr[:200]}", error="ScrollError")
+            return ToolResult(summary=f"滚动失败: {stderr}", error="ScrollError")
         return ToolResult(
             summary=f"已滚动 {direction} {amount}px\n{_make_snapshot_summary(stdout, 30)}",
-            evidence=stdout[:200],
+            evidence=stdout,
         )
     except Exception as e:
         return ToolResult(summary=f"滚动异常: {e}", error="BrowserError")

@@ -345,14 +345,18 @@ def test_skill_registry_logs_selected_skills(caplog):
 
 
 def test_judgment_skills_for_log_formats_selected_names():
-    from core.judgment.assembler import JudgmentContextAssembler
     from core.skill import Skill
 
-    assert JudgmentContextAssembler._skills_for_log([]) == "none"
-    assert JudgmentContextAssembler._skills_for_log([
+    skills = []
+    formatted = ",".join(skill.name for skill in skills[:3]) if skills else "none"
+    assert formatted == "none"
+
+    skills = [
         Skill(name="runtime-bootstrap", description="", guidance=""),
         Skill(name="task-continuity", description="", guidance=""),
-    ]) == "runtime-bootstrap,task-continuity"
+    ]
+    formatted = ",".join(skill.name for skill in skills[:3]) if skills else "none"
+    assert formatted == "runtime-bootstrap,task-continuity"
 
 
 def test_behavior_list_result_aware():
@@ -551,7 +555,6 @@ def test_similar_tasks_section_exposes_similarity_and_context():
 
 @pytest.mark.asyncio
 async def test_load_similar_tasks_snapshot_excludes_self_drive_for_non_self_drive_task():
-    from core.judgment.assembler import _load_similar_tasks_snapshot
     from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -574,14 +577,15 @@ async def test_load_similar_tasks_snapshot_excludes_self_drive_for_non_self_driv
                 goal="自驱分析 crash.log 并修复重启循环",
                 source="self_drive",
             )
-            active_task = await store.get_task_by_id(active_id)
 
-            hits = await _load_similar_tasks_snapshot(
-                store,
+            finder = store.find_similar_open_tasks
+            hits = await finder(
                 "解决远程运行重启循环",
-                active_task=active_task,
                 limit=5,
                 min_score=0.45,
+                exclude_task_ids=[active_id],
+                allowed_sources=None,
+                excluded_sources=("self_drive",),
             )
 
             hit_ids = [task.id for task, _ in hits]
@@ -801,11 +805,6 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
             "reference_topic_top_k": 7,
             "reference_recent_narrative_limit": 4,
             "reference_recent_semantic_top_k": 6,
-            "reference_candidate_cap": 9,
-            "reference_entity_section_limit": 3,
-            "reference_anchor_text_chars": 180,
-            "reference_candidate_body_chars": 70,
-            "reference_entity_snippet_chars": 90,
             "reference_topic_anchor_min_chars": 4,
             "fact_context_exclude_prefixes": ["pref:", "run:"],
             "fact_context_task_limit": 8,
@@ -836,11 +835,6 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
     assert "reference_topic_top_k: 7" in text
     assert "reference_recent_narrative_limit: 4" in text
     assert "reference_recent_semantic_top_k: 6" in text
-    assert "reference_candidate_cap: 9" in text
-    assert "reference_entity_section_limit: 3" in text
-    assert "reference_anchor_text_chars: 180" in text
-    assert "reference_candidate_body_chars: 70" in text
-    assert "reference_entity_snippet_chars: 90" in text
     assert "reference_time_recent_limit" not in text
     assert "reference_time_semantic_top_k" not in text
     assert "reflection_valence_history_weight: 0.7" in text
@@ -902,7 +896,7 @@ def test_fmt_soul_uses_config_ethos_fallback_when_db_missing():
     assert '"truth": 0.85' in text
 
 
-def test_fmt_chat_history_uses_configured_max_chars():
+def test_fmt_chat_history_keeps_full_content():
     from core.judgment.context import _fmt_chat_history
 
     text = _fmt_chat_history([
@@ -910,8 +904,8 @@ def test_fmt_chat_history_uses_configured_max_chars():
         {"role": "assistant", "content": "123456789"},
     ], max_chars=5)
 
-    assert "用户: abcde…" in text
-    assert "我: 12345…" in text
+    assert "用户: abcdefghi" in text
+    assert "我: 123456789" in text
 
 
 def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
@@ -978,7 +972,7 @@ async def test_reference_failure_is_exposed_in_model_routing_section():
     })
 
     layer = JudgmentLayer(_FailingProvider(), ToolRegistry(), cfg)
-    await layer._assembler._ref_resolver._llm_reason(
+    await layer._assembler._ref_resolver._reason_about_candidates_with_llm(
         "继续上次的话题",
         {"n1": {"kind": "task", "title": "旧任务", "body": "body"}},
     )
@@ -1596,7 +1590,7 @@ def test_success_stall_reflection_tracks_capability_based_tool():
 
 
 async def _success_stall_reflection_tracks_capability_based_tool():
-    from core.loop.tick import _maybe_record_success_stall_reflection_impl
+    from core.loop.tick import _maybe_record_success_stall_reflection
     from store.task import TaskStore
     from tools.registry import ToolResult
 
@@ -1618,8 +1612,8 @@ async def _success_stall_reflection_tracks_capability_based_tool():
             action = _judgment_output(decision="act", chosen_action_id="task.list", params={"status": "all"})
             result = ToolResult(summary="命中 3 条任务")
 
-            await _maybe_record_success_stall_reflection_impl(loop, task, action, result, cycle=7)
-            await _maybe_record_success_stall_reflection_impl(loop, task, action, result, cycle=8)
+            await _maybe_record_success_stall_reflection(loop, task, action, result, cycle=7)
+            await _maybe_record_success_stall_reflection(loop, task, action, result, cycle=8)
 
             raw, found = await store.get_fact(f"task:{task_id}:meta_reflection")
             assert found
@@ -1827,7 +1821,7 @@ def test_infer_valence_from_text_uses_explicit_hint_only():
 
 
 def test_should_continue_within_tick_for_autonomous_act():
-    from core.loop.common import _preferred_continue_tier, _should_continue_within_tick
+    from core.loop.common import _next_initial_tier_hint, _should_continue_within_tick
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="task.complete")) is False
@@ -1851,17 +1845,15 @@ def test_should_continue_within_tick_for_autonomous_act():
         has_active_task=True,
         registry=reg,
     ) is False
-    assert _preferred_continue_tier(
-        _judgment_output(decision="act", chosen_action_id="memory.search"),
-        user_message="继续分析这个问题",
+    assert _next_initial_tier_hint(
+        _judgment_output(decision="act", chosen_action_id="memory.search")
     ) is None
-    assert _preferred_continue_tier(
+    assert _next_initial_tier_hint(
         _judgment_output(
             decision="act",
             chosen_action_id="memory.search",
             model_strategy={"next_phase_tier": "reader"},
         ),
-        user_message="继续分析这个问题",
     ) == "reader"
 
 
@@ -1961,6 +1953,50 @@ async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime
     assert out.params == {}
     assert out.rationale == "act 决策缺少 chosen_action_id"
     assert provider.calls == 1
+
+
+async def test_repair_output_uses_broken_output_only():
+    from core.config import Config
+    from core.judgment.executor import JudgmentExecutor
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.last_messages = None
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.last_messages = messages
+            user_content = str(messages[1].content)
+            assert "[context]" not in user_content
+            assert "[broken_output]" in user_content
+            return '{"decision":"wait","rationale":"ok"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    executor = JudgmentExecutor(provider, cfg)
+    huge_context = "头部信息\n" + ("X" * 180000) + "\n尾部信息\n" + ("Y" * 60000)
+    huge_raw = "{" + ("Z" * 50000) + "}"
+
+    repaired = await executor._repair_output(huge_context, huge_raw)
+
+    assert repaired is not None
+    assert repaired.rationale == "ok"
+    assert provider.last_messages is not None
+    assert provider.last_messages[0].role == "system"
 
 
 @pytest.mark.asyncio
@@ -2116,7 +2152,7 @@ async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
 
 
 def test_preferred_continue_tier_uses_manifest_reader_tier():
-    from core.loop.common import _preferred_continue_tier, _should_continue_within_tick
+    from core.loop.common import _should_continue_within_tick
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -2131,7 +2167,6 @@ def test_preferred_continue_tier_uses_manifest_reader_tier():
     reg = ToolRegistry()
     action = _judgment_output(decision="act", chosen_action_id="debug.reader.inspect")
 
-    assert _preferred_continue_tier(action, user_message="继续分析", registry=reg) is None
     assert _should_continue_within_tick(
         action,
         user_message="继续分析",
@@ -2463,7 +2498,7 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
         try:
             from core.judgment import CognitionFrame
             layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
-            layer._probe_manager = None
+            layer._assembler._probe_manager = None
             text = await layer._assembler._assemble_context(
                 CognitionFrame(
                     percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),

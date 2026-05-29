@@ -135,7 +135,7 @@ async def web_fetch(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(
             summary=f"获取成功: {url}\n状态: {resp.status_code}  大小: {len(text)} 字符",
             resource_key=url,
-            evidence=text[:200],
+            evidence=text,
             metadata={
                 "url": url,
                 "status": resp.status_code,
@@ -209,7 +209,7 @@ async def web_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             summary_lines.append(f"  [{i}] {r['title']}")
             summary_lines.append(f"      {r['url']}")
             if r["snippet"]:
-                summary_lines.append(f"      {r['snippet'][:120]}")
+                summary_lines.append(f"      {r['snippet']}")
 
         return ToolResult(
             summary="\n".join(summary_lines),

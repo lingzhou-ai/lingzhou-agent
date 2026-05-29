@@ -59,7 +59,7 @@ def task_list(
             console.print("（没有任务）")
             return
         for t in tasks:
-            goal_hint = f"  目标: {t.goal[:60]}" if t.goal else ""
+            goal_hint = f"  目标: {t.goal}" if t.goal else ""
             console.print(f"[{t.id}] [{t.status}] [{t.priority}] {t.title}{goal_hint}")
 
     asyncio.run(_run())

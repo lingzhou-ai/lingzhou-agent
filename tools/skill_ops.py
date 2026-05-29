@@ -211,7 +211,7 @@ async def skill_evolve(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     return ToolResult(
         summary=f"skill {name!r} 已重写，新 SKILL.md 已写入 workspace。",
-        evidence=(result.new_code or "")[:500],
+        evidence=(result.new_code or ""),
         kind="skill_evolution",
         priority=0.9,
         resource_key=name,
@@ -272,7 +272,7 @@ async def skill_synthesize(params: dict[str, Any], ctx: ToolContext) -> ToolResu
 
     return ToolResult(
         summary=f"skill {name!r} 已合成写入 workspace，下一轮 tick 自动生效。",
-        evidence=(result.new_code or "")[:500],
+        evidence=(result.new_code or ""),
         kind="skill_synthesis",
         priority=0.9,
         resource_key=name,

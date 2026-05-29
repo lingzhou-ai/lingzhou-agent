@@ -187,5 +187,5 @@ async def schedule_cancel(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     await ctx.task_store.cancel_signal(int(sig_id))
     return ToolResult(
         summary=f"已取消信号 #{sig_id}: {sig['title']}",
-        evidence=f"id={sig_id} title={sig['title'][:60]} run_at={sig['run_at']} status=cancelled",
+        evidence=f"id={sig_id} title={sig['title']} run_at={sig['run_at']} status=cancelled",
     )

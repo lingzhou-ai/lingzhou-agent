@@ -582,7 +582,6 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -659,7 +658,6 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -906,7 +904,6 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -1078,7 +1075,6 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -1177,7 +1173,6 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -1285,7 +1280,6 @@ async def _subagent_run_history_does_not_expose_parent_runs():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -1409,7 +1403,6 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)
@@ -1493,7 +1486,6 @@ async def _subagent_runner_does_not_pollute_parent_store():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             registry = ToolRegistry()
@@ -1596,7 +1588,6 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             registry = ToolRegistry()
@@ -1747,7 +1738,6 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
-                    log_text_chars=240,
                 ),
             ))
             execution = ExecutionLayer(registry, cfg)

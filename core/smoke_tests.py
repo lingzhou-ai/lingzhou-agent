@@ -26,7 +26,7 @@ SMOKE_TESTS: dict[str, str] = {
     "core/perception/ethos.py": """
 s = mod.EthosState()
 _ = hash(s)          # 必须可哈希，这是历史 P0 bug 的根因
-from core.config import EthosConfig
+from core.config_models import EthosConfig
 e = mod.derive_ethos_state(
     failure_count=0,
     high_error_streak=0,

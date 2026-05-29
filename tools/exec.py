@@ -11,297 +11,28 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import os
-import select
-import shutil
-import signal
-import subprocess
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tools.exec_helpers import (
+    ProcessInfo,
+    ProcessManager,
+    _append_output,
+    _build_capabilities,
+    _spawn_pty_process,
+    _terminate_info,
+    _watch_pty_process,
+)
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _log = logging.getLogger("lingzhou.tools.exec")
 
 
-# ── 进程管理器 ────────────────────────────────────────────────────────────────
-
-@dataclass
-class ProcessInfo:
-    session_id: str
-    command: str
-    pid: int | None = None
-    started_at: float = 0.0
-    finished_at: float | None = None
-    return_code: int | None = None
-    stdout: str = ""
-    stderr: str = ""
-    error: str | None = None
-    background: bool = False
-    finished: bool = False
-    timed_out: bool = False
-    pty: bool = False
-    workdir: str = ""
-    timeout_seconds: float | None = None
-    proc: Any | None = None
-    master_fd: int | None = None
-    watch_task: asyncio.Task | None = None
-    log_path: str = ""
-    meta_path: str = ""
-    restored: bool = False
-    handle_lost: bool = False
-    _output_chunks: list[str] = field(default_factory=list)
-
-
-class ProcessManager:
-    """追踪所有通过 exec 启动的进程，并把最小状态持久化到磁盘。"""
-
-    _counter: int = 0
-    _processes: dict[str, ProcessInfo] = {}
-    _loaded: bool = False
-
-    @classmethod
-    def _state_root(cls) -> Path:
-        root = Path(os.environ.get("LINGZHOU_PROCESS_STATE_DIR") or (Path.home() / ".lingzhou/state/processes"))
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    @classmethod
-    def _meta_path(cls, session_id: str) -> Path:
-        return cls._state_root() / f"{session_id}.json"
-
-    @classmethod
-    def _log_path(cls, session_id: str) -> Path:
-        return cls._state_root() / f"{session_id}.log"
-
-    @classmethod
-    def _pid_alive(cls, pid: int | None) -> bool:
-        if not pid:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except Exception:
-            return False
-
-    @classmethod
-    def _persist(cls, info: ProcessInfo) -> None:
-        if not info.meta_path:
-            info.meta_path = str(cls._meta_path(info.session_id))
-        if not info.log_path:
-            info.log_path = str(cls._log_path(info.session_id))
-        payload = {
-            "session_id": info.session_id,
-            "command": info.command,
-            "pid": info.pid,
-            "started_at": info.started_at,
-            "finished_at": info.finished_at,
-            "return_code": info.return_code,
-            "error": info.error,
-            "background": info.background,
-            "finished": info.finished,
-            "timed_out": info.timed_out,
-            "pty": info.pty,
-            "workdir": info.workdir,
-            "timeout_seconds": info.timeout_seconds,
-            "log_path": info.log_path,
-            "meta_path": info.meta_path,
-            "restored": info.restored,
-            "handle_lost": info.handle_lost,
-        }
-        path = Path(info.meta_path)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-
-    @classmethod
-    def _load_stdout(cls, info: ProcessInfo) -> None:
-        if not info.log_path:
-            return
-        path = Path(info.log_path)
-        if not path.exists():
-            return
-        with contextlib.suppress(Exception):
-            info.stdout = path.read_text(encoding="utf-8", errors="replace")
-
-    @classmethod
-    def _refresh_liveness(cls, info: ProcessInfo) -> None:
-        if info.finished:
-            return
-        if info.proc is not None:
-            return
-        if info.pid and not cls._pid_alive(info.pid):
-            info.finished = True
-            info.finished_at = info.finished_at or time.time()
-            if info.return_code is None:
-                info.return_code = -1
-            cls._persist(info)
-
-    @classmethod
-    def _ensure_loaded(cls) -> None:
-        if cls._loaded:
-            return
-        root = cls._state_root()
-        for meta in sorted(root.glob("exec-*.json")):
-            try:
-                data = json.loads(meta.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            sid = str(data.get("session_id") or meta.stem)
-            info = ProcessInfo(
-                session_id=sid,
-                command=str(data.get("command") or ""),
-                pid=data.get("pid"),
-                started_at=float(data.get("started_at") or 0.0),
-                finished_at=data.get("finished_at"),
-                return_code=data.get("return_code"),
-                error=data.get("error"),
-                background=bool(data.get("background", False)),
-                finished=bool(data.get("finished", False)),
-                timed_out=bool(data.get("timed_out", False)),
-                pty=bool(data.get("pty", False)),
-                workdir=str(data.get("workdir") or ""),
-                timeout_seconds=data.get("timeout_seconds"),
-                log_path=str(data.get("log_path") or cls._log_path(sid)),
-                meta_path=str(data.get("meta_path") or meta),
-                restored=True,
-                handle_lost=not bool(data.get("finished", False)),
-            )
-            cls._load_stdout(info)
-            cls._refresh_liveness(info)
-            cls._processes[sid] = info
-        cls._loaded = True
-
-    @classmethod
-    def next_id(cls) -> str:
-        cls._ensure_loaded()
-        cls._counter += 1
-        return f"exec-{int(time.time() * 1000)}-{cls._counter}"
-
-    @classmethod
-    def register(cls, info: ProcessInfo) -> str:
-        cls._ensure_loaded()
-        info.meta_path = str(cls._meta_path(info.session_id))
-        info.log_path = str(cls._log_path(info.session_id))
-        Path(info.log_path).touch(exist_ok=True)
-        cls._processes[info.session_id] = info
-        cls._persist(info)
-        return info.session_id
-
-    @classmethod
-    def get(cls, session_id: str) -> ProcessInfo | None:
-        cls._ensure_loaded()
-        info = cls._processes.get(session_id)
-        if info:
-            cls._refresh_liveness(info)
-        return info
-
-    @classmethod
-    def list_all(cls) -> list[ProcessInfo]:
-        cls._ensure_loaded()
-        for info in cls._processes.values():
-            cls._refresh_liveness(info)
-        return list(cls._processes.values())
-
-    @classmethod
-    def mark_finished(cls, session_id: str, return_code: int, timed_out: bool = False) -> None:
-        cls._ensure_loaded()
-        info = cls._processes.get(session_id)
-        if info:
-            info.finished = True
-            info.finished_at = time.time()
-            info.return_code = return_code
-            info.timed_out = timed_out
-            info.handle_lost = False
-            cls._persist(info)
-
-    @classmethod
-    def clear(cls) -> None:
-        cls._processes.clear()
-        cls._counter = 0
-        cls._loaded = True
-        root = cls._state_root()
-        for p in root.glob("exec-*"):
-            with contextlib.suppress(Exception):
-                p.unlink()
-
-
 _MANAGER = ProcessManager()
-
-
-# ── 辅助 ────────────────────────────────────────────────────────────────────
-
-def _append_output(info: ProcessInfo, text: str) -> None:
-    if not text:
-        return
-    info._output_chunks.append(text)
-    info.stdout += text
-    if info.log_path:
-        try:
-            with open(info.log_path, "a", encoding="utf-8") as fh:
-                fh.write(text)
-        except Exception:
-            pass
-
-
-def _preview(text: str, limit: int) -> str:
-    return text[:limit] + ("..." if len(text) > limit else "")
-
-
-def _terminate_info(info: ProcessInfo, *, force: bool = False) -> None:
-    proc = info.proc
-    try:
-        if proc is None:
-            return
-        if isinstance(proc, asyncio.subprocess.Process):
-            if proc.returncode is None:
-                (proc.kill if force else proc.terminate)()
-        elif isinstance(proc, subprocess.Popen):
-            if proc.poll() is None:
-                (proc.kill if force else proc.terminate)()
-        elif info.pid:
-            os.kill(info.pid, signal.SIGKILL if force else signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except Exception as e:
-        info.error = str(e)
-
-
-def _build_capabilities(workdir: str) -> dict[str, Any]:
-    common = (
-        "python3", "python", "bash", "sh", "grep", "find", "ls", "cat",
-        "sqlite3", "git", "sed", "awk", "jq", "rg",
-    )
-    available = [cmd for cmd in common if shutil.which(cmd)]
-    try:
-        import pty  # noqa: F401
-        has_pty = True
-    except Exception:
-        has_pty = False
-    return {
-        "engine": "exec/process runtime",
-        "execution_model": "foreground or background",
-        "sandbox": False,
-        "network_policy": "inherits-host-environment",
-        "default_timeout_sec": 30,
-        "default_output_preview_chars": 500,
-        "workdir": workdir,
-        "shell": os.environ.get("SHELL") or "/bin/sh",
-        "available_commands": available,
-        "has_background_exec": True,
-        "has_process_management": True,
-        "has_pty": has_pty,
-        "has_process_write": True,
-    }
 
 
 _CAP_MANIFEST = ToolManifest(
@@ -369,15 +100,14 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     use_pty = bool(params.get("pty", False))
     timeout = float(params.get("timeout") or (300.0 if background else 30.0))
     workdir = str(params.get("workdir") or Path.cwd())
-    preview_limit = int(params.get("max_output_chars") or 500)
     env_overrides = params.get("env")
 
     if ctx.dry_run:
         return ToolResult(
-            summary=f"[dry-run] exec: {command[:200]}",
+            summary=f"[dry-run] exec: {command}",
             evidence=json.dumps({
                 "dry_run": True,
-                "command": command[:120],
+                "command": command,
                 "timeout": timeout,
                 "workdir": workdir,
                 "background": background,
@@ -413,7 +143,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 payload = {
                     "process_id": session_id,
                     "pid": proc.pid,
-                    "command": command[:200],
+                    "command": command,
                     "timeout": timeout,
                     "workdir": workdir,
                     "background": True,
@@ -444,7 +174,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 payload = {
                     "process_id": session_id,
                     "pid": proc.pid,
-                    "command": command[:200],
+                    "command": command,
                     "timeout": timeout,
                     "workdir": workdir,
                     "background": True,
@@ -460,18 +190,26 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 )
             await _watch_pipe_process(info)
 
+        if info.return_code is None:
+            latest = _MANAGER.get(session_id)
+            if latest and latest.return_code is not None:
+                info.return_code = latest.return_code
+            elif not info.timed_out and not info.error:
+                info.return_code = 0
+                ProcessManager._persist(info)
+
         output = info.stdout.strip()
         if info.timed_out:
             payload = {
                 "timeout": timeout,
-                "command": command[:120],
+                "command": command,
                 "workdir": workdir,
                 "timed_out": True,
                 "pty": use_pty,
                 "process_id": session_id,
             }
             return ToolResult(
-                summary=f"执行超时（{timeout}s）: {command[:100]}",
+                summary=f"执行超时（{timeout}s）: {command}",
                 evidence=json.dumps(payload, ensure_ascii=False),
                 error="TimeoutError",
                 skipped=True,
@@ -481,22 +219,21 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 metadata=payload,
             )
 
-        preview_text = output or "(无输出)"
-        truncated = _preview(preview_text, preview_limit)
+        output_text = output or "(无输出)"
         evidence = json.dumps({
-            "command": command[:120],
+            "command": command,
             "exit_code": info.return_code,
             "timeout": timeout,
             "workdir": workdir,
             "output_chars": len(output),
-            "preview_chars": min(len(output), preview_limit),
+            "preview_chars": len(output),
             "pty": use_pty,
         }, ensure_ascii=False)
         payload = json.loads(evidence)
         payload.update({"process_id": session_id, "meta_path": info.meta_path, "log_path": info.log_path})
         if info.return_code == 0:
             return ToolResult(
-                summary=f"命令完成 (exit=0):\n{truncated}",
+                summary=f"命令完成 (exit=0):\n{output_text}",
                 evidence=json.dumps(payload, ensure_ascii=False),
                 resource_key=session_id,
                 fingerprint=f"exec:{info.return_code}:{payload['output_chars']}",
@@ -505,9 +242,9 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 metadata=payload,
             )
         return ToolResult(
-            summary=f"执行出错 (exit={info.return_code}):\n{truncated}",
+            summary=f"执行出错 (exit={info.return_code}):\n{output_text}",
             evidence=json.dumps(payload, ensure_ascii=False),
-            error=(output[:300] or info.error or f"exit={info.return_code}"),
+            error=(output or info.error or f"exit={info.return_code}"),
             resource_key=session_id,
             fingerprint=f"exec:{info.return_code}:{payload['output_chars']}",
             artifact_paths=[info.meta_path, info.log_path],
@@ -525,26 +262,8 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=session_id,
             artifact_paths=[info.meta_path, info.log_path] if info.meta_path or info.log_path else [],
             state_delta={"process": "failed_to_start"},
-            metadata={"process_id": session_id, "command": command[:200], "workdir": workdir},
+            metadata={"process_id": session_id, "command": command, "workdir": workdir},
         )
-
-
-def _spawn_pty_process(command: str, workdir: str, env: dict[str, str]) -> tuple[subprocess.Popen[Any], int]:
-    import pty
-
-    master_fd, slave_fd = pty.openpty()
-    os.set_blocking(master_fd, False)
-    proc = subprocess.Popen(
-        [os.environ.get("SHELL") or "/bin/bash", "-lc", command],
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        cwd=workdir,
-        env=env,
-        close_fds=True,
-    )
-    os.close(slave_fd)
-    return proc, master_fd
 
 
 async def _watch_pipe_process(info: ProcessInfo) -> None:
@@ -590,67 +309,6 @@ async def _watch_pipe_process(info: ProcessInfo) -> None:
         except Exception:
             pass
         info.proc = None
-
-
-def _run_pty_until_exit(info: ProcessInfo) -> tuple[int, bool, str | None]:
-    proc = info.proc
-    master_fd = info.master_fd
-    assert proc is not None and master_fd is not None
-
-    timed_out = False
-    err: str | None = None
-    start = time.time()
-    try:
-        while True:
-            if info.timeout_seconds and (time.time() - start) > info.timeout_seconds and proc.poll() is None:
-                proc.terminate()
-                time.sleep(0.1)
-                if proc.poll() is None:
-                    proc.kill()
-                timed_out = True
-
-            try:
-                ready, _, _ = select.select([master_fd], [], [], 0.1)
-            except (OSError, ValueError):
-                ready = []
-
-            if ready:
-                try:
-                    chunk = os.read(master_fd, 1024)
-                    if chunk:
-                        _append_output(info, chunk.decode(errors="replace"))
-                except BlockingIOError:
-                    pass
-                except OSError:
-                    pass
-
-            rc = proc.poll()
-            if rc is not None:
-                for _ in range(5):
-                    try:
-                        chunk = os.read(master_fd, 1024)
-                        if not chunk:
-                            break
-                        _append_output(info, chunk.decode(errors="replace"))
-                    except Exception:
-                        break
-                return rc, timed_out, err
-    except Exception as e:
-        err = str(e)
-        return -1, timed_out, err
-    finally:
-        with contextlib.suppress(Exception):
-            os.close(master_fd)
-        info.master_fd = None
-
-
-async def _watch_pty_process(info: ProcessInfo) -> None:
-    rc, timed_out, err = await asyncio.to_thread(_run_pty_until_exit, info)
-    if err:
-        info.error = err
-    info.proc = None
-    _MANAGER.mark_finished(info.session_id, rc, timed_out=timed_out)
-    _MANAGER._persist(info)
 
 
 # ── process：管理后台进程 ────────────────────────────────────────────────────
@@ -719,7 +377,7 @@ async def process_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         state = "running" if not p.finished else f"done(exit={p.return_code})"
         mode = "pty" if p.pty else "pipe"
         duration = time.time() - p.started_at
-        lines.append(f"  {p.session_id}: {state} [{mode}] | {p.command[:80]} | {duration:.0f}s")
+        lines.append(f"  {p.session_id}: {state} [{mode}] | {p.command} | {duration:.0f}s")
     return ToolResult(
         summary=f"进程列表 ({len(procs)} 个):\n" + "\n".join(lines),
         metadata={"count": len(procs), "status_filter": status_filter},
@@ -740,7 +398,7 @@ async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     )
     status = {
         "session_id": info.session_id,
-        "command": info.command[:200],
+        "command": info.command,
         "status": "running" if not info.finished else "finished",
         "pid": info.pid,
         "pty": info.pty,

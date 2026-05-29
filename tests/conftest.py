@@ -35,7 +35,6 @@ def _test_config(
                 shell_max_output_chars=shell_max_output_chars,
                 durable_failure_threshold=3,
                 durable_failure_ttl_sec=7200,
-                log_text_chars=240,
                 task_duplicate_reuse_score=0.66,
                 task_similarity_context_score=0.45,
             ),

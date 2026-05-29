@@ -69,7 +69,7 @@ async def _run_http(url: str, timeout: int) -> tuple[str, str | None]:  # noqa: 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url)
-            return resp.text.strip()[:4096], None
+            return resp.text.strip(), None
     except httpx.HTTPError as exc:
         return "", str(exc)
 

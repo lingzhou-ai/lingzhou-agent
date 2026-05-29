@@ -50,24 +50,7 @@ def _has_wm_overlap(content: str, keywords: frozenset[str]) -> bool:
     # keywords 中的 ASCII 词已被 _wm_keywords 做过 lower()，
     # content 也 lower() 再比较，保证大小写不敏感（CJK 不受影响）。
     content_lower = content.lower()
-    for kw in keywords:
-        if kw in content_lower:
-            return True
-    return False
-
-
-def _truncate_content(content: str, max_tokens: int) -> str:
-    """按 token 估算截断 content，保持在 max_tokens 以内（二分搜索截断点）。"""
-    if _estimate_tokens(content) <= max_tokens:
-        return content
-    lo, hi = 0, len(content)
-    while lo < hi - 1:
-        mid = (lo + hi) // 2
-        if _estimate_tokens(content[:mid]) <= max_tokens:
-            lo = mid
-        else:
-            hi = mid
-    return content[:lo] + "…（已截断）"
+    return any(kw in content_lower for kw in keywords)
 
 
 @dataclass(order=True)
@@ -130,14 +113,6 @@ class WorkingMemory:
         """添加条目，若超条目上限或超 token 预算则驱逐优先级最低的。
         若 item.kind 非空，先移除同 kind 旧条目（防御性去重，避免同 kind 条目累积）。
         """
-        # 入队前截断过大条目，防止单条垄断 token 预算
-        if self._item_max_tokens > 0 and item.estimated_tokens > self._item_max_tokens:
-            item = WMItem(
-                kind=item.kind,
-                content=_truncate_content(item.content, self._item_max_tokens),
-                priority=item.priority,
-                created_at=item.created_at,
-            )
         if item.kind and item.kind not in self._multi_item_kinds:
             self._items = [i for i in self._items if i.kind != item.kind]
             heapq.heapify(self._items)  # 修复堆损坏：过滤后重建堆，再 push

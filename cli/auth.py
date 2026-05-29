@@ -229,7 +229,7 @@ def _login_copilot_impl(
             raise typer.Exit(1)
         elif resp.status_code == 404:
             console.print(
-                f"[red]✗ token 验证失败（404）[/red]  body: [dim]{resp.text[:200]}[/dim]\n"
+                f"[red]✗ token 验证失败（404）[/red]  body: [dim]{resp.text}[/dim]\n"
                 "  GitHub 账户可能未开通 Copilot 订阅，或 token 缺少权限。\n"
                 "  请登录 https://github.com/settings/copilot 确认订阅状态。"
             )

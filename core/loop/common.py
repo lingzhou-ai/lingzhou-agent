@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.judgment import JudgmentOutput, tool_tier
 from core.perception import PerceptionReplaySummary
 
 if TYPE_CHECKING:
-    from tools.registry import ToolResult
-    from store.task import Task
     from core.config import Config
+    from store.task import Task
+    from tools.registry import ToolResult
 
 # 判断层执行 tier（用于 task 模型档位校验，不含 reader）
 _JUDGMENT_TIERS: frozenset[str] = frozenset({"reasoner", "repair"})
@@ -111,16 +111,6 @@ def _should_continue_within_tick(
 def _next_initial_tier_hint(action: JudgmentOutput) -> str | None:
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
     return next_tier if next_tier in _HINT_TIERS else None
-
-
-def _preferred_continue_tier(
-    action: JudgmentOutput,
-    *,
-    user_message: str = "",
-    registry: Any | None = None,
-) -> str | None:
-    """从当前轮动作的 model_strategy 中提取续判档位提示（Phase 3c 扩展）。"""
-    return _next_initial_tier_hint(action)
 
 
 def _task_model_tier(task: Task | None) -> str | None:

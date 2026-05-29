@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.execution import (
     build_meta_reflection,
@@ -71,7 +71,7 @@ def _parse_run_monitor_snapshot(raw: str, monitor: dict[str, Any]) -> tuple[str,
         status = "cancelled"
     else:
         status = "running"
-    progress = str(progress_value or "").strip()[:2000]
+    progress = str(progress_value or "").strip()
     return status, progress, payload
 
 
@@ -90,8 +90,8 @@ async def _finalize_refreshed_run_learning(
         _log.debug("[run-refresh] record failure for run=%s tool=%s error=%s", run.id, run.tool_name, error)
         await task_store.record_failure(
             kind=run.tool_name or run.worker_type or "run",
-            summary=summary[:300],
-            context=evidence[:200],
+            summary=summary,
+            context=evidence,
             task_id=str(run.task_id) if run.task_id else "",
         )
 
@@ -158,7 +158,7 @@ async def _refresh_run_via_fact_monitor(
     status, progress, payload = _parse_run_monitor_snapshot(raw, monitor)
     crystal = progress if progress and progress != run.progress else ""
     if crystal:
-        _log.debug("[run-monitor] fact key=%s run=%s progress=%s", key, run.id, progress[:200])
+        _log.debug("[run-monitor] fact key=%s run=%s progress=%s", key, run.id, progress)
     output_json = dict(run.output_json)
     output_json["monitor_snapshot"] = payload
     output_json["monitor_key"] = key
@@ -166,8 +166,8 @@ async def _refresh_run_via_fact_monitor(
         run.id,
         status=status,
         output_json=output_json,
-        log_text=(progress or str(payload or raw))[:4000],
-        error_text=(str(payload.get("error") or "") if isinstance(payload, dict) else (raw[:400] if status == "failed" else "")),
+        log_text=(progress or str(payload or raw)),
+        error_text=(str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")),
         progress=progress,
     )
     if run.task_id and crystal:
@@ -176,7 +176,7 @@ async def _refresh_run_via_fact_monitor(
             metabolic = MetabolicEngine(task_store)
         await metabolic.submit(StateProposal(
             op="set_fact", key=f"task:{run.task_id}:progress",
-            value=crystal[:800], scope="task", source="run_refresh/monitor",
+            value=crystal, scope="task", source="run_refresh/monitor",
         ))
     if status in {"succeeded", "failed", "cancelled"}:
         summary = progress or (str(payload.get("summary") or "") if isinstance(payload, dict) else raw) or f"run {status}"
@@ -186,8 +186,8 @@ async def _refresh_run_via_fact_monitor(
             key,
             run.id,
             status,
-            (progress or "-")[:200],
-            (error or "-")[:200],
+            (progress or "-"),
+            (error or "-"),
         )
         if run.task_id:
             await task_store.update_task_result(
@@ -221,7 +221,7 @@ async def _refresh_run_via_fact_monitor(
             status=status,
             summary=summary,
             error=error,
-            evidence=str(payload if isinstance(payload, dict) else raw)[:1200],
+            evidence=str(payload if isinstance(payload, dict) else raw),
             episodic=episodic,
             semantic=semantic,
         )
@@ -230,7 +230,7 @@ async def _refresh_run_via_fact_monitor(
         "task_id": run.task_id,
         "status": status,
         "session_id": run.session_id,
-        "crystal": crystal[:400],
+        "crystal": crystal,
     }
 
 
@@ -263,9 +263,9 @@ async def _refresh_run_via_process_monitor(
                 run.id,
                 status="running",
                 output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
-                log_text=stdout_text[-4000:],
+                log_text=stdout_text,
                 session_id=session_id,
-                progress=crystal_excerpt[:2000],
+                progress=crystal_excerpt,
                 extras={**run.extras, "last_crystal_chars": len(stdout_text), "run_monitor": monitor},
             )
             if run.task_id and crystal_excerpt:
@@ -274,7 +274,7 @@ async def _refresh_run_via_process_monitor(
                     metabolic = MetabolicEngine(task_store)
                 await metabolic.submit(StateProposal(
                     op="set_fact", key=f"task:{run.task_id}:progress",
-                    value=crystal_excerpt[:800], scope="task", source="run_refresh/progress",
+                    value=crystal_excerpt, scope="task", source="run_refresh/progress",
                 ))
         return {
             "run_id": run.id,
@@ -291,18 +291,18 @@ async def _refresh_run_via_process_monitor(
         "session_id": session_id,
         "return_code": info.return_code,
         "timed_out": info.timed_out,
-        "stdout": info.stdout[-4000:],
-        "stderr": info.stderr[-2000:],
+        "stdout": info.stdout,
+        "stderr": info.stderr,
         "error": info.error,
     })
     await task_store.update_run(
         run.id,
         status=status,
         output_json=output_json,
-        log_text=info.stdout[-4000:],
+        log_text=info.stdout,
         error_text=info.error or ("timed_out" if info.timed_out else (f"exit_code={info.return_code}" if status == "failed" else "")),
         session_id=session_id,
-        progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
+        progress=(info.stdout or info.stderr or info.error or status).strip(),
         extras={
             **run.extras,
             "return_code": info.return_code,
@@ -320,7 +320,7 @@ async def _refresh_run_via_process_monitor(
                 worker_type=run.worker_type,
                 tool_name=run.tool_name,
                 session_id=session_id,
-                summary=output_json.get("stdout", "")[:200] or f"process {status}",
+                summary=output_json.get("stdout", "") or f"process {status}",
                 error=output_json.get("error"),
             ),
         )
@@ -333,17 +333,17 @@ async def _refresh_run_via_process_monitor(
         tool_name=run.tool_name,
         worker_type=run.worker_type,
         status=status,
-        progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
-        summary=output_json.get("stdout", "")[:200] or f"process {status}",
+        progress=(info.stdout or info.stderr or info.error or status).strip(),
+        summary=output_json.get("stdout", "") or f"process {status}",
         error=str(output_json.get("error") or ""),
     )
     await _finalize_refreshed_run_learning(
         task_store,
         run=run,
         status=status,
-        summary=output_json.get("stdout", "")[:200] or f"process {status}",
+        summary=output_json.get("stdout", "") or f"process {status}",
         error=str(output_json.get("error") or ""),
-        evidence=((info.stderr or "") + "\n" + (info.error or "")).strip()[:1200],
+        evidence=((info.stderr or "") + "\n" + (info.error or "")).strip(),
         episodic=episodic,
         semantic=semantic,
     )

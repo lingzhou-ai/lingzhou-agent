@@ -7,14 +7,16 @@ import contextlib
 import logging
 from typing import Any
 
+from .chat import _process_pending_chat_turn
 from .dispatcher import TickJob
 from .focus import resolve_focus_task
+from .reload import _maybe_hot_reload_provider_impl
 
 _log = logging.getLogger("lingzhou.loop")
 
 
 async def _run_cycle_impl(loop: Any, cycle: int) -> int:
-    cycle, handled_chat = await loop._process_pending_chat_turn(cycle)
+    cycle, handled_chat = await _process_pending_chat_turn(loop, cycle)
     if not handled_chat:
         # Phase 3d：优先认领 DB pending Runs（bootstrap/崩溃恢复路径）
         run_driver = getattr(loop, "_run_driver", None)
@@ -55,7 +57,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
         else:
             gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor
         await _wait_for_event_impl(loop, gap, await resolve_focus_task(loop))
-        await loop._maybe_hot_reload_provider()
+        await _maybe_hot_reload_provider_impl(loop)
         return
 
     after_task = await resolve_focus_task(loop)
@@ -79,7 +81,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
         else:
             gap = cfg.loop.max_idle_gap / 1000.0 * _arousal_factor            # ④ 完全空闲
         await _wait_for_event_impl(loop, gap, after_task)
-    await loop._maybe_hot_reload_provider()
+    await _maybe_hot_reload_provider_impl(loop)
 
 
 async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> None:

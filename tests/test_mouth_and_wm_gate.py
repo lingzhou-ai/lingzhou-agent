@@ -99,13 +99,13 @@ class TestBuildActionResultSummary:
         ar = self._build(action, result, [])
         assert ar.action_succeeded is False
 
-    def test_summary_truncated_to_300(self):
+    def test_summary_keeps_full_text(self):
         long_summary = "x" * 500
         action = _make_judgment_output(decision="act", chosen_action_id="file.read")
         result = _make_tool_result(summary=long_summary)
         history = [_make_history_entry("file.read", "ok", long_summary)]
         ar = self._build(action, result, history)
-        assert len(ar.summary) <= 300
+        assert ar.summary == long_summary
 
     def test_tool_name_from_history_takes_priority(self):
         """history 末尾的 tool 名优先于 action.chosen_action_id。"""

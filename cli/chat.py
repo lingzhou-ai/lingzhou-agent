@@ -125,8 +125,6 @@ def _history_excerpt(messages: list[dict[str, object]], limit: int = 12) -> str:
         content = " ".join(str(msg.get("content") or "").split()).strip()
         if not content:
             continue
-        if len(content) > 160:
-            content = content[:157] + "..."
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 

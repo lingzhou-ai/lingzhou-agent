@@ -27,6 +27,16 @@ if TYPE_CHECKING:
 WorkerHandler = Callable[["ToolEntry", "JudgmentOutput", ToolContext], Awaitable[ToolResult]]
 
 
+async def _call_handler(entry: ToolEntry, params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    """调用工具 handler，兼容同步函数与 dict 返回值（进化工具可能产生这两种情况）。"""
+    raw = entry.handler(params, ctx)
+    if asyncio.iscoroutine(raw):
+        raw = await raw
+    if isinstance(raw, dict):
+        raw = ToolResult(**raw)
+    return raw  # type: ignore[return-value]
+
+
 @dataclass
 class _WorkerPool:
     name: str
@@ -107,7 +117,7 @@ class WorkerLayer:
         action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
-        result = await entry.handler(action.params, ctx)
+        result = await _call_handler(entry, action.params, ctx)
         result.metadata.setdefault("worker_path", "tool-chain")
         return result
 
@@ -117,7 +127,7 @@ class WorkerLayer:
         action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
-        result = await entry.handler(action.params, ctx)
+        result = await _call_handler(entry, action.params, ctx)
         result.metadata.setdefault("worker_path", "exec")
         background = bool(isinstance(result.state_delta, dict) and result.state_delta.get("background"))
         result.metadata.setdefault("execution_mode", "background" if background else "foreground")
@@ -136,7 +146,7 @@ class WorkerLayer:
         action: JudgmentOutput,
         ctx: ToolContext,
     ) -> ToolResult:
-        result = await entry.handler(action.params, ctx)
+        result = await _call_handler(entry, action.params, ctx)
         result.metadata.setdefault("worker_path", "multimodal")
         image_count = 0
         for key in ("path", "paths", "image", "images"):

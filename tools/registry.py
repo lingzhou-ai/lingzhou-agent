@@ -19,14 +19,17 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-
 _log = logging.getLogger("lingzhou.registry")
 
 if TYPE_CHECKING:
-    from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
     from core.config import Config
     from core.perception import EmotionState
     from memory.working import WorkingMemory
+    from tools.view_protocols import (
+        EpisodicViewProtocol,
+        SemanticViewProtocol,
+        TaskStoreViewProtocol,
+    )
 
 
 # ── 数据模型 ───────────────────────────────────────────────────────────────────
@@ -174,12 +177,12 @@ class ToolContext:
     episodic: EpisodicViewProtocol
     semantic: SemanticViewProtocol
     emotion: EmotionState
-    active_task: Any = None    # 当前 tick 已解析出的焦点任务，由 loop._make_ctx() 注入
-    probe_manager: Any = None  # ProbeManager，由 CognitionLoop._make_ctx() 注入
-    judgment: Any = None       # JudgmentLayer，由 CognitionLoop._make_ctx() 注入
-    execution: Any = None      # ExecutionLayer，由 CognitionLoop._make_ctx() 注入
-    registry: Any = None       # ToolRegistry，由 CognitionLoop._make_ctx() 注入
-    metabolic: Any = None      # MetabolicEngine，由 CognitionLoop._make_ctx() 注入（公理 A5）
+    active_task: Any = None    # 当前 tick 已解析出的焦点任务，由 loop runtime 注入
+    probe_manager: Any = None  # ProbeManager，由 CognitionLoop 注入
+    judgment: Any = None       # JudgmentLayer，由 CognitionLoop 注入
+    execution: Any = None      # ExecutionLayer，由 CognitionLoop 注入
+    registry: Any = None       # ToolRegistry，由 CognitionLoop 注入
+    metabolic: Any = None      # MetabolicEngine，由 CognitionLoop 注入（公理 A5）
 
     @property
     def dry_run(self) -> bool:

@@ -91,13 +91,6 @@ class JudgmentLayer:
     def reload_prompt(self, key: str) -> None:
         self._assembler.reload_prompt(key)
 
-    @property
-    def _probe_manager(self) -> Any:
-        return self._assembler._probe_manager
-
-    @_probe_manager.setter
-    def _probe_manager(self, v: Any) -> None:
-        self._assembler._probe_manager = v
     def set_routing_providers(self, providers: dict[str, Any]) -> None:
         """注入分层路由 providers（由 CognitionLoop.open() 调用）。"""
         self._executor.set_routing_providers(providers)
@@ -109,22 +102,6 @@ class JudgmentLayer:
     @self_model.setter
     def self_model(self, v: Any) -> None:
         self._executor.self_model = v
-
-    @property
-    def _model_health(self) -> Any:
-        return self._executor._model_health
-
-    @_model_health.setter
-    def _model_health(self, v: Any) -> None:
-        self._executor._model_health = v
-
-    @property
-    def _provider_errors(self) -> Any:
-        return self._executor._provider_errors
-
-    @_provider_errors.setter
-    def _provider_errors(self, v: Any) -> None:
-        self._executor._provider_errors = v
 
     @property
     def last_call_meta(self) -> dict[str, Any]:
@@ -150,8 +127,9 @@ class JudgmentLayer:
     ) -> JudgmentOutput:
         if reply_only:
             output = _coerce_reply_only_output_fn(output)
-
-        applied = self._assembler._record_applied_skills(output)
+        applied = ",".join(output.applied_skills) if output.applied_skills else "none"
+        if output.applied_skills:
+            self._assembler._last_applied_skill_names = list(output.applied_skills)
 
         _log.info(
             "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
@@ -247,7 +225,11 @@ class JudgmentLayer:
             thinking_override=thinking_override,
             routing_overrides=routing_overrides,
             log_prefix="[judgment]",
-            skills=self._assembler._skills_for_log(self._assembler._last_selected_skills),
+                skills=(
+                    ",".join(skill.name for skill in self._assembler._last_selected_skills[:3])
+                    if self._assembler._last_selected_skills
+                    else "none"
+                ),
             primary_skill_name=_primary.name if _primary else None,
             primary_skill_guidance=bool(_primary and getattr(_primary, "guidance", None)),
         )
@@ -269,7 +251,9 @@ class JudgmentLayer:
             raw=raw,
             record_parse_failure=task_store.record_failure,
         )
-        _applied = self._assembler._record_applied_skills(output)
+        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
+        if output.applied_skills:
+            self._assembler._last_applied_skill_names = list(output.applied_skills)
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,

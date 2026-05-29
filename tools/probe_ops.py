@@ -107,7 +107,7 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             f"  purpose={saved.purpose or '（未填写）'}\n"
             f"  kind={saved.kind}  trigger={saved.trigger}  data_back={saved.data_back}\n"
             f"  coverage_tags={saved.coverage_tags or ['（未声明）']}\n"
-            f"  spec={saved.spec[:80]}"
+            f"  spec={saved.spec}"
             + ("\n" + first_run_hint if first_run_hint else "")
         ),
         state_delta={"probe": "installed", "name": saved.name},
@@ -175,7 +175,7 @@ async def probe_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if result.deployment_suspect:
         lines.append("⚠️ 布放可疑: 建议先核对 spec/target/trigger，再依据该读数做决策")
     if result.output:
-        lines.append(result.output[:2000])
+        lines.append(result.output)
     if result.alerted and result.alert_detail:
         lines.append(f"🔔 告警: {result.alert_detail}")
 
@@ -219,13 +219,13 @@ async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if p.last_confidence is not None:
             confidence_preview = f"  可信度: {p.last_confidence:.2f}"
             if p.last_confidence_reason:
-                confidence_preview += f" ({p.last_confidence_reason[:80]})"
+                confidence_preview += f" ({p.last_confidence_reason})"
             if p.last_suspect:
                 confidence_preview += " ⚠️布放可疑"
         if p.last_error:
-            result_preview = f"  最近错误: {p.last_error[:80]}"
+            result_preview = f"  最近错误: {p.last_error}"
         elif p.last_result:
-            result_preview = f"  最近结果: {p.last_result[:80]}"
+            result_preview = f"  最近结果: {p.last_result}"
         purpose_line = f"\n  目的: {p.purpose}" if getattr(p, "purpose", "") else ""
         lines.append(
             f"• {p.name} [{status}]{purpose_line}\n"

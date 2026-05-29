@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.metabolic import StateProposal
-from memory.working import WMItem
 
 from .dispatcher import TickJob
 from .focus import resolve_focus_task
@@ -55,12 +54,6 @@ async def _resolve_reply_chat_id(
         task_chat_id, task_chat_found = await loop._task_store.get_fact(f"task:{active_task.id}:chat_id")
         if task_chat_found and task_chat_id.strip():
             return task_chat_id.strip()
-
-        legacy_chat_id, legacy_chat_found = await loop._task_store.get_fact(
-            f"task:{active_task.id}:chat_session_id"
-        )
-        if legacy_chat_found and legacy_chat_id.strip():
-            return legacy_chat_id.strip()
 
     last_chat_id, last_chat_found = await loop._task_store.get_fact("chat:last_chat_id")
     if last_chat_found and last_chat_id.strip():
@@ -155,21 +148,3 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             chat_id=chat_id,
         )
     return cycle, True
-
-
-async def _tick_interact_impl(loop: Any, cycle: int, user_message: str) -> str:
-    """interact 命令的单次入口:完整内环 + 返回 reply_to_user。"""
-    if loop._conv_history:
-        hist_text = "\n".join(
-            f"[用户] {user}\n[灵舟] {assistant}" for user, assistant in loop._conv_history
-        )
-        loop._wm.add(WMItem(
-            kind="conversation_history",
-            content=f"[近期对话记录]\n{hist_text}",
-            priority=loop._cfg.thresholds.wm_pri_history,
-        ))
-    reply = await loop._tick(cycle, user_message=user_message)
-    if reply:
-        reply = _strip_memory_context(reply)
-        loop._conv_history.append((user_message, reply))
-    return reply

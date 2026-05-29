@@ -15,8 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
-    from tools.registry import ToolResult
-    from tools.registry import ToolContext
+    from tools.registry import ToolContext, ToolResult
 
 from .dispatcher import TickJob
 from .focus import resolve_focus_task
@@ -39,12 +38,20 @@ _RUN_TYPE_DEFAULT_TIER: dict[str, str] = {
 
 
 def _load_catalog_routing() -> dict[str, str]:
-    """从 provider/models.json 的 run_type_routing 段加载档位映射（Phase 3c）。"""
+    """加载 catalog 的 run_type → tier 映射，失败时返回空映射。"""
     try:
         from provider.catalog import get_run_type_routing
-        return get_run_type_routing()
+
+        routing = get_run_type_routing()
+        if isinstance(routing, dict):
+            return {
+                str(k): str(v)
+                for k, v in routing.items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 class RunDriver:
@@ -74,12 +81,11 @@ class RunDriver:
         self._tier_routing: dict[str, str] = {**_RUN_TYPE_DEFAULT_TIER, **_catalog, **_config_routing}
 
     def default_tier_for(self, run_type: str) -> str:
-        """返回给定 run_type 的默认模型档位。
-
-        返回 "task_default" 表示继承活跃任务的 model_tier。
-        Phase 3d 将在分配 pending Run 时自动注入此值。
-        """
-        return self._tier_routing.get(run_type, "task_default")
+        """返回 run_type 对应默认档位，不存在时回退 task_default。"""
+        key = str(run_type or "").strip()
+        if not key:
+            return "task_default"
+        return self._tier_routing.get(key, "task_default")
 
     async def dispatch(
         self,

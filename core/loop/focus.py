@@ -11,13 +11,12 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
-    from tools.registry import ToolResult
     from store.task import Task
+    from tools.registry import ToolResult
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -33,10 +32,6 @@ def _normalize_chat_id(chat_id: str | None) -> str:
 
 def _task_is_runnable(task: Task | None) -> bool:
     return task is not None and str(getattr(task, "status", "") or "") in _RUNNABLE_STATUSES
-
-
-def _task_is_open(task: Task | None) -> bool:
-    return task is not None and str(getattr(task, "status", "") or "") in _OPEN_STATUSES
 
 
 async def _safe_get_fact(task_store: Any, key: str) -> tuple[str, bool]:
@@ -174,10 +169,9 @@ async def resolve_task_chat_id(loop: Any, task: Task | None) -> str:
         return source
 
     task_store = getattr(loop, "_task_store", None)
-    for key in (f"task:{task.id}:chat_id", f"task:{task.id}:chat_session_id"):
-        value, exists = await _safe_get_fact(task_store, key)
-        if exists and value.strip():
-            return value.strip()
+    value, exists = await _safe_get_fact(task_store, f"task:{task.id}:chat_id")
+    if exists and value.strip():
+        return value.strip()
 
     wait_kind = str(getattr(task, "wait_kind", "") or "").strip()
     wait_key = str(getattr(task, "wait_key", "") or "").strip()
@@ -278,7 +272,7 @@ async def claim_focus_task(
         await _safe_delete_fact(task_store, _FOCUS_CURRENT_TASK_KEY)
 
     if normalized_chat_id:
-        if task is not None and _task_is_open(task):
+        if task is not None and str(getattr(task, "status", "") or "") in _OPEN_STATUSES:
             await _safe_set_fact(
                 task_store,
                 f"{_FOCUS_CHAT_PREFIX}{normalized_chat_id}",
@@ -406,9 +400,7 @@ async def finalize_focus_task(
             resolved_chat_id or "-",
         )
 
-    if _task_is_runnable(active_task):
-        await claim_focus_task(loop, active_task, chat_id=resolved_chat_id or None, clear_current=True)
-    elif str(getattr(active_task, "status", "") or "") == "waiting":
+    if _task_is_runnable(active_task) or str(getattr(active_task, "status", "") or "") == "waiting":
         await claim_focus_task(loop, active_task, chat_id=resolved_chat_id or None, clear_current=True)
     else:
         await claim_focus_task(loop, None, chat_id=resolved_chat_id or None, clear_current=True)

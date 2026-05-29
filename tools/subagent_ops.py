@@ -124,7 +124,7 @@ async def subagent_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         pass
 
     status_label = "完成" if result.completed else ("错误" if result.error else "未完成")
-    short_summary = (result.last_summary[:120] if result.last_summary else "")
+    short_summary = (result.last_summary if result.last_summary else "")
     summary = f"子灵[{result.subagent_id}] {status_label} ticks={result.ticks_run}"
     if short_summary:
         summary += f" | {short_summary}"
@@ -233,7 +233,7 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
             ctx.semantic.upsert(node)
             absorbed += 1
         except Exception as exc:
-            errors.append(str(exc)[:80])
+            errors.append(str(exc))
 
     summary = f"子灵[{sub_id}] 已吸收 {absorbed}/{len(nodes)} 条语义记忆"
     if truncated:

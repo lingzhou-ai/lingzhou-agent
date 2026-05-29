@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.metabolic import StateProposal
 from tools.registry import ToolRegistry, ToolResult, tool_has_capability
@@ -41,7 +41,7 @@ async def _write_success_stall_meta_reflection(
     tool_name = action.chosen_action_id or "unknown"
     summary = " ".join((result.summary or "").split())
     if len(summary) > 160:
-        summary = summary[:157] + "..."
+        summary = summary
     payload = {
         "reflection_id": f"stall-{task.id}-{cycle}",
         "decision": "apply",

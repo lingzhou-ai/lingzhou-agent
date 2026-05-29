@@ -73,7 +73,7 @@ class SelfModel:
 
     def record_error(self, message: str) -> None:
         self.recent_error_count += 1
-        self.last_error = message[:200]
+        self.last_error = message
 
     def record_token_usage(self, prompt: int = 0, completion: int = 0) -> None:
         self.total_prompt_tokens += prompt
@@ -184,7 +184,7 @@ def fmt_self_model(sm: SelfModel) -> str:
         f"思考层: {sm.reasoner_model}",
     ]
     if sm.recent_error_count > 0:
-        lines.append(f"最近错误: {sm.recent_error_count} 次  (最近: {sm.last_error[:80]})")
+        lines.append(f"最近错误: {sm.recent_error_count} 次  (最近: {sm.last_error})")
     else:
         lines.append("健康状态: 正常")
     if sm.billing_mode == "token" and sm.estimated_cost_usd > 0.01:

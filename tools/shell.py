@@ -21,7 +21,7 @@ _MANIFEST = ToolManifest(
     name="shell.run",
     description=(
         "在当前宿主环境中执行一次性 shell 命令（非持久会话）。"
-        "返回 stdout+stderr 合并输出摘要，并受 timeout 与输出截断限制。"
+        "返回 stdout+stderr 合并输出摘要，不再对输出做硬截断。"
         "高风险命令会自动触发沙箱隔离并向工作记忆注入危险感知信号。"
     ),
     progress_category="mutation",
@@ -30,7 +30,7 @@ _MANIFEST = ToolManifest(
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),
         ToolParam("workdir", "string", "工作目录，默认项目根目录", required=False),
-        ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认不限制（0=不限制，传正整数截断）", required=False),
+        ToolParam("max_output_chars", "number", "兼容参数，当前不再截断输出", required=False),
         ToolParam("sandbox", "boolean", "是否在隔离沙箱中运行（临时目录 + 受限 PATH）；危险命令自动启用", required=False),
     ],
 )
@@ -97,16 +97,6 @@ def _threshold_value(ctx: ToolContext, attr: str, default: Any) -> Any:
     return getattr(thresholds, attr, default)
 
 
-def _truncate_text(text: str, limit: int) -> str:
-    if limit <= 0:  # 0 或负数 = 不限制
-        return text
-    if len(text) <= limit:
-        return text
-    if limit <= 3:
-        return text[:limit]
-    return text[: limit - 3] + "..."
-
-
 def _decode_output(data: bytes | None) -> str:
     if not data:
         return ""
@@ -157,12 +147,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         else timeout_raw
     )
 
-    preview_raw = params.get("max_output_chars")
-    preview_limit = int(
-        _threshold_value(ctx, "shell_max_output_chars", _DEFAULT_PREVIEW_CHARS)
-        if preview_raw is None
-        else preview_raw
-    )
+    # max_output_chars 仅保留兼容参数，当前不再裁剪输出。
 
     # ── 危险感知 ─────────────────────────────────────────────────────────────
     is_risky, risk_reason = _check_risky(command)
@@ -176,7 +161,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
             from memory.working import WMItem
             ctx.wm.add(WMItem(
                 kind="caution",
-                content=f"shell.run 危险感知（{risk_reason}）: {command[:120]}",
+                content=f"shell.run 危险感知（{risk_reason}）: {command}",
                 priority=0.96,
             ))
         except Exception:
@@ -242,21 +227,14 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
     if stdout and stderr:
         combined += "\n"
     combined += stderr
-
-    preview = _truncate_text(combined, max(preview_limit, 0))
-    preview_text = preview or "(无输出)"
-    # summary 进入 WM / tool_history，LLM 需要看到完整输出结构（含换行）；
-    # 不再额外压缩成 120 字，以 preview_limit 为上限（默认 500，0=不限制）。
-    # 日志行使用 metadata["log_summary"]，由执行层另行截断，不依赖 summary 长度。
-    summary_body = _truncate_text(preview_text, max(preview_limit, 0)).strip()
+    output_text = combined or "(无输出)"
     status = "timeout" if timed_out else f"exit={returncode}"
     summary = f"{status} cwd={workdir}"
     if use_sandbox:
         summary = f"[sandbox] {summary}"
     if is_risky:
         summary = f"[risky:{risk_reason}] {summary}"
-    if summary_body:
-        summary += f" | {summary_body}"
+    summary += f" | {output_text}"
 
     payload = {
         "command": command,
@@ -267,9 +245,9 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         "stdout_chars": len(stdout),
         "stderr_chars": len(stderr),
         "output_chars": len(combined),
-        "output_preview": preview,
-        "stdout_preview": _truncate_text(stdout, preview_limit),
-        "stderr_preview": _truncate_text(stderr, preview_limit),
+        "output_preview": output_text,
+        "stdout_preview": stdout,
+        "stderr_preview": stderr,
         "log_summary": f"shell.run {'timeout' if timed_out else f'exit={returncode}'} chars={len(combined)}",
         "sandbox": use_sandbox,
         "sandbox_dir": _sandbox_dir,

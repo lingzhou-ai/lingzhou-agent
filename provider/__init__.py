@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 from provider.openai_compat import OpenAICompatProvider
 
 if TYPE_CHECKING:
-    from provider.base import Provider
     from core.config import Config
+    from provider.base import Provider
 
 
 def create_provider(cfg: Config) -> Provider:

@@ -373,9 +373,7 @@ async def config_list_keys(params: dict[str, Any], ctx: ToolContext) -> ToolResu
                 default_str = f"  [default={json.dumps(default, ensure_ascii=False)}]" if default is not None else ""
                 lines.append(f"  {path}{default_str}")
                 if desc:
-                    # 截断过长描述
-                    short_desc = desc[:120] + "…" if len(desc) > 120 else desc
-                    lines.append(f"    {short_desc}")
+                    lines.append(f"    {desc}")
 
         summary = "\n".join(lines)
         return ToolResult(

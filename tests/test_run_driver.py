@@ -185,6 +185,7 @@ async def test_cancel_stale_runs_marks_old_running_as_cancelled():
         assert run is not None
         assert run.status == "cancelled"
         assert "stale run cancelled" in (run.error_text or "")
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -208,6 +209,7 @@ async def test_cancel_stale_runs_does_not_cancel_recent_runs():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "running"  # 未被取消
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -234,6 +236,7 @@ async def test_cancel_stale_runs_ignores_terminal_runs():
 
         count = await store.cancel_stale_runs(stale_after_seconds=600)
         assert count == 0
+        await store.close()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -320,6 +323,7 @@ async def test_get_pending_runs_returns_pending_only():
         assert all(r.status == "pending" for r in pending)
         run_types = {r.run_type for r in pending}
         assert run_types == {"judge", "probe"}
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -343,6 +347,7 @@ async def test_get_pending_runs_ordered_by_created_at():
         assert len(pending) == 2
         assert pending[0].id == id1
         assert pending[1].id == id2
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -361,6 +366,7 @@ async def test_add_run_pending_has_started_at():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.started_at  # NOT NULL 应有字符串値
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -383,6 +389,7 @@ async def test_cancel_stale_runs_does_not_cancel_fresh_pending_run():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "pending"
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -428,6 +435,7 @@ async def test_poll_pending_runs_claims_judge_run_and_enqueues_tick():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "succeeded"  # TickJob 已入队，bootstrap Run 使命完成
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -451,6 +459,7 @@ async def test_poll_pending_runs_returns_none_when_no_pending():
         driver = RunDriver(execution)
         result = await driver.poll_pending_runs(_FakeLoop(), cycle=5)
         assert result is None
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -480,6 +489,7 @@ async def test_poll_pending_runs_skips_non_judge_run():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "pending"
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -518,6 +528,7 @@ async def test_poll_pending_runs_restores_pending_when_queue_full():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "pending"
+        await store.close()
 
 
 @pytest.mark.asyncio
@@ -603,3 +614,4 @@ async def test_startup_bootstrap_creates_pending_run():
         assert len(pending_after) == 1
         assert pending_after[0].run_type == "judge"
         assert pending_after[0].started_at  # started_at 应已设置（NOT NULL 字段）
+        await store.close()

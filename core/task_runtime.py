@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.metabolic import StateProposal
 from memory.working import WMItem, WorkingMemory
@@ -169,7 +169,7 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
                 f"建议：{reflection.proposal}\n"
                 f"验证：{reflection.verification_plan}"
                 + (f"\n处理建议：{followup}" if followup else "")
-            )[:1200],
+            ),
             priority=0.76 if reflection.decision == "rollback" else 0.72,
         ))
         if reflection.task_id:
@@ -224,8 +224,8 @@ async def _consume_task_runtime_hints(
                 kind="task_replan",
                 content=(
                     f"[任务重规划建议] task#{task.id}\n"
-                    f"建议 next_step: {replan_step[:240]}\n"
-                    f"验证: {verification[:180] or '（无）'}\n"
+                    f"建议 next_step: {replan_step}\n"
+                    f"验证: {verification or '（无）'}\n"
                     "该建议尚未自动写回任务。若认可，请调用 task.update 修改 next_step。"
                 ),
                 priority=0.84,
@@ -251,7 +251,7 @@ async def _consume_task_runtime_hints(
                     f"[任务级反思 {decision}] target={target_kind}\n"
                     f"建议：{proposal or '（无）'}\n"
                     f"验证：{verification or '（无）'}"
-                )[:320],
+                ),
                 priority=0.78,
             ))
             await task_store.update_task_data(task.id, {"last_task_meta_reflection_id": reflection_id})
@@ -278,7 +278,7 @@ async def _consume_task_runtime_hints(
                 content=(
                     f"[路由护栏建议] task#{task.id} tool={tool_name}\n"
                     f"建议 tier: {tier}\n"
-                    f"理由: {proposal[:220] or f'切换到 {tier} tier 复核动作选择。'}\n"
+                    f"理由: {proposal or f'切换到 {tier} tier 复核动作选择。'}\n"
                     "该建议尚未自动应用。若认可，请调用 task.update 设置 model_tier。"
                 ),
                 priority=0.82,
@@ -339,8 +339,8 @@ async def _sync_task_progress_state(
     _log.info(
         "[task-progress] task=%s current_step=%s next_step=%s progressful=%s",
         latest.id,
-        current_step[:120],
-        next_step[:120],
+        current_step,
+        next_step,
         progressful,
     )
     refreshed = await task_store.get_task_by_id(latest.id)

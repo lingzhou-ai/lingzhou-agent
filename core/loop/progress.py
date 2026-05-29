@@ -3,32 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 
 from core.execution import action_key_param
 from tools.registry import ToolRegistry, ToolResult, default_tool_registry, tool_has_capability
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
-
-
-def _tool_progress_category(tool_name: str, registry: ToolRegistry | None = None) -> str:
-    if not tool_name:
-        return ""
-    entry = (registry or default_tool_registry()).get(tool_name)
-    return str(entry.manifest.progress_category or "") if entry else ""
-
-
-def _counts_as_progress_mutation(tool_name: str, registry: ToolRegistry | None = None) -> bool:
-    if _tool_progress_category(tool_name, registry) == "mutation":
-        return True
-    return tool_has_capability(registry, tool_name, "completion_mutation")
-
-
-def _counts_as_progress_info(tool_name: str, registry: ToolRegistry | None = None) -> bool:
-    if _tool_progress_category(tool_name, registry) == "info":
-        return True
-    return tool_has_capability(registry, tool_name, "completion_info_only")
 
 
 def _result_fingerprint(summary: str) -> str:
@@ -108,10 +89,12 @@ def _action_made_progress(
     if tool == "shell.run":
         return _shell_run_made_progress(action, result, prev_sig=prev_sig, prev_fp=prev_fp)
 
-    if _counts_as_progress_mutation(tool, registry):
+    entry = (registry or default_tool_registry()).get(tool) if tool else None
+    progress_category = str(entry.manifest.progress_category or "") if entry else ""
+    if progress_category == "mutation" or tool_has_capability(registry, tool, "completion_mutation"):
         return True, f"{tool} 是变更类工具,成功执行即视为推进"
 
-    if _counts_as_progress_info(tool, registry):
+    if progress_category == "info" or tool_has_capability(registry, tool, "completion_info_only"):
         fp = _result_fingerprint(result.summary)
         if not fp:
             return False, f"{tool} 返回空结果"

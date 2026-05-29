@@ -84,7 +84,7 @@ async def memory_add_wm(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     kind = params.get("kind") or "observation"
     priority = _parse_float(params.get("priority"), 0.8)
     ctx.wm.add(WMItem(kind=kind, content=content, priority=priority))
-    return ToolResult(summary=f"已写入工作记忆: {content[:80]}", evidence=f"kind={kind}")
+    return ToolResult(summary=f"已写入工作记忆: {content}", evidence=f"kind={kind}")
 
 
 @tool(ToolManifest(
@@ -155,7 +155,7 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     if not key:
         return ToolResult(summary="key 不能为空", skipped=True)
     await ctx.task_store.set_fact(key, value, scope=params.get("scope") or "general")
-    return ToolResult(summary=f"已设置事实: {key}={value[:80]}", evidence=f"key={key}")
+    return ToolResult(summary=f"已设置事实: {key}={value}", evidence=f"key={key}")
 
 
 @tool(ToolManifest(
@@ -188,14 +188,14 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         id_prefix=_coerce_optional_text(params.get("id_prefix")) or None,
     )
     if not hits:
-        _log.info("[memory.search] query=%r hits=0", query[:60])
+        _log.info("[memory.search] query=%r hits=0", query)
         return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
-    _log.info("[memory.search] query=%r hits=%d", query[:60], len(hits))
+    _log.info("[memory.search] query=%r hits=%d", query, len(hits))
     quality = evaluate_retrieval_quality(query, hits, ctx.semantic.decay_lambda)
     lines = []
     for i, hit in enumerate(hits, 1):
         title = str(hit.get("title") or "")
-        body = str(hit.get("body") or "")[:180]
+        body = str(hit.get("body") or "")
         score = hit.get("score")
         score_part = ""
         if isinstance(score, (int, float)):
@@ -255,7 +255,7 @@ async def memory_list_facts(params: dict[str, Any], ctx: ToolContext) -> ToolRes
     rows = await ctx.task_store.list_facts(prefix=prefix, limit=limit)
     if not rows:
         return ToolResult(summary=f"前缀 {prefix!r} 下无 facts", skipped=True)
-    lines = [f"{k}: {v[:120]}" for k, v in rows]
+    lines = [f"{k}: {v}" for k, v in rows]
     return ToolResult(
         summary=f"找到 {len(rows)} 条 facts（前缀 {prefix!r}）",
         evidence="\n".join(lines),
@@ -297,7 +297,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
 
     title = (params.get("title") or "").strip() or insight[:50]
     wm_summary = "\n".join(
-        f"  [{i['kind']}] {i['content'][:80]}"
+        f"  [{i['kind']}] {i['content']}"
         for i in ctx.wm.get_top(8)
     )
     body = f"{insight}\n\n来源（工作记忆摘要）:\n{wm_summary}" if wm_summary else insight
@@ -344,11 +344,11 @@ async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         f"WM 条目: {len(wm_items)}  压力: {pressure_before:.0%}",
         f"近期失败: {len(failures)} 条",
         f"情绪: valence={ctx.emotion.valence:.2f} arousal={ctx.emotion.arousal:.2f}",
-        f"活跃任务: {task.title[:60] if task else '无'}",
+        f"活跃任务: {task.title if task else '无'}",
         "",
         "工作记忆前 5 条:",
     ]
-    lines.extend(f"  [{item['kind']}] {item['content'][:80]}" for item in wm_items[:5])
+    lines.extend(f"  [{item['kind']}] {item['content']}" for item in wm_items[:5])
 
     snapshot_text = "\n".join(lines)
     ctx.episodic.record(
@@ -361,7 +361,7 @@ async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     ctx.wm.clear(preserve_kinds={"bootstrap_identity"})
 
     return ToolResult(
-        summary=f"运行时快照已记录并清空 WM（{pressure_before:.0%} → 0%）\n{snapshot_text[:200]}",
+        summary=f"运行时快照已记录并清空 WM（{pressure_before:.0%} → 0%）\n{snapshot_text}",
         evidence=f"wm_before={len(wm_items)} failures={len(failures)}",
         priority=0.4,  # snapshot 结果本身是低价值记录，不应积压 WM
     )
@@ -392,7 +392,7 @@ async def memory_ledger_recent(params: dict[str, Any], ctx: ToolContext) -> Tool
         tag = "✓" if r["accepted"] else "✗拒"
         lines.append(
             f"[{r['ts']}] {tag} op={r['op']} key={r['key'][:40]} "
-            f"src={r['source'][:20] or '-'}"
+            f"src={r['source'] or '-'}"
         )
     return ToolResult(
         summary=f"生命史账本最近 {len(rows)} 条记录",
@@ -425,7 +425,7 @@ async def memory_ledger_since(params: dict[str, Any], ctx: ToolContext) -> ToolR
         tag = "✓" if r["accepted"] else "✗拒"
         lines.append(
             f"[{r['ts']}] {tag} op={r['op']} key={r['key'][:40]} "
-            f"src={r['source'][:20] or '-'}"
+            f"src={r['source'] or '-'}"
         )
     last_id = rows[-1]["id"]
     return ToolResult(

@@ -75,8 +75,7 @@ async def wechat_send(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     except Exception as exc:
         return ToolResult(summary=f"微信发送失败: {exc}", error="SendError")
 
-    preview = text[:60] + ("…" if len(text) > 60 else "")
     return ToolResult(
-        summary=f"✅ 已通过微信发送给 {to_user[:20]}: {preview}",
+        summary=f"✅ 已通过微信发送给 {to_user}: {text}",
         evidence=f"to={to_user}, len={len(text)}",
     )

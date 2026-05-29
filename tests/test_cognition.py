@@ -103,7 +103,7 @@ async def _curiosity_signal_does_not_auto_create_task():
                 values=SimpleNamespace(curiosity=cfg.thresholds.curiosity_idle_task + 0.1)
             ))
 
-            await loop._maybe_curiosity_task(ethos_state)
+            await loop._emit_curiosity_signal(ethos_state)
 
             tasks = await loop.task_store.list_tasks(limit=20)
             assert tasks == []
@@ -177,7 +177,7 @@ async def _self_drive_signal_does_not_auto_create_task():
         try:
             loop._behavior._wait_streak = cfg.thresholds.curiosity_idle_min_cycles
 
-            await loop._maybe_inject_self_drive()
+            await loop._emit_self_drive_signal()
 
             tasks = await loop.task_store.list_tasks(limit=20)
             assert tasks == []
