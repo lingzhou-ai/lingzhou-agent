@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.config import Config
+    from core.perception.ethos import EthosValues
     from store.task import TaskStore
 
 _log = logging.getLogger("lingzhou.persona")

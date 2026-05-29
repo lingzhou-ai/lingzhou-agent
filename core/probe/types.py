@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 # 探针执行方式
 ProbeKind = Literal["shell", "http", "python", "builtin"]
 

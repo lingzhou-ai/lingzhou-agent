@@ -17,11 +17,11 @@
 """
 from __future__ import annotations
 
-import pytest
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 公共 helpers
@@ -111,10 +111,10 @@ def _make_tool_result(
     summary: str = "",
     error: str | None = None,
     skipped: bool = False,
-    state_delta: dict | None = None,
+    state_delta: dict[str, Any] | None = None,
 ) -> Any:
     from tools.registry import ToolResult
-    return ToolResult(summary=summary, error=error, skipped=skipped, state_delta=state_delta)
+    return ToolResult(summary=summary, error=error, skipped=skipped, state_delta=state_delta or {})
 
 
 def _fake_loop(
@@ -579,7 +579,7 @@ class TestSalienceGateEdgeCases:
 
     def test_small_capacity_wm_survives_gate(self):
         """极小容量（capacity=3）下 gate 后堆完整，可继续 add。"""
-        from memory.working import WorkingMemory, WMItem
+        from memory.working import WMItem, WorkingMemory
         wm = WorkingMemory(capacity=3)
         wm.add(_wm_item("a", "条目A高优", priority=0.9))
         wm.add(_wm_item("b", "条目B低优xyz", priority=0.1))
@@ -615,13 +615,13 @@ class TestSalienceGateEdgeCases:
 
     def test_gate_ascii_keyword_case_insensitive(self):
         """ASCII 关键词大小写不敏感（_wm_keywords 会 lower）。"""
-        from memory.working import _wm_keywords, _has_wm_overlap
+        from memory.working import _has_wm_overlap, _wm_keywords
         kws = _wm_keywords("check README Status")
         assert _has_wm_overlap("readme 进度已更新 status ok", kws)
 
     def test_gate_mixed_cjk_ascii_message(self):
         """中英混合消息：CJK ngram + ASCII 词同时起效。"""
-        from memory.working import _wm_keywords, _has_wm_overlap
+        from memory.working import _has_wm_overlap, _wm_keywords
         kws = _wm_keywords("更新 README.md 进度")
         # CJK "进度" 命中
         assert _has_wm_overlap("任务进度 80%", kws)
@@ -634,7 +634,7 @@ class TestSalienceGateEdgeCases:
         msg = "请帮我把 lingzhou 项目的英文版 README.md 文件完成更新，重点写清楚安装步骤和配置说明"
         kws = _wm_keywords(msg)
         assert len(kws) > 5
-        assert "readme" in kws or "README" in kws or any("readme" == k.lower() for k in kws)
+        assert "readme" in kws or "README" in kws or any(k.lower() == "readme" for k in kws)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -687,7 +687,6 @@ class TestDecideContinuePassthrough:
             return output
         jl._normalize_output = _normalize
 
-        from core.judgment.output import JudgmentOutput
         result = await jl.decide_continue(
             [],
             user_message="hello",

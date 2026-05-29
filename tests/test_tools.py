@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from conftest import (
     _proj_root,
     _test_config,
     _tool_ctx,
 )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 新增工具测试（file.edit / skill_ops / exec 覆盖）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -99,12 +99,52 @@ async def _task_tools_do_not_reenter_terminal_tasks():
         finally:
             await store.close()
 
+
+def test_task_tools_prefer_ctx_focus_task_over_global_active():
+    asyncio.run(_task_tools_prefer_ctx_focus_task_over_global_active())
+
+
+async def _task_tools_prefer_ctx_focus_task_over_global_active():
+    from store.task import TaskStore
+    from tools.task_ops import task_advance
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "focus-tool-default.db")
+        await store.open()
+        try:
+            global_active_id = await store.add_task(
+                "全局活跃任务",
+                goal="不应被这次默认命中",
+                status="in_progress",
+            )
+            focus_task_id = await store.add_task(
+                "当前焦点任务",
+                goal="工具默认应命中这里",
+                status="pending",
+            )
+            focus_task = await store.get_task_by_id(focus_task_id)
+            assert focus_task is not None
+
+            ctx = _tool_ctx(task_store=store, active_task=focus_task)
+            result = await task_advance({}, ctx)
+
+            refreshed_global = await store.get_task_by_id(global_active_id)
+            refreshed_focus = await store.get_task_by_id(focus_task_id)
+
+            assert result.skipped is False
+            assert result.metadata["task_id"] == focus_task_id
+            assert refreshed_focus is not None and refreshed_focus.status == "in_progress"
+            assert refreshed_global is not None and refreshed_global.status == "in_progress"
+        finally:
+            await store.close()
+
 def test_file_edit_single_replace():
     """file.edit 单处替换成功。"""
     asyncio.run(_file_edit_single_replace())
 
 async def _file_edit_single_replace():
-    from tools.file import file_write, file_read, file_edit
+    from tools.file import file_edit, file_read, file_write
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -127,7 +167,7 @@ def test_file_edit_multiple_replace():
     asyncio.run(_file_edit_multiple_replace())
 
 async def _file_edit_multiple_replace():
-    from tools.file import file_write, file_read, file_edit
+    from tools.file import file_edit, file_read, file_write
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -152,7 +192,7 @@ def test_file_edit_errors():
     asyncio.run(_file_edit_errors())
 
 async def _file_edit_errors():
-    from tools.file import file_write, file_edit
+    from tools.file import file_edit, file_write
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -288,8 +328,8 @@ def test_config_set_rejects_unknown_interval_key(monkeypatch):
 
 
 async def _config_set_rejects_unknown_interval_key(monkeypatch):
-    from tools.config_ops import config_set
     import tools.config_ops as config_mod
+    from tools.config_ops import config_set
 
     with tempfile.TemporaryDirectory() as d:
         cfg_path = Path(d) / "lingzhou.json"
@@ -310,8 +350,8 @@ def test_config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
 
 
 async def _config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
-    from tools.config_ops import config_set
     import tools.config_ops as config_mod
+    from tools.config_ops import config_set
 
     with tempfile.TemporaryDirectory() as d:
         cfg_path = Path(d) / "lingzhou.json"
@@ -492,10 +532,10 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, tool
 
     @tool(ToolManifest(
@@ -583,10 +623,10 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
     captured_visible_tools: list[str] = []
@@ -670,7 +710,9 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
                 status="in_progress",
                 result_json={"summary": "before"},
             )
-            view = _SubagentTaskStoreView(store)
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+            view = _SubagentTaskStoreView(store, active_task=active_task)
 
             await view.set_fact("control:durable_failure_policy", json.dumps({"threshold": 5}), scope="system")
             fact, found = await view.get_fact("control:durable_failure_policy")
@@ -692,7 +734,7 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
             assert any(item.id == task_id and item.result_json.get("last_run_status") == "failed" for item in listed_tasks)
 
             run_id = await view.add_run(
-                task_id=7,
+                task_id=task_id,
                 run_type="llm",
                 worker_type="llm-worker",
                 status="running",
@@ -705,7 +747,7 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
             assert run is not None
             assert run.status == "failed"
             assert run.progress == "phase-2"
-            runs = await view.list_runs(task_id=7, limit=5)
+            runs = await view.list_runs(task_id=task_id, limit=5)
             assert any(item.id == run_id and item.error_text == "boom" for item in runs)
 
             await view.add_meta_reflection(
@@ -717,7 +759,7 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
                 proposal="child proposal",
                 verification_plan="rerun once",
                 decision="apply",
-                task_id=7,
+                task_id=task_id,
                 run_id=run_id,
                 tool_name="probe.local",
             )
@@ -726,6 +768,33 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
             assert any(item.id == "local-r1" and item.run_id == run_id for item in reflections)
             filtered = await view.list_meta_reflections(limit=5, loop_level="single")
             assert any(item.id == "local-r1" for item in filtered)
+        finally:
+            await store.close()
+
+
+def test_subagent_task_store_view_without_virtual_task_does_not_fallback_to_parent_active():
+    asyncio.run(_subagent_task_store_view_without_virtual_task_does_not_fallback_to_parent_active())
+
+
+async def _subagent_task_store_view_without_virtual_task_does_not_fallback_to_parent_active():
+    from core.subagent import _SubagentTaskStoreView
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "subagent.db")
+        await store.open()
+        try:
+            await store.add_task(
+                "parent active task",
+                goal="unbound child view must not inherit this active task",
+                status="in_progress",
+            )
+            view = _SubagentTaskStoreView(store)
+
+            active_task = await view.get_active()
+
+            assert active_task is None
         finally:
             await store.close()
 
@@ -770,10 +839,10 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     observed: dict[str, Any] = {}
@@ -894,6 +963,60 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
             await store.close()
 
 
+def test_tool_context_active_task_does_not_fallback_to_global_active():
+    asyncio.run(_tool_context_active_task_does_not_fallback_to_global_active())
+
+
+async def _tool_context_active_task_does_not_fallback_to_global_active():
+    from core.config import Config
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolContext
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "tool-context.db")
+        await store.open()
+        try:
+            await store.add_task(
+                "global active task",
+                goal="ctx.get_active_task must not inherit this task implicitly",
+                status="in_progress",
+            )
+            ctx = ToolContext(
+                config=cfg,
+                wm=WorkingMemory(capacity=20),
+                task_store=store,
+                episodic=EpisodicMemory(root / "episodic"),
+                semantic=SemanticMemory(root / "semantic"),
+                emotion=cast("Any", SimpleNamespace()),
+                active_task=None,
+            )
+
+            active_task = await ctx.get_active_task()
+
+            assert active_task is None
+        finally:
+            await store.close()
+
+
 def test_subagent_task_list_does_not_expose_parent_tasks():
     asyncio.run(_subagent_task_list_does_not_expose_parent_tasks())
 
@@ -902,10 +1025,10 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
     class _FakeJudgment:
@@ -995,10 +1118,10 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -1092,10 +1215,10 @@ async def _subagent_run_history_does_not_expose_parent_runs():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -1200,10 +1323,10 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -1326,10 +1449,10 @@ async def _subagent_runner_does_not_pollute_parent_store():
     from core.perception import EmotionState
     from core.perception.ethos import EthosState
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
     class _FakeJudgment:
@@ -1423,10 +1546,10 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -1562,9 +1685,9 @@ def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent
 async def _subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
+    from memory.working import WorkingMemory
     from store.semantic import MemoryNode, SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
     from tools.subagent_ops import subagent_run
 
@@ -1865,7 +1988,8 @@ def test_process_kill():
 
 async def _process_kill():
     import json
-    from tools.exec import exec_run, process_kill, process_poll, _MANAGER
+
+    from tools.exec import _MANAGER, exec_run, process_kill, process_poll
 
     _MANAGER.clear()
     ctx = _tool_ctx()
@@ -1895,7 +2019,8 @@ def test_process_list():
 
 async def _process_list():
     import json
-    from tools.exec import exec_run, process_list, _MANAGER
+
+    from tools.exec import _MANAGER, exec_run, process_list
 
     _MANAGER.clear()
     ctx = _tool_ctx()
@@ -1918,7 +2043,8 @@ def test_process_write_to_finished():
 
 async def _process_write_to_finished():
     import json
-    from tools.exec import exec_run, process_write, _MANAGER
+
+    from tools.exec import _MANAGER, exec_run, process_write
 
     _MANAGER.clear()
     ctx = _tool_ctx()
@@ -1962,7 +2088,7 @@ async def _process_poll_exposes_handle_lost_interaction_state():
     import os
     import time
 
-    from tools.exec import ProcessInfo, process_poll, process_write, _MANAGER
+    from tools.exec import _MANAGER, ProcessInfo, process_poll, process_write
 
     _MANAGER.clear()
     info = ProcessInfo(
@@ -1994,7 +2120,8 @@ def test_file_edit_json_string_edits():
 
 async def _file_edit_json_string_edits():
     import json as _json
-    from tools.file import file_write, file_read, file_edit
+
+    from tools.file import file_edit, file_read, file_write
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2066,7 +2193,7 @@ def test_file_read_max_chars():
     asyncio.run(_file_read_max_chars())
 
 async def _file_read_max_chars():
-    from tools.file import file_write, file_read
+    from tools.file import file_read, file_write
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

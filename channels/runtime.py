@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
-from .wechat import describe_wechat_channel, start_wechat_channel
 from .webhook import describe_webhook_channel, start_webhook_channel
+from .wechat import describe_wechat_channel, start_wechat_channel
 
 _CHANNEL_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "wechat": describe_wechat_channel,

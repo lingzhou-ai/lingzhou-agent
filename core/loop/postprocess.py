@@ -7,9 +7,9 @@ import logging
 from typing import Any
 
 from core.judgment import JudgmentOutput
-from store.task import Task, TaskStore
-from tools.registry import ToolResult, tool_has_capability
 from core.metabolic import StateProposal
+from store.task import Task, TaskStore
+from tools.registry import ToolRegistry, ToolResult, tool_has_capability
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -21,7 +21,7 @@ _SUCCESS_STALL_TRACK_CAPABILITIES = (
 )
 
 
-def _should_track_success_stall_tool(tool_name: str, registry: object | None = None) -> bool:
+def _should_track_success_stall_tool(tool_name: str, registry: ToolRegistry | None = None) -> bool:
     return any(tool_has_capability(registry, tool_name, capability) for capability in _SUCCESS_STALL_TRACK_CAPABILITIES) \
         or tool_name in _SUCCESS_STALL_TRACK_TOOLS
 

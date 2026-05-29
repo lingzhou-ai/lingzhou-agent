@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 BROWSER_CMD = "agent-browser"

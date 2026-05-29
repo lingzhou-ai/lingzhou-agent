@@ -2,8 +2,9 @@
 
 def register(ctx):
     """注册工具。"""
-    from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
     from typing import Any
+
+    from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
     @tool(ToolManifest(
         name="hello.greet",

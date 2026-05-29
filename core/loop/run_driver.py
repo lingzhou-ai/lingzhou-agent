@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
+    from tools.registry import ToolResult
     from tools.registry import ToolContext
-    from tools.base import ToolResult
 
 from .dispatcher import TickJob
+from .focus import resolve_focus_task
 
 _log = logging.getLogger("lingzhou.run_driver")
 
@@ -120,7 +121,7 @@ class RunDriver:
             if dispatcher is not None and dispatcher.enabled:
                 active_task = None
                 with contextlib.suppress(Exception):
-                    active_task = await task_store.get_active()
+                    active_task = await resolve_focus_task(loop)
                 dispatch_cycle = cycle
                 with contextlib.suppress(Exception):
                     dispatch_cycle = await loop._next_dispatch_cycle()

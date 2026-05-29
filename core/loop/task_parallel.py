@@ -354,9 +354,9 @@ async def run_tasks_parallel(
 
     # 先顺序创建所有 Task（写 DB 不适合并发）
     scheduled: list[dict[str, Any] | tuple[Task, dict]] = []
-    finder = getattr(loop._task_store, "find_similar_open_tasks", None)
+    finder: Any = getattr(loop._task_store, "find_similar_open_tasks", None)
     for spec in valid_specs:
-        if callable(finder):
+        if finder is not None:
             similar_tasks = await finder(
                 build_task_similarity_query(spec.get("goal")),
                 limit=1,

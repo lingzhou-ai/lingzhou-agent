@@ -7,11 +7,11 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from conftest import (
     _test_config,
     _tool_ctx,
 )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 并发安全测试
 # ══════════════════════════════════════════════════════════════════════════════
@@ -197,7 +197,7 @@ def test_scoped_task_store_does_not_leak_unknown_methods():
     scoped = _ScopedTaskStore(_InnerStore(), cast("Any", SimpleNamespace(id=5, goal="pin")))
 
     with pytest.raises(AttributeError):
-        _ = scoped.delete_fact
+        _ = scoped.delete_fact  # type: ignore[attr-defined]
 
 
 # ── 2. _run_one_task ctx 隔离测试 ─────────────────────────────────────────────
@@ -208,8 +208,8 @@ def test_run_one_task_dispatch_ctx_pins_own_task():
 
 
 async def _run_one_task_dispatch_ctx_pins_own_task():
-    from core.loop.task_parallel import _run_one_task
     from core.judgment import JudgmentOutput
+    from core.loop.task_parallel import _run_one_task
     from tools.registry import ToolResult
 
     # inner store 的 get_active() 返回"错误"任务（id=999）
@@ -264,8 +264,8 @@ def test_run_one_task_does_not_inject_task_id_into_task_tool_params():
 
 
 async def _run_one_task_does_not_inject_task_id_into_task_tool_params():
-    from core.loop.task_parallel import _run_one_task
     from core.judgment import JudgmentOutput
+    from core.loop.task_parallel import _run_one_task
     from tools.registry import ToolResult
 
     class _FakeStore:
@@ -318,8 +318,8 @@ def test_run_one_task_surfaces_terminal_wait_decision_to_parent_history():
 
 
 async def _run_one_task_surfaces_terminal_wait_decision_to_parent_history():
-    from core.loop.task_parallel import _run_one_task
     from core.judgment import JudgmentOutput
+    from core.loop.task_parallel import _run_one_task
 
     captured_result_json: dict[str, Any] = {}
     status_calls: list[tuple[int, str]] = []
@@ -396,9 +396,9 @@ def test_run_tasks_parallel_each_task_sees_own_active():
 
 
 async def _run_tasks_parallel_each_task_sees_own_active():
-    from store.task import TaskStore
-    from core.loop.task_parallel import run_tasks_parallel
     from core.judgment import JudgmentOutput
+    from core.loop.task_parallel import run_tasks_parallel
+    from store.task import TaskStore
     from tools.registry import ToolResult
 
     with tempfile.TemporaryDirectory() as d:
@@ -461,8 +461,8 @@ def test_run_tasks_parallel_reuses_similar_open_task():
 
 
 async def _run_tasks_parallel_reuses_similar_open_task():
-    from store.task import TaskStore
     from core.loop.task_parallel import run_tasks_parallel
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "parallel-reuse.db")

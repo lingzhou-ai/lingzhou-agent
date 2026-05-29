@@ -6,11 +6,12 @@ import asyncio
 import logging
 from typing import Any
 
-from store.task import Task
-from memory.working import WMItem
 from core.metabolic import StateProposal
-from .dispatcher import TickJob
+from memory.working import WMItem
+from store.task import Task
 
+from .dispatcher import TickJob
+from .focus import resolve_focus_task
 from .logging import _strip_memory_context
 
 _log = logging.getLogger("lingzhou.loop")
@@ -101,9 +102,18 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
                        len(follow_ups), [m["id"] for m in follow_ups])
 
     if dispatcher is not None and dispatcher.enabled:
-        active_task = await loop._task_store.get_active()
+        active_task = await resolve_focus_task(
+            loop,
+            chat_id=chat_id,
+            include_waiting=True,
+            fallback_active=False,
+        )
         dispatch_cycle = await loop._next_dispatch_cycle()
-        chain_key = loop._resolve_tick_chain_key(active_task=active_task, chat_id=chat_id, source="chat")
+        chain_key = loop._resolve_tick_chain_key(
+            active_task=active_task,
+            chat_id=None if active_task is not None else chat_id,
+            source="chat",
+        )
         job = TickJob(
             cycle=dispatch_cycle,
             chain_key=chain_key,

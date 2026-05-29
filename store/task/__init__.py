@@ -9,12 +9,15 @@ from typing import Any
 
 import aiosqlite
 
+from store.task.chat import ChatMessageStore, sanitize_chat_content
+from store.task.fact import FactStore, build_fact_upsert
+from store.task.failure import FailureStore
+from store.task.ingress import IngressStore, IngressWriter
+from store.task.ledger import LedgerStore
 from store.task.models import Failure, MetaReflection, Run, Task
+from store.task.reflection import MetaReflectionStore
+from store.task.run import RunStore
 from store.task.schema import (
-    OPEN_TASK_STATUSES,
-    RUNNABLE_TASK_STATUSES,
-    TASK_DUPLICATE_REUSE_SCORE,
-    TASK_SIMILARITY_CONTEXT_SCORE,
     _CREATE_CHAT,
     _CREATE_FACTS,
     _CREATE_FAILURES,
@@ -27,21 +30,17 @@ from store.task.schema import (
     _TASK_PRIORITY_RANK,
     _TASK_SIMILARITY_SCAN_LIMIT,
     _TASK_STATUS_RANK,
+    OPEN_TASK_STATUSES,
+    RUNNABLE_TASK_STATUSES,
+    TASK_DUPLICATE_REUSE_SCORE,
+    TASK_SIMILARITY_CONTEXT_SCORE,
     build_task_run_result_patch,
     build_task_similarity_query,
 )
-from store.task.chat import ChatMessageStore, sanitize_chat_content
-from store.task.fact import FactStore, build_fact_upsert
-from store.task.failure import FailureStore
-from store.task.ingress import IngressStore, IngressWriter
-from store.task.ledger import LedgerStore
-from store.task.reflection import MetaReflectionStore
-from store.task.run import RunStore
 from store.task.signal import SignalStore
 from store.task.state import TaskStateStore, build_task_data, build_task_insert
 
 logger = logging.getLogger(__name__)
-
 
 
 class TaskStore:
@@ -52,6 +51,7 @@ class TaskStore:
         # （busy_timeout 只对跨进程 SQLITE_BUSY 有效，同进程内 SQLITE_LOCKED 无效）
         self._db_write_lock: asyncio.Lock = asyncio.Lock()
         self._chat = ChatMessageStore(lambda: self._db)
+
         self._facts = FactStore(lambda: self._db)
         self._failures = FailureStore(lambda: self._db)
         self._signals = SignalStore(lambda: self._db)
@@ -67,9 +67,14 @@ class TaskStore:
 
     async def open(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._db_opt = await aiosqlite.connect(str(self._path))
+        # timeout=60 在 C 层设置 sqlite3_busy_timeout(60000ms)，比 PRAGMA 更可靠；
+        # PRAGMA busy_timeout 对 SQLITE_BUSY_SNAPSHOT（WAL 快照冲突）无效，
+        # 须配合 Python 层 _write() 指数退避重试共同保障。
+        self._db_opt = await aiosqlite.connect(str(self._path), timeout=60)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA busy_timeout=30000")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
+        await self._db.execute("PRAGMA wal_autocheckpoint=100")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._migrate()
         await self._db.executescript(
@@ -93,6 +98,29 @@ class TaskStore:
         """触发 WAL checkpoint（TRUNCATE 模式）。"""
         await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         await self._db.commit()
+
+    async def _write(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+        """所有写操作的统一入口：串行锁 + 指数退避重试。
+
+        aiosqlite 单连接在同进程内仍可能遭遇 SQLITE_BUSY_SNAPSHOT（WAL 快照冲突）
+        或来自 IngressStore 同步连接的写竞争。PRAGMA busy_timeout 对
+        SQLITE_BUSY_SNAPSHOT 无效（不触发 busy handler），必须在 Python 层重试。
+        """
+        for attempt in range(6):
+            try:
+                async with self._db_write_lock:
+                    return await fn(*args, **kwargs)
+            except Exception as exc:
+                if "database is locked" in str(exc).lower() and attempt < 5:
+                    try:
+                        await self._db.rollback()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.15 * (2 ** attempt))  # 0.15→0.3→0.6→1.2→2.4s
+                    logger.debug("[task_store] database locked, retry %d/5", attempt + 1)
+                else:
+                    raise
+        return None  # unreachable
 
     # ── 一次性迁移（旧列式 → JSON-first）────────────────────────────────
 
@@ -239,7 +267,8 @@ class TaskStore:
         async with db.execute(
             "SELECT COUNT(*) FROM pragma_table_info('life_ledger') WHERE name='run_id'"
         ) as cur:
-            if not (await cur.fetchone())[0]:
+            row = await cur.fetchone()
+            if not row or not row[0]:
                 await db.execute(
                     "ALTER TABLE life_ledger ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0"
                 )
@@ -273,7 +302,8 @@ class TaskStore:
         model_tier: str = "",
         extras: dict[str, Any] | None = None,
     ) -> int:
-        return await self._tasks.add_task(
+        return await self._write(
+            self._tasks.add_task,
             title, goal, priority, source,
             status=status, next_step=next_step, chain_id=chain_id,
             parent_task_id=parent_task_id, current_step=current_step,
@@ -387,7 +417,8 @@ class TaskStore:
         model_tier: str | None = None,
         result_json: dict[str, Any] | None = None,
     ) -> None:
-        await self._tasks.update_status(
+        await self._write(
+            self._tasks.update_status,
             task_id, status, next_step,
             current_step=current_step, model_tier=model_tier, result_json=result_json,
         )
@@ -403,7 +434,8 @@ class TaskStore:
         next_step: str | None = None,
         result_json: dict[str, Any] | None = None,
     ) -> None:
-        await self._tasks.mark_waiting(
+        await self._write(
+            self._tasks.mark_waiting,
             task_id, wait_kind=wait_kind, wait_key=wait_key, wait_json=wait_json,
             current_step=current_step, next_step=next_step, result_json=result_json,
         )
@@ -417,19 +449,20 @@ class TaskStore:
         next_step: str | None = None,
         result_json: dict[str, Any] | None = None,
     ) -> None:
-        await self._tasks.resume_task(
+        await self._write(
+            self._tasks.resume_task,
             task_id, status=status, current_step=current_step,
             next_step=next_step, result_json=result_json,
         )
 
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
-        await self._tasks.update_task_data(task_id, extra_dict)
+        await self._write(self._tasks.update_task_data, task_id, extra_dict)
 
     async def pop_task_inbox(self, task_id: int) -> list[str]:
-        return await self._tasks.pop_task_inbox(task_id)
+        return await self._write(self._tasks.pop_task_inbox, task_id)
 
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
-        await self._tasks.update_task_result(task_id, result_json)
+        await self._write(self._tasks.update_task_result, task_id, result_json)
 
     async def sync_task_progress(
         self,
@@ -438,7 +471,7 @@ class TaskStore:
         current_step: str | None = None,
         next_step: str | None = None,
     ) -> None:
-        await self._tasks.sync_task_progress(task_id, current_step=current_step, next_step=next_step)
+        await self._write(self._tasks.sync_task_progress, task_id, current_step=current_step, next_step=next_step)
 
     async def add_run(
         self,
@@ -457,13 +490,13 @@ class TaskStore:
         progress: str = "",
         extras: dict[str, Any] | None = None,
     ) -> int:
-        async with self._db_write_lock:
-            return await self._runs.add_run(
-                task_id=task_id, run_type=run_type, worker_type=worker_type, status=status,
-                input_json=input_json, output_json=output_json, log_text=log_text,
-                error_text=error_text, tool_name=tool_name, session_id=session_id,
-                model_tier=model_tier, progress=progress, extras=extras,
-            )
+        return await self._write(
+            self._runs.add_run,
+            task_id=task_id, run_type=run_type, worker_type=worker_type, status=status,
+            input_json=input_json, output_json=output_json, log_text=log_text,
+            error_text=error_text, tool_name=tool_name, session_id=session_id,
+            model_tier=model_tier, progress=progress, extras=extras,
+        )
 
     async def get_run_by_id(self, run_id: int) -> Run | None:
         return await self._runs.get_run_by_id(run_id)
@@ -491,16 +524,16 @@ class TaskStore:
         progress: str | None = None,
         extras: dict[str, Any] | None = None,
     ) -> None:
-        async with self._db_write_lock:
-            await self._runs.update_run(
-                run_id, task_id=task_id, status=status, output_json=output_json,
-                log_text=log_text, error_text=error_text, session_id=session_id,
-                model_tier=model_tier, progress=progress, extras=extras,
-            )
+        await self._write(
+            self._runs.update_run,
+            run_id, task_id=task_id, status=status, output_json=output_json,
+            log_text=log_text, error_text=error_text, session_id=session_id,
+            model_tier=model_tier, progress=progress, extras=extras,
+        )
 
     async def cancel_stale_runs(self, stale_after_seconds: int = 600) -> int:
         """清理进程重启后遗留的非终态 Run（Phase 3d 崩溃恢复）。"""
-        return await self._runs.cancel_stale_runs(stale_after_seconds)
+        return await self._write(self._runs.cancel_stale_runs, stale_after_seconds)
 
     async def get_pending_runs(self, *, limit: int = 10) -> list:
         """查询 status='pending' 的 Run（Phase 3d 调度器轮询用）。"""
@@ -522,7 +555,8 @@ class TaskStore:
         tool_name: str = "",
         extras: dict[str, Any] | None = None,
     ) -> None:
-        await self._meta_reflections.add_meta_reflection(
+        await self._write(
+            self._meta_reflections.add_meta_reflection,
             reflection_id=reflection_id, target_kind=target_kind, trigger=trigger,
             loop_level=loop_level, diagnosis=diagnosis, proposal=proposal,
             verification_plan=verification_plan, decision=decision,
@@ -545,7 +579,7 @@ class TaskStore:
         accepted: bool = True,
         run_id: int = 0,
     ) -> None:
-        await self._ledger.append(op, key, value, scope=scope, source=source, accepted=accepted, run_id=run_id)
+        await self._write(self._ledger.append, op, key, value, scope=scope, source=source, accepted=accepted, run_id=run_id)
 
     async def ledger_recent(self, limit: int = 50) -> list[dict]:
         """返回最近 N 条生命史记录，供 LLM 感知近期状态变化。"""
@@ -562,12 +596,12 @@ class TaskStore:
         priority: str = "normal",
         source: str = "internal",
     ) -> bool:
-        return await self._tasks.enqueue_if_absent(title, goal=goal, priority=priority, source=source)
+        return await self._write(self._tasks.enqueue_if_absent, title, goal=goal, priority=priority, source=source)
 
     # ── 失败记录 ─────────────────────────────────────────────────────────
 
     async def record_failure(self, kind: str, summary: str, context: str = "", task_id: str = "") -> None:
-        await self._failures.record_failure(kind, summary, context, task_id)
+        await self._write(self._failures.record_failure, kind, summary, context, task_id)
 
     async def list_failures(self, limit: int = 20) -> list[Failure]:
         return await self._failures.list_failures(limit)
@@ -579,12 +613,12 @@ class TaskStore:
         return await self._failures.count_failures_by_kind(kind)
 
     async def dismiss_failure(self, failure_id: int) -> None:
-        await self._failures.dismiss_failure(failure_id)
+        await self._write(self._failures.dismiss_failure, failure_id)
 
     # ── Facts KV ─────────────────────────────────────────────────────────
 
     async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
-        await self._facts.set_fact(key, value, scope)
+        await self._write(self._facts.set_fact, key, value, scope)
 
     async def get_fact(self, key: str) -> tuple[str, bool]:
         return await self._facts.get_fact(key)
@@ -593,18 +627,18 @@ class TaskStore:
         return await self._facts.list_facts(prefix, limit)
 
     async def delete_fact(self, key: str) -> None:
-        await self._facts.delete_fact(key)
+        await self._write(self._facts.delete_fact, key)
 
     # ── 调度信号（cron 机制）──────────────────────────────────────────────
 
     async def add_signal(self, title: str, run_at: str, repeat_secs: int = 0, payload: dict[str, Any] | None = None) -> int:
-        return await self._signals.add_signal(title, run_at, repeat_secs, payload)
+        return await self._write(self._signals.add_signal, title, run_at, repeat_secs, payload)
 
     async def due_signals(self) -> list[dict[str, Any]]:
         return await self._signals.due_signals()
 
     async def ack_signal(self, signal_id: int) -> None:
-        await self._signals.ack_signal(signal_id)
+        await self._write(self._signals.ack_signal, signal_id)
 
     async def list_signals(self, limit: int = 30, include_done: bool = False) -> list[dict[str, Any]]:
         return await self._signals.list_signals(limit, include_done)
@@ -613,12 +647,12 @@ class TaskStore:
         return await self._signals.get_signal(signal_id)
 
     async def cancel_signal(self, signal_id: int) -> None:
-        await self._signals.cancel_signal(signal_id)
+        await self._write(self._signals.cancel_signal, signal_id)
 
     # ── 对话消息（chat IPC）────────────────────────────────────────────────
 
     async def add_chat_message(self, role: str, content: str, chat_id: str = "") -> int:
-        return await self._chat.add_message(role, content, chat_id=chat_id)
+        return await self._write(self._chat.add_message, role, content, chat_id=chat_id)
 
     async def has_pending_chat_message(self) -> bool:
         return await self._chat.has_pending_message()
@@ -630,10 +664,10 @@ class TaskStore:
         return await self._chat.drain_pending_for_chat(chat_id, after_id)
 
     async def mark_chat_messages_processed(self, message_ids: list[int] | tuple[int, ...]) -> None:
-        await self._chat.mark_messages_processed(message_ids)
+        await self._write(self._chat.mark_messages_processed, message_ids)
 
     async def release_chat_messages(self, message_ids: list[int] | tuple[int, ...]) -> None:
-        await self._chat.release_messages(message_ids)
+        await self._write(self._chat.release_messages, message_ids)
 
     async def get_chat_messages_since(self, since_id: int = 0, chat_id: str = "") -> list[dict[str, Any]]:
         return await self._chat.get_messages_since(since_id, chat_id=chat_id)
@@ -642,11 +676,13 @@ class TaskStore:
         return await self._chat.get_recent_messages(limit, chat_id=chat_id)
 
     async def reset_in_progress_tasks(self) -> int:
-        result = await self._db.execute(
-            "UPDATE tasks SET status='pending' WHERE status='in_progress'"
-        )
-        await self._db.commit()
-        return result.rowcount if result else 0
+        async def _do() -> int:
+            result = await self._db.execute(
+                "UPDATE tasks SET status='pending' WHERE status='in_progress'"
+            )
+            await self._db.commit()
+            return result.rowcount if result else 0
+        return await self._write(_do)
 
 
 __all__ = [

@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MetabolicEngine
@@ -411,6 +409,7 @@ def test_ledger_append_stores_run_id():
 async def _ledger_append_stores_run_id():
     import tempfile
     from pathlib import Path
+
     from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
@@ -437,6 +436,7 @@ def test_metabolic_engine_propagates_run_id_to_ledger():
 async def _metabolic_engine_propagates_run_id_to_ledger():
     import tempfile
     from pathlib import Path
+
     from core.metabolic import MetabolicEngine
     from core.metabolic.proposal import StateProposal
     from store.task import TaskStore
@@ -470,8 +470,10 @@ def test_life_ledger_migration_adds_run_id_column():
 
 async def _life_ledger_migration_adds_run_id_column():
     import tempfile
-    import aiosqlite
     from pathlib import Path
+
+    import aiosqlite
+
     from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:

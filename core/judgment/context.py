@@ -11,7 +11,7 @@ import re
 import shutil
 import time
 from collections import OrderedDict
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from core.probe.types import PROBE_COVERAGE_HINTS, normalize_probe_coverage_tags
@@ -47,8 +47,8 @@ if TYPE_CHECKING:
         PerceptionReplaySummary,
     )
     from core.skill import Skill
-    from store.task import Failure, Run, Task, TaskStore
     from store.semantic import SemanticMemory
+    from store.task import Failure, Run, Task, TaskStore
     from tools.registry import ToolManifest
 
 
@@ -398,6 +398,16 @@ def _fmt_chat_continuity(text: str) -> str:
         return _context_fmt_cache[cache_key]
     normalized = str(text or "").strip()
     result = normalized if normalized else "（暂无当前 chat 的连续性记忆）"
+    _cache_put(cache_key, result)
+    return result
+
+
+def _fmt_cross_task_episodic(text: str) -> str:
+    cache_key = f"_fmt_cross_task_episodic:{hash(text) if text else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
+    normalized = str(text or "").strip()
+    result = normalized if normalized else "（暂无直接相关的跨任务情节线索）"
     _cache_put(cache_key, result)
     return result
 
@@ -857,6 +867,7 @@ def apply_context_budget(
         "current_interlocutor_continuity_section",
         "chat_memory_section",
         "memories_section",
+        "cross_task_episodic_section",
         "chat_continuity_section",
         "daily_continuity_section",
         "episodic_section",
@@ -872,6 +883,7 @@ def apply_context_budget(
         "chat_memory_section": 1,
         "memories_section": 1,
         "memory_recall_section": 256,
+        "cross_task_episodic_section": 1,
         "chat_continuity_section": 1,
         "daily_continuity_section": 1,
         "episodic_section": 2,

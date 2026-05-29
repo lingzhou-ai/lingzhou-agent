@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 DEFAULT_UA = (

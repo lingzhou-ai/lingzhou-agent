@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
-from memory.working import WorkingMemory, WMItem
+from memory.working import WMItem, WorkingMemory
 
 if TYPE_CHECKING:
     from store.episodic import EpisodicMemory
-    from store.semantic import SemanticMemory, MemoryNode
-    from store.task import TaskStore, Task, Failure, Run, MetaReflection
+    from store.semantic import MemoryNode, SemanticMemory
+    from store.task import Failure, MetaReflection, Run, Task, TaskStore
 
 
 def __getattr__(name: str):  # type: ignore[return]

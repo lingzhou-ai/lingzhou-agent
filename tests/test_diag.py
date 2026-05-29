@@ -50,9 +50,8 @@ class _FakeProvider:
 
 
 def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
-    import store.auth as auth_mod
     import provider as provider_mod
-
+    import store.auth as auth_mod
     from cli.main import app
     from store.auth import set_token_profile
 
@@ -83,7 +82,6 @@ def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
 
 def test_dev_doctor_accepts_literal_api_key(monkeypatch, tmp_path):
     import provider as provider_mod
-
     from cli.main import app
 
     cfg_path = tmp_path / "lingzhou.json"
@@ -101,8 +99,8 @@ def test_dev_doctor_accepts_literal_api_key(monkeypatch, tmp_path):
 
 def test_dev_doctor_db_schema_matches_current_runtime_tables(monkeypatch, tmp_path):
     import sqlite3
-    import provider as provider_mod
 
+    import provider as provider_mod
     from cli.main import app
 
     cfg_path = tmp_path / "lingzhou.json"

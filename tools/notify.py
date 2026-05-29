@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _GW_PATH = Path("~/.lingzhou/gateway/wechat.json").expanduser()
 

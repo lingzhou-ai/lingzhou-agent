@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext, CAPS_EXEMPT
+from tools.registry import CAPS_EXEMPT, ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 
 @tool(ToolManifest(

@@ -282,7 +282,11 @@ class WechatChannel:
         req = _requests_module()
 
         try:
-            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes as cipher_modes  # type: ignore[import-untyped]
+            from cryptography.hazmat.primitives.ciphers import (  # type: ignore[import-untyped]
+                Cipher,
+                algorithms,
+            )
+            from cryptography.hazmat.primitives.ciphers import modes as cipher_modes
         except ImportError:
             return items
 

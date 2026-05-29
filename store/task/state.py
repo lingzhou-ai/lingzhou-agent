@@ -4,7 +4,6 @@ import json
 import logging
 from typing import Any
 
-
 from ._base import BaseAsyncStore
 from .models import Task
 

@@ -11,14 +11,14 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-import typer
-
-from cli.bootstrap import onboarding_status
-from channels import describe_channel_runtime, start_channel_runtime
 from typing import Annotated, Any
 
-from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
-from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
+import typer
+
+from channels import describe_channel_runtime, start_channel_runtime
+from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg
+from cli.bootstrap import onboarding_status
+from cli.logs import logs_crash, logs_errors, logs_stats, logs_tail, logs_wechat
 from cli.plugin import plugin_app
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()

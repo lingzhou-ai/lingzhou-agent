@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.config import Config
-    from memory.working import WorkingMemory
-    from store.task import Task
     from core.perception.emotion import EmotionState
     from core.perception.signals import CognitiveSignals
+    from memory.working import WorkingMemory
+    from store.task import Task
 
 
 @dataclass

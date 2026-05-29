@@ -7,10 +7,10 @@ import json
 import logging
 import py_compile
 from pathlib import Path
-from core.paths import project_root, data_dir
 from typing import Any
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
+from core.paths import data_dir, project_root
+from tools.registry import CAPS_EXEMPT, ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _log = logging.getLogger("lingzhou.tools.file")
 

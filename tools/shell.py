@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_PREVIEW_CHARS = 0  # 0 = 不限制输出长度

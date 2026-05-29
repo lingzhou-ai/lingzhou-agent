@@ -17,43 +17,42 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from provider.catalog import lookup_model
+from core.execution import action_key_param
 from core.self_model import fmt_self_model
-from .output import (
-    JudgmentOutput,
-    _structured_tool_history_window,
-    _build_team_view_from_cfg,
-    tool_tier_mapping,
-)
+from provider.catalog import lookup_model
+from store.task import RUNNABLE_TASK_STATUSES
+from tools.registry import tool_has_capability
+
 from .context import (
-    _fmt_chat_continuity,
     _fill_template,
+    _fmt_blind_spots,
+    _fmt_chat_continuity,
     _fmt_chat_history,
     _fmt_chat_memories,
-    _fmt_interlocutor_continuity,
     _fmt_cognitive_signals,
+    _fmt_config_snapshot,
     _fmt_context_facts,
+    _fmt_cross_task_episodic,
     _fmt_current_time,
     _fmt_durable_failures,
     _fmt_ethos,
     _fmt_failures,
     _fmt_hard_boundaries,
+    _fmt_interlocutor_continuity,
     _fmt_judgment_signals,
     _fmt_memories,
     _fmt_memory_recall,
     _fmt_memory_system,
-    _fmt_perception_replay,
     _fmt_percept,
+    _fmt_perception_replay,
+    _fmt_primary_skill,
     _fmt_probe_sensors,
-    _fmt_blind_spots,
     _fmt_recent_runs,
     _fmt_runnable_tasks,
     _fmt_shell_capabilities,
     _fmt_similar_tasks,
     _fmt_skill_catalog,
     _fmt_skills,
-    _fmt_config_snapshot,
-    _fmt_primary_skill,
     _fmt_soul,
     _fmt_task,
     _fmt_tools,
@@ -64,16 +63,49 @@ from .context import (
     _validate_context_schema,
     apply_context_budget,
 )
-
-from core.execution import action_key_param
-from store.task import RUNNABLE_TASK_STATUSES
-from tools.registry import tool_has_capability
+from .output import (
+    JudgmentOutput,
+    _build_team_view_from_cfg,
+    _structured_tool_history_window,
+    tool_tier_mapping,
+)
 
 _log = logging.getLogger("lingzhou.judgment")
 
 
 def _chat_memory_tag(chat_id: str) -> str:
     return f"chat:{str(chat_id or '').strip()}"
+
+
+async def _resolve_context_task(task_store: Any, active_task: Any, explicit_chat_id: str | None) -> Any:
+    if active_task is not None:
+        return active_task
+
+    normalized_chat_id = str(explicit_chat_id or "").strip()
+    fact_keys = [f"focus:chat:{normalized_chat_id}"] if normalized_chat_id else []
+    fact_keys.append("focus:current_task_id")
+
+    for fact_key in fact_keys:
+        try:
+            raw_task_id, found = await task_store.get_fact(fact_key)
+        except Exception:
+            raw_task_id, found = "", False
+        if not found:
+            continue
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            continue
+        if task_id <= 0:
+            continue
+        try:
+            task = await task_store.get_task_by_id(task_id)
+        except Exception:
+            task = None
+        if task is not None:
+            return task
+
+    return None
 
 
 async def _resolve_context_chat_id(task_store: Any, task: Any, explicit_chat_id: str | None) -> str | None:
@@ -96,11 +128,11 @@ async def _resolve_context_chat_id(task_store: Any, task: Any, explicit_chat_id:
 
 
 async def _load_runnable_tasks_snapshot(task_store: Any, *, limit: int = 8) -> list[Any]:
-    list_runnable = getattr(task_store, "list_runnable_tasks", None)
-    if callable(list_runnable):
+    list_runnable: Any = getattr(task_store, "list_runnable_tasks", None)
+    if list_runnable is not None:
         return await list_runnable(limit=limit)
-    list_tasks = getattr(task_store, "list_tasks", None)
-    if not callable(list_tasks):
+    list_tasks: Any = getattr(task_store, "list_tasks", None)
+    if list_tasks is None:
         return []
     tasks = await list_tasks(limit=limit)
     return [task for task in tasks if getattr(task, "status", "") in RUNNABLE_TASK_STATUSES][:limit]
@@ -114,8 +146,8 @@ async def _load_similar_tasks_snapshot(
     limit: int = 5,
     min_score: float = 0.45,
 ) -> list[tuple[Any, float]]:
-    finder = getattr(task_store, "find_similar_open_tasks", None)
-    if not callable(finder) or not str(query or "").strip():
+    finder: Any = getattr(task_store, "find_similar_open_tasks", None)
+    if finder is None or not str(query or "").strip():
         return []
     exclude_task_ids = [active_task.id] if active_task is not None else None
     return await finder(
@@ -128,17 +160,23 @@ async def _load_similar_tasks_snapshot(
 
 if TYPE_CHECKING:
     from core.config import Config
+    from core.judgment.runtime import CognitionFrame
     from core.perception import (
-        Percept, EmotionState, EthosState, JudgmentSignals, PerceptionReplaySummary,
         CognitiveSignals,
+        EmotionState,
+        EthosState,
+        JudgmentSignals,
+        Percept,
+        PerceptionReplaySummary,
     )
     from core.skill import Skill
     from memory.working import WorkingMemory
-    from store.task import TaskStore
+    from provider.base import Provider
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
-    from provider.base import Provider
+
     from .executor import JudgmentExecutor
 
 
@@ -152,8 +190,8 @@ class JudgmentContextAssembler:
         cfg: Config,
         executor: JudgmentExecutor,
     ) -> None:
-        from core.skill import SkillRegistry
         from core.reference import ReferenceResolver
+        from core.skill import SkillRegistry
         self._registry = registry
         self._cfg = cfg
         self._executor = executor
@@ -615,7 +653,7 @@ class JudgmentContextAssembler:
             emotion,
         )
         effective_registry = self._effective_registry(registry_override)
-        task = active_task if active_task is not None else await task_store.get_active()
+        task = await _resolve_context_task(task_store, active_task, chat_id)
 
         task_id_str = str(task.id) if task else None
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
@@ -752,14 +790,12 @@ class JudgmentContextAssembler:
             task_store, search_query, active_task=task, limit=5,
             min_score=self._cfg.thresholds.task_similarity_context_score,
         )
-        episodic_search = (
+        cross_task_episodic_text = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if task_id_str and search_query else ""
         )
-        if episodic_search and episodic_search not in episodic_text:
-            episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
         _log.info("[context] episodic search=%r cross_task_hit=%s",
-                  (search_query or "")[:50], bool(episodic_search))
+                  (search_query or "")[:50], bool(cross_task_episodic_text))
 
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
         cached_speaker_id = ""
@@ -850,7 +886,7 @@ class JudgmentContextAssembler:
             ),
             default=0.0,
         )
-        should_use_daily_fallback = bool(search_query) and not episodic_search and (
+        should_use_daily_fallback = bool(search_query) and not cross_task_episodic_text and (
             not memories or semantic_top_score < self._cfg.memory.daily_recall_semantic_score_threshold
         )
         if should_use_daily_fallback:
@@ -869,12 +905,12 @@ class JudgmentContextAssembler:
             "[context] daily fallback=%s semantic_top_score=%.3f episodic_hit=%s",
             should_use_daily_fallback,
             semantic_top_score,
-            bool(episodic_search),
+            bool(cross_task_episodic_text),
         )
         recall_mode = "no_relevant_memory"
         if memories and semantic_top_score >= self._cfg.memory.daily_recall_semantic_score_threshold:
             recall_mode = "long_term_primary"
-        elif episodic_search:
+        elif cross_task_episodic_text:
             recall_mode = "episodic_cross_task"
         elif should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily:
             recall_mode = "daily_gap_fill"
@@ -924,6 +960,7 @@ class JudgmentContextAssembler:
             "failures_section": _fmt_failures(failures),
             "durable_failure_section": _fmt_durable_failures(durable_failure_snapshot),
             "episodic_section": episodic_text or "（暂无情节记忆）",
+            "cross_task_episodic_section": _fmt_cross_task_episodic(cross_task_episodic_text),
             "chat_continuity_section": _fmt_chat_continuity(chat_continuity_text),
             "current_interlocutor_profile_section": current_interlocutor_profile_section,
             "current_interlocutor_continuity_section": current_interlocutor_continuity_section,
@@ -938,7 +975,7 @@ class JudgmentContextAssembler:
                 chat_memory_hits=len(chat_memories),
                 memories=memories,
                 semantic_top_score=semantic_top_score,
-                episodic_cross_task_hit=bool(episodic_search),
+                episodic_cross_task_hit=bool(cross_task_episodic_text),
                 daily_fallback_used=bool(should_use_daily_fallback and recent_daily and "不额外注入" not in recent_daily),
                 recall_mode=recall_mode,
             ),

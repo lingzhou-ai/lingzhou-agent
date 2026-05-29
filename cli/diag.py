@@ -10,14 +10,13 @@ from typing import Annotated, Any
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path, DEFAULT_CONFIG_PATH
+from cli._common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg, resolve_config_path
 from store.auth import (
     AUTH_PROFILES_PATH,
     get_auth_profile,
     load_legacy_credentials,
     resolve_copilot_token,
 )
-
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
@@ -74,6 +73,7 @@ def _resolve_openai_provider_api_key(provider: object) -> tuple[str | None, str 
 
 def _check_python_version() -> _CheckResult:
     import sys
+
     from core.version import __min_python__
     py = sys.version_info
     py_str = f"{py.major}.{py.minor}.{py.micro}"
@@ -225,8 +225,8 @@ def _check_config_schema() -> list[_CheckResult]:
     results: list[_CheckResult] = []
     try:
         from core.loop.startup import (
-            _THRESHOLDS_FIELD_PATCHES,
             _MEMORY_FIELD_PATCHES,
+            _THRESHOLDS_FIELD_PATCHES,
             _patch_config_classes,
         )
         _config_py = PROJECT_ROOT / "core" / "config.py"
@@ -392,6 +392,7 @@ def _check_tool_registry() -> _CheckResult:
 def _probe_model(cfg: Any) -> _CheckResult:
     try:
         import asyncio as _asyncio
+
         from provider import create_provider
 
         async def _ping_and_close() -> tuple[bool, int, str | None]:
@@ -424,7 +425,8 @@ def _probe_model(cfg: Any) -> _CheckResult:
 def version() -> None:
     """显示版本信息。"""
     import sys
-    from core.version import __version__, __codename__, __min_python__
+
+    from core.version import __codename__, __min_python__, __version__
     console.print(f"[bold]lingzhou[/bold] v{__version__}  代号: {__codename__}")
     console.print(f"  Python {sys.version.split()[0]}  (要求 ≥ {'.'.join(str(x) for x in __min_python__)})")
 

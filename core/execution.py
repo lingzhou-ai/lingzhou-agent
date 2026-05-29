@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING, Any
 from core.config import ThresholdsConfig, run_result_memory_affect
 from core.metabolic import StateProposal
 from core.worker import WorkerLayer
-from store.task import build_task_run_result_patch
-from tools.registry import ToolResult, ToolContext, tool_has_capability
 from provider.catalog import get_run_type_routing as _get_run_type_routing
+from store.task import build_task_run_result_patch
+from tools.registry import ToolContext, ToolResult, tool_has_capability
 
 _log = logging.getLogger("lingzhou.execution")
 
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
     from store.task import TaskStore
     from tools.registry import ToolRegistry
+    from tools.view_protocols import TaskStoreViewProtocol
 
 
 _THRESHOLDS_DEFAULTS = ThresholdsConfig()
@@ -42,7 +43,7 @@ def _default_durable_failure_policy() -> dict[str, int]:
     }
 
 
-async def _load_durable_failure_policy(task_store: TaskStore | None) -> dict[str, int]:
+async def _load_durable_failure_policy(task_store: TaskStoreViewProtocol | None) -> dict[str, int]:
     policy = _default_durable_failure_policy()
     if task_store is None:
         return policy
@@ -518,6 +519,7 @@ class ExecutionLayer:
     async def _dispatch_parallel(self, action: JudgmentOutput, ctx: ToolContext) -> ToolResult:
         """gather 并行执行 parallel_actions 列表中的多个工具，合并结果返回。"""
         import asyncio
+
         from core.judgment import JudgmentOutput as _JO
 
         sub_actions = [
@@ -560,7 +562,7 @@ class ExecutionLayer:
         run_id: int | None = None
         run_type = "tool_chain"
         worker_type = "tool-chain-worker"
-        active_task = await ctx.task_store.get_active() if ctx.task_store is not None else None
+        active_task = await ctx.get_active_task()
         active_task_id = active_task.id if active_task else 0
         run_task_id = _planned_run_task_id(action, active_task_id)
         task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""

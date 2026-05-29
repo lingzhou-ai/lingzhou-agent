@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 from ._base import BaseAsyncStore
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -56,6 +55,19 @@ class ChatMessageStore(BaseAsyncStore):
             content,
             chat_id=chat_id,
         )
+        # 对 assistant 发言做短窗口内容去重：并发 tick 各自独立完成 memory phase 时会
+        # 各自调用 add_message，导致相同内容写入两次并被 channel 分两批发出。
+        # 在落库层做最后防线：同 chat_id 30 秒内已有完全相同内容则直接返回已有 id。
+        if resolved_role == "assistant" and resolved_chat_id and cleaned:
+            async with self._db.execute(
+                "SELECT id FROM chat_messages "
+                "WHERE role='assistant' AND session_id=? AND content=? "
+                "AND created_at >= datetime('now', '-30 seconds') LIMIT 1",
+                (resolved_chat_id, cleaned),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing:
+                return int(existing[0])
         async with self._db.execute(
             "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
             (resolved_role, cleaned, resolved_chat_id),

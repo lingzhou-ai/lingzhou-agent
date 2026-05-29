@@ -4,10 +4,7 @@
 """
 from __future__ import annotations
 
-import pytest
-from dataclasses import dataclass, field
 from typing import Any
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # helpers
@@ -326,12 +323,12 @@ class TestWmKeywords:
         assert "ok" not in kws  # 长度 2
 
     def test_has_overlap_true(self):
-        from memory.working import _wm_keywords, _has_wm_overlap
+        from memory.working import _has_wm_overlap, _wm_keywords
         kws = _wm_keywords("英文版 README 怎么样了")
         assert _has_wm_overlap("README 英文版进度已完成 80%", kws)
 
     def test_has_overlap_false(self):
-        from memory.working import _wm_keywords, _has_wm_overlap
+        from memory.working import _has_wm_overlap, _wm_keywords
         kws = _wm_keywords("英文版 README 怎么样了")
         assert not _has_wm_overlap("postgres 数据库连接超时", kws)
 

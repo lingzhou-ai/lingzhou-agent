@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from .dispatcher import TickJob
+from .focus import resolve_focus_task
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -23,7 +24,7 @@ async def _run_cycle_impl(loop: Any, cycle: int) -> int:
                 return polled_cycle
 
         if getattr(loop, "_tick_dispatcher", None) is not None and loop._tick_dispatcher.enabled:
-            active_task = await loop._task_store.get_active()
+            active_task = await resolve_focus_task(loop)
             dispatch_cycle = await loop._next_dispatch_cycle()
             chain_key = loop._resolve_tick_chain_key(active_task=active_task, source="auto")
             accepted = await loop._tick_dispatcher.enqueue(
@@ -53,11 +54,11 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
             gap = max(float(cfg.loop.min_act_gap) / 1000.0, 0.2)
         else:
             gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor
-        await _wait_for_event_impl(loop, gap, await loop._task_store.get_active())
+        await _wait_for_event_impl(loop, gap, await resolve_focus_task(loop))
         await loop._maybe_hot_reload_provider()
         return
 
-    after_task = await loop._task_store.get_active()
+    after_task = await resolve_focus_task(loop)
     if loop._last_decision == "act" and after_task is not None:
         min_wait = cfg.loop.idle_with_task_bounds[0] / 1000.0 if cfg.loop.idle_with_task_bounds else cfg.loop.min_act_gap / 1000.0
         act_gap = max(float(min_wait), float(cfg.loop.min_act_gap) / 1000.0)
@@ -115,7 +116,7 @@ async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> 
                 _log.debug("[wake] chat 消息到达,提前唤醒")
                 break
         if cfg.loop.wake_on_task_change:
-            now = await loop._task_store.get_active()
+            now = await resolve_focus_task(loop)
             now_sig = (now.id if now else None, now.status if now else None)
             if now_sig != before_sig:
                 _log.info("[wake] task 状态变化 %s → %s", before_sig, now_sig)

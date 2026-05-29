@@ -1,39 +1,38 @@
 """tools/task_ops.py — 任务管理工具（供 LLM 通过判断层调用）。"""
 from __future__ import annotations
 
+import logging as _logging
 import uuid
 from typing import Any
 
-
-import logging as _logging
 _log_task_ops = _logging.getLogger("lingzhou.task_ops")
 
 async def _resolve_task(task_id: Any, ctx: ToolContext):
     """解析 task_id -> Task。None 时返回活跃任务；格式/查找错误时记录 warning 并回退。"""
     if task_id is None:
-        return await ctx.task_store.get_active()
+        return await ctx.get_active_task()
     try:
         tid = int(task_id)
     except (ValueError, TypeError):
         _log_task_ops.warning("[task_ops] task_id=%r 格式无效（期望整数），回退到活跃任务", task_id)
-        return await ctx.task_store.get_active()
+        return await ctx.get_active_task()
     try:
         return await ctx.task_store.get_task_by_id(tid)
     except Exception:
         _log_task_ops.warning("[task_ops] task_id=%d 不存在，回退到活跃任务", tid)
-        return await ctx.task_store.get_active()
+        return await ctx.get_active_task()
 
+from store.semantic import MemoryNode
+from store.task import build_task_similarity_query
 from tools.registry import (
+    CAPS_EXEMPT,
+    ToolContext,
     ToolManifest,
     ToolParam,
     ToolResult,
-    ToolContext,
     tool,
     tool_has_capability,
-    CAPS_EXEMPT,
 )
-from store.semantic import MemoryNode
-from store.task import build_task_similarity_query
 
 
 def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:
@@ -121,13 +120,13 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     priority = params.get("priority") or "normal"
     source = (params.get("source") or "external").strip() or "external"
     parent_task_id = params.get("parent_task_id")
-    parent = await _resolve_task(parent_task_id, ctx) if parent_task_id is not None else await ctx.task_store.get_active()
+    parent = await _resolve_task(parent_task_id, ctx) if parent_task_id is not None else await ctx.get_active_task()
     chain_id = (params.get("chain_id") or (parent.chain_id if parent and parent.chain_id else f"chain-{uuid.uuid4().hex[:8]}"))
     current_step = (params.get("current_step") or "").strip()
     next_step = (params.get("next_step") or "").strip()
     model_tier = (params.get("model_tier") or "").strip()
-    finder = getattr(ctx.task_store, "find_similar_open_tasks", None)
-    if callable(finder):
+    finder: Any = getattr(ctx.task_store, "find_similar_open_tasks", None)
+    if finder is not None:
         similar_tasks = await finder(
             build_task_similarity_query(title, goal, next_step),
             limit=1,

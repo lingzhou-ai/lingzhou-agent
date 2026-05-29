@@ -4,10 +4,10 @@ import tempfile
 from pathlib import Path
 
 import aiosqlite
-
 from conftest import (
     _tool_ctx,
 )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TaskStore — JSON-first
 # ══════════════════════════════════════════════════════════════════════════════

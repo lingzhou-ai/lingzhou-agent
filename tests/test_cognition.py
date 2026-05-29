@@ -3,21 +3,21 @@ import asyncio
 import json
 import os
 import tempfile
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from conftest import (
+    _judgment_output,
     _proj_root,
     _tool_registry,
-    _judgment_output,
 )
 
+
 def test_bootstrap_wm_injection():
-    from memory.working import WorkingMemory, WMItem
+    from memory.working import WMItem, WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
         ws = Path(d)
@@ -203,8 +203,8 @@ def test_continue_phase_uses_configured_tool_history_compaction_threshold():
 async def _continue_phase_uses_configured_tool_history_compaction_threshold():
     from core.config import Config
     from core.loop.continue_phase import _run_continue_phase
-    from tools.registry import ToolResult
     from memory.working import WorkingMemory
+    from tools.registry import ToolResult
 
     cfg = Config.model_validate({
         "providers": {
@@ -295,7 +295,7 @@ async def _self_drive_signal_bypasses_idle_judge_aggregation():
     from core.config import Config
     from core.judgment import JudgmentOutput
     from core.loop import CognitionLoop
-    from core.loop.tick import _TickJudgmentPrep, _decide_initial_action
+    from core.loop.tick import _decide_initial_action, _TickJudgmentPrep
     from memory.working import WMItem
 
     cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
@@ -673,10 +673,10 @@ def test_consolidate_promotes_semantic_nodes_and_durable_user_facts():
 async def _consolidate_promotes_semantic_nodes_and_durable_user_facts():
     from core.config import MemoryConfig
     from core.loop.runtime import CognitionLoop
+    from memory.working import WMItem, WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory, WMItem
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

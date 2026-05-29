@@ -19,22 +19,24 @@ import logging
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast as _cast
 
 _log = logging.getLogger("lingzhou.subagent")
 
 if TYPE_CHECKING:
-    from core.judgment import JudgmentLayer
     from core.execution import ExecutionLayer
+    from core.judgment import JudgmentLayer
     from store.task import TaskStore
-    from tools.registry import ToolRegistry, ToolContext
+    from tools.registry import ToolContext, ToolRegistry
 
 # ── 免疫器官：工具阻断策略（已迁移到 core/immune/policy.py）──────────────────────────
 from core.immune.policy import (
     _DEFAULT_BLOCKED_TOOLS,
+)
+from core.immune.policy import (
     is_readonly_blocked_tool as _is_readonly_blocked_tool,
 )
-from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
+from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
 
 _LOCAL_FACT_PREFIXES: tuple[str, ...] = (
     "durable_failure:",
@@ -62,7 +64,8 @@ def _default_ethos_cfg(soul: Any = None) -> Any:
     if soul is not None:
         extra_baseline = getattr(soul, "ethos_baseline", None)
         if isinstance(extra_baseline, dict) and extra_baseline:
-            ec = EthosConfig(baseline=extra_baseline)
+            from core.config import EthosBaseline
+            ec = EthosConfig(baseline=EthosBaseline.model_validate(extra_baseline))
     return ec
 
 
@@ -137,7 +140,7 @@ class _SubagentTaskStoreView:
     async def get_active(self) -> Any:
         if self._active_task is not None:
             return self._overlay_task(self._active_task)
-        return self._overlay_task(await self._parent.get_active())
+        return None
 
     async def get_task_by_id(self, task_id: int) -> Any:
         if self._active_task is not None:
@@ -503,6 +506,21 @@ class _SubagentTaskStoreView:
     async def cancel_signal(self, *args: Any, **kwargs: Any) -> Any:
         raise self._reject("cancel_signal")
 
+    async def mark_waiting(self, *args: Any, **kwargs: Any) -> None:
+        raise self._reject("mark_waiting")
+
+    async def resume_task(self, *args: Any, **kwargs: Any) -> None:
+        raise self._reject("resume_task")
+
+    async def ledger_append(self, op: str, key: str, value: str, **kwargs: Any) -> None:
+        return None  # 子灵不写父灵账本
+
+    async def ledger_recent(self, limit: int = 50) -> list[dict[str, Any]]:
+        return await self._parent.ledger_recent(limit=limit)
+
+    async def ledger_since(self, after_id: int, limit: int = 100) -> list[dict[str, Any]]:
+        return await self._parent.ledger_since(after_id, limit=limit)
+
 
 class _SubagentEpisodicView:
     """父灵情节记忆的只读视图，子灵运行日志不回写父灵。"""
@@ -518,6 +536,19 @@ class _SubagentEpisodicView:
 
     def load_for_context(self, task_id: str | None, *, max_chars: int = 4000) -> str:
         return self._parent.load_for_context(task_id, max_chars=max_chars)
+
+    def search(self, query: str, max_chars: int = 2000, exclude_task_id: str | None = None) -> str:
+        return self._parent.search(query, max_chars=max_chars, exclude_task_id=exclude_task_id)
+
+    def get_recent_turns(
+        self,
+        task_id: str | None = None,
+        limit: int = 3,
+        *,
+        chat_id: str | None = None,
+        interlocutor_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._parent.get_recent_turns(task_id=task_id, limit=limit, chat_id=chat_id, interlocutor_id=interlocutor_id)
 
     def list_recent_narrative(self, limit: int = 20) -> list[dict[str, Any]]:
         return self._parent.list_recent_narrative(limit=limit)
@@ -536,11 +567,33 @@ class _SubagentSemanticView:
     def decay_lambda(self) -> float:
         return float(getattr(self._parent, "decay_lambda", 0.0) or 0.0)
 
-    def retrieve(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
-        return self._parent.retrieve(query, **kwargs)
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        *,
+        kind: str | None = None,
+        tag: str | None = None,
+        source: str | None = None,
+        task_id: str | int | None = None,
+        path_prefix: str | None = None,
+        id_prefix: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._parent.retrieve(
+            query, top_k=top_k, kind=kind, tag=tag, source=source,
+            task_id=task_id, path_prefix=path_prefix, id_prefix=id_prefix,
+        )
 
-    def retrieve_multi_anchor(self, anchors: list[str], **kwargs: Any) -> list[dict[str, Any]]:
-        return self._parent.retrieve_multi_anchor(anchors, **kwargs)
+    def retrieve_multi_anchor(
+        self,
+        anchors: list[str],
+        top_k: int = 5,
+        convergence_bonus: float = 0.15,
+        source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._parent.retrieve_multi_anchor(
+            anchors, top_k=top_k, convergence_bonus=convergence_bonus, source=source,
+        )
 
     def stats(self) -> dict[str, Any]:
         return self._parent.stats()
@@ -663,8 +716,10 @@ class _FilteredRegistry:
 
 # ── 辅助：读取父灵 Ethos 基线 ────────────────────────────────────────────────────
 
-async def _load_parent_ethos(task_store: TaskStore) -> dict[str, float]:
+async def _load_parent_ethos(task_store: TaskStoreViewProtocol | None) -> dict[str, float]:
     """从父灵 TaskStore 读取 soul:ethos_baseline，解析失败返回空 dict，由调用方决定 fallback。"""
+    if task_store is None:
+        return {}
     try:
         ethos_json, found = await task_store.get_fact("soul:ethos_baseline")
         if not found or not ethos_json:
@@ -705,8 +760,8 @@ class SubagentRunner:
 
     async def run(self) -> SubagentResult:
         """执行子灵 tick 循环，返回 SubagentResult。"""
-        from memory.working import WorkingMemory, WMItem
         from core.perception import EmotionState, Percept, derive_ethos_state
+        from memory.working import WMItem, WorkingMemory
         from tools.registry import ToolContext
 
         cfg = self._sub_cfg
@@ -737,9 +792,10 @@ class SubagentRunner:
             sub_episodic = _SubagentEpisodicView(self._parent_ctx.episodic)
             sub_semantic = _SubagentSemanticView(self._parent_ctx.semantic)
 
+        sub_active_task = _build_subagent_active_task(sub_id, cfg.goal)
         sub_task_store = _SubagentTaskStoreView(
             self._parent_ctx.task_store,
-            active_task=_build_subagent_active_task(sub_id, cfg.goal),
+            active_task=sub_active_task,
         )
 
         # ── Tier-2: Ethos 继承 ─────────────────────────────────────────────────
@@ -747,6 +803,7 @@ class SubagentRunner:
         if cfg.inherit_ethos:
             baseline_dict = await _load_parent_ethos(self._parent_ctx.task_store)
             # 用与父灵相同的 derive_ethos_state 逻辑，优先读取 DB，缺失时回退到 config soul baseline。
+            from core.perception.ethos import EthosValues
             inherited_ethos_state = derive_ethos_state(
                 failure_count=0,
                 high_error_streak=0,
@@ -755,7 +812,7 @@ class SubagentRunner:
                 perception_trend="neutral",
                 emotion_down_regulate_streak=0,
                 ethos_cfg=getattr(parent_cfg.soul, "ethos", None) or _default_ethos_cfg(parent_cfg.soul),
-                baseline=baseline_dict or None,
+                baseline=EthosValues.from_dict(baseline_dict) if baseline_dict else None,
             )
             if baseline_dict:
                 _log.debug("[subagent][%s] 已继承父灵 Ethos 基线 keys=%s",
@@ -801,12 +858,15 @@ class SubagentRunner:
             percept = Percept(summary=cfg.goal if tick == 0 else "")
 
             try:
+                from store.episodic import EpisodicMemory as _EpisodicMemory
+                from store.semantic import SemanticMemory as _SemanticMemory
+                from store.task import TaskStore as _TaskStore
                 output = await self._judgment.decide(
                     percept,
                     sub_wm,
-                    task_store_view,
-                    episodic_view,
-                    semantic_view,
+                    _cast(_TaskStore, task_store_view),
+                    _cast(_EpisodicMemory, episodic_view),
+                    _cast(_SemanticMemory, semantic_view),
                     neutral_emotion,
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos
@@ -836,6 +896,7 @@ class SubagentRunner:
                 episodic=episodic_view,
                 semantic=semantic_view,
                 emotion=neutral_emotion,
+                active_task=sub_active_task,
                 judgment=self._judgment,
                 execution=self._execution,
                 registry=filtered_reg,

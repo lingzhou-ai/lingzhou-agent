@@ -9,11 +9,11 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from conftest import (
-    _tool_registry,
     _judgment_output,
+    _tool_registry,
 )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SemanticMemory — 多锚点情境召回（ACT-R 收敛激活）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -24,7 +24,7 @@ def test_semantic_multi_anchor_convergence_bonus():
     设计原理：两节点在主锚点 "importlib" 上得分相近，但 node_ab 的 body
     同时命中第二锚点 "热加载 reload"，因此多锚点命中使其 final_score 更高。
     """
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -54,7 +54,7 @@ def test_semantic_multi_anchor_convergence_bonus():
 
 def test_semantic_multi_anchor_empty_anchors():
     """空锚点列表应返回空结果，不崩溃。"""
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -112,6 +112,7 @@ def test_model_health_circuit_breaker_blocks_and_clears():
     """ModelHealth 断路器：标记冷却后 _is_model_available 返回 False，
     recover 后返回 True；fallback tier 在主 tier 冷却时被选中。"""
     import time
+
     from core.config import Config
     from core.judgment import JudgmentLayer
     from tools.registry import ToolRegistry
@@ -403,7 +404,7 @@ def test_behavior_tracker_uses_explicit_registry_capabilities():
                     description="demo",
                     capabilities=("result_streak_only",),
                 ),
-                handler=lambda params, ctx: None,
+                handler=lambda params, ctx: None,  # type: ignore[arg-type]
             )
 
     tracker = BehaviorTracker(registry=_Registry())
@@ -1510,13 +1511,13 @@ def test_action_made_progress_result_aware():
                     description="override",
                     progress_category="mutation",
                 ),
-                handler=lambda params, ctx: None,
+                handler=lambda params, ctx: None,  # type: ignore[arg-type]
             )
 
     override_action = _judgment_output(decision="act", chosen_action_id="custom.override", params={"id": "7"})
     override_res = ToolResult(summary="")
     assert _action_made_progress(override_action, override_res)[0] is False
-    assert _action_made_progress(override_action, override_res, registry=_Registry())[0] is True
+    assert _action_made_progress(override_action, override_res, registry=_Registry())[0] is True  # type: ignore[arg-type]
 
 
 def test_write_success_stall_meta_reflection_records_task_hint():
@@ -1589,8 +1590,8 @@ async def _success_stall_reflection_tracks_capability_based_tool():
 
 def test_fallback_reply_for_user_describes_waiting_state():
     from core.loop.logging import _fallback_reply_for_user
-    from tools.registry import ToolResult
     from store.task import Task
+    from tools.registry import ToolResult
 
     action = _judgment_output(decision="act", chosen_action_id="task.wait", next_step="等用户补充路径后重新验证目录")
     result = ToolResult(
@@ -1770,8 +1771,8 @@ async def test_persist_tick_user_reply_does_not_append_skill_suffix():
 
 
 def test_infer_valence_from_text_uses_explicit_hint_only():
-    from core.loop.common import _infer_valence_from_text
     from core.config import EmotionConfig
+    from core.loop.common import _infer_valence_from_text
 
     default_cfg = EmotionConfig()
     assert _infer_valence_from_text("继续推进，暂无结构化情绪提示", 0.6, default_cfg) == 0.6
@@ -2269,10 +2270,10 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2341,10 +2342,10 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2402,10 +2403,10 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     captured: list[str] = []
@@ -2490,10 +2491,10 @@ async def _assemble_context_consumes_parallel_fetch_exceptions():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2582,10 +2583,10 @@ async def _assemble_context_registry_override_limits_tools_section():
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
     from core.subagent import _DEFAULT_BLOCKED_TOOLS, _FilteredRegistry
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
 
     class _DummyProvider:
         async def chat(self, messages, *, temperature=None, thinking_override=None):
@@ -2654,14 +2655,26 @@ def test_assemble_context_includes_current_interlocutor_sections():
     asyncio.run(_assemble_context_includes_current_interlocutor_sections())
 
 
+def test_assemble_context_keeps_cross_task_episodic_out_of_current_task_narrative():
+    asyncio.run(_assemble_context_keeps_cross_task_episodic_out_of_current_task_narrative())
+
+
+def test_assemble_context_prefers_focus_fact_over_global_active():
+    asyncio.run(_assemble_context_prefers_focus_fact_over_global_active())
+
+
+def test_assemble_context_without_focus_does_not_fallback_to_global_active():
+    asyncio.run(_assemble_context_without_focus_does_not_fallback_to_global_active())
+
+
 async def _assemble_context_includes_recent_daily_continuity():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2724,10 +2737,10 @@ async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import MemoryNode, SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2801,10 +2814,10 @@ async def _assemble_context_includes_chat_scoped_memory_layers():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import MemoryNode, SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2880,14 +2893,218 @@ async def _assemble_context_includes_chat_scoped_memory_layers():
             await store.close()
 
 
+async def _assemble_context_keeps_cross_task_episodic_out_of_current_task_narrative():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "当前任务",
+                goal="只保留当前任务叙事",
+                status="in_progress",
+                next_step="继续排查当前链路",
+            )
+            active_task = await store.get_task_by_id(task_id)
+            assert active_task is not None
+
+            episodic = EpisodicMemory(Path(d) / "memory")
+            episodic.record("assistant", "当前任务里刚确认了 focus 路由。", task_id=str(task_id))
+            episodic.search = lambda query, max_chars=2000, exclude_task_id=None: "[task=legacy-42 role=assistant] 旧任务昨天说过要先去读 README。"  # type: ignore[method-assign]
+
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=episodic,
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=active_task,
+                user_message="继续处理 focus 路由",
+            )
+
+            assert "### 情节记忆（当前任务叙事片段）" in text
+            assert "### 跨任务情节线索（仅作切换候选，不并入当前任务叙事）" in text
+            assert "当前任务里刚确认了 focus 路由。" in text
+            assert "旧任务昨天说过要先去读 README。" in text
+            assert "[跨任务检索命中]" not in text
+            assert text.index("当前任务里刚确认了 focus 路由。") < text.index("### 跨任务情节线索（仅作切换候选，不并入当前任务叙事）")
+        finally:
+            await store.close()
+
+
+async def _assemble_context_prefers_focus_fact_over_global_active():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            await store.add_task(
+                "全局活跃任务",
+                goal="旧 get_active 会误命中这里",
+                status="in_progress",
+            )
+            focus_id = await store.add_task(
+                "当前焦点任务",
+                goal="_assemble_context 应优先命中这里",
+                status="pending",
+                next_step="继续沿 focus task 推进",
+            )
+            await store.set_fact("focus:current_task_id", str(focus_id), scope="system")
+
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="继续处理 focus 任务",
+            )
+
+            assert "标题: 当前焦点任务" in text
+            assert "目标: _assemble_context 应优先命中这里" in text
+            assert text.index("标题: 当前焦点任务") < text.index("### 其他开放任务")
+        finally:
+            await store.close()
+
+
+async def _assemble_context_without_focus_does_not_fallback_to_global_active():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx-no-focus.db")
+        await store.open()
+        try:
+            await store.add_task(
+                "全局活跃任务",
+                goal="无 focus 时 assembler 不应回退到这里",
+                status="in_progress",
+            )
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="继续处理",
+            )
+
+            assert "（无活跃任务，可自主探索或等待）" in text
+            assert "标题: 全局活跃任务" not in text
+        finally:
+            await store.close()
+
+
 async def _assemble_context_includes_current_interlocutor_sections():
     from core.config import Config
     from core.judgment import CognitionFrame, JudgmentLayer
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import MemoryNode, SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
     class _SpeakerProvider:

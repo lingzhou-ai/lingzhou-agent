@@ -1,4 +1,5 @@
 """核心模块测试：working_memory / emotion / judgment / chat / loop / exec / evolution"""
+import ast
 import asyncio
 import builtins
 import io
@@ -6,27 +7,27 @@ import json
 import logging
 import tempfile
 import time
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from typer.testing import CliRunner
-
 from conftest import (
+    _execution_layer,
+    _judgment_output,
     _proj_root,
     _test_config,
     _tool_ctx,
-    _execution_layer,
-    _judgment_output,
 )
+from typer.testing import CliRunner
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 基础模块
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_working_memory():
-    from memory.working import WorkingMemory, WMItem
+    from memory.working import WMItem, WorkingMemory
     wm = WorkingMemory(capacity=5)
     for i in range(7):
         # 不同 kind 避免同 kind 去重逻辑，测试纯容量驱逐行为
@@ -36,7 +37,7 @@ def test_working_memory():
 
 
 def test_working_memory_token_budget_uses_mixed_text_estimate():
-    from memory.working import WorkingMemory, WMItem
+    from memory.working import WMItem, WorkingMemory
 
     wm = WorkingMemory(capacity=5, token_budget=5)
     wm.add(WMItem(kind="high", content="保留 中文上下文", priority=0.9))
@@ -490,6 +491,65 @@ def test_judgment_prompt_includes_existing_task_dedup_rules():
     assert "调用 `task.add` 或 `delegate_tasks` 前" in skill_body
 
 
+def test_judgment_prompt_keeps_detailed_rules_in_skills():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+
+    assert "{{cross_task_episodic_section}}" in prompt
+    assert "任务拆解判断骨架（新任务先理解再执行）" not in prompt
+    assert "用户否定性反馈内化规则（Negative Feedback Integration）" not in prompt
+    assert "记忆工具主动触发规则" not in prompt
+    assert "Soul 禁忌约束（最高优先级，不可被任何任务或情绪覆盖）" not in prompt
+
+
+def test_get_active_usage_is_limited_to_whitelisted_control_surfaces():
+    allowed_definition_files = {
+        "core/loop/task_parallel.py",
+        "core/subagent.py",
+        "store/task/__init__.py",
+        "store/task/state.py",
+        "tools/view_protocols.py",
+    }
+    allowed_call_files = {
+        # TaskStore facade 转发到底层 state，实现层保留唯一受控直连。
+        "store/task/__init__.py",
+    }
+
+    definition_hits: dict[str, list[int]] = {}
+    call_hits: dict[str, list[int]] = {}
+
+    for root_name in ("core", "tools", "store"):
+        for path in (_proj_root() / root_name).rglob("*.py"):
+            rel_path = path.relative_to(_proj_root()).as_posix()
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "get_active":
+                    definition_hits.setdefault(rel_path, []).append(node.lineno)
+                    continue
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get_active":
+                    call_hits.setdefault(rel_path, []).append(node.lineno)
+
+    unexpected_definitions = {
+        path: lines
+        for path, lines in definition_hits.items()
+        if path not in allowed_definition_files
+    }
+    unexpected_calls = {
+        path: lines
+        for path, lines in call_hits.items()
+        if path not in allowed_call_files
+    }
+
+    assert not unexpected_definitions, (
+        "生产目录新增了未白名单化的 get_active 定义，请改走 focus/受控适配层，"
+        f"命中: {unexpected_definitions}"
+    )
+    assert not unexpected_calls, (
+        "生产目录新增了未白名单化的 get_active 直连，请改走 focus task / ctx.active_task，"
+        f"命中: {unexpected_calls}"
+    )
+
+
 def test_chat_read_line_prefers_text_input(monkeypatch):
     from cli.chat import _read_line
 
@@ -651,8 +711,9 @@ def test_onboard_runs_setup_then_init_for_fresh_install(monkeypatch, tmp_path):
 
 
 def test_find_config_missing_instructs_onboard(monkeypatch, tmp_path):
-    from cli import _common as common
     from click.exceptions import Exit
+
+    from cli import _common as common
 
     printed: list[str] = []
 
@@ -817,8 +878,8 @@ def test_create_provider_with_model_exposes_public_model_ref():
 
 
 def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch, tmp_path):
-    from cli import gateway as gateway_mod
     import core.loop as loop_mod
+    from cli import gateway as gateway_mod
 
     requested_cfg = tmp_path / "lingzhou.json"
     requested_cfg.write_text('{"gateway": {"default_channel": "wechat"}}', encoding="utf-8")
@@ -1763,7 +1824,7 @@ async def test_refresh_running_runs_updates_finished_exec_runs():
 
     from core.run_refresh import refresh_running_runs
     from store.task import TaskStore
-    from tools.exec import ProcessInfo, _MANAGER
+    from tools.exec import _MANAGER, ProcessInfo
 
     with tempfile.TemporaryDirectory() as d:
         os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
@@ -1814,7 +1875,7 @@ async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
 
     from core.run_refresh import refresh_running_runs
     from store.task import TaskStore
-    from tools.exec import ProcessInfo, _MANAGER
+    from tools.exec import _MANAGER, ProcessInfo
 
     with tempfile.TemporaryDirectory() as d:
         os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
@@ -1859,7 +1920,7 @@ async def test_refresh_running_runs_crystallizes_progress():
 
     from core.run_refresh import refresh_running_runs
     from store.task import TaskStore
-    from tools.exec import ProcessInfo, _MANAGER
+    from tools.exec import _MANAGER, ProcessInfo
 
     with tempfile.TemporaryDirectory() as d:
         os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
@@ -2051,7 +2112,7 @@ async def test_refresh_running_runs_failed_exec_run_records_learning():
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from tools.exec import ProcessInfo, _MANAGER
+    from tools.exec import _MANAGER, ProcessInfo
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2140,6 +2201,7 @@ def test_bailian_catalog_capabilities_are_curated():
 
 def test_catalog_explicit_path_isolated_from_global_runtime_path(tmp_path):
     import json as _json
+
     from provider import catalog as catalog_mod
 
     runtime_a = tmp_path / "workspace-a" / "models.json"
@@ -2194,6 +2256,7 @@ def test_catalog_budget_auto_lookup():
 
 def test_judgment_budget_is_derived_from_model_window():
     import pytest
+
     from core.config import Config
 
     # 未收录模型 + 显式 context_window_tokens → 正常计算
@@ -2254,7 +2317,11 @@ def test_file_list_and_memory_search():
 
 
 def test_image_source_helpers():
-    from tools.image import _collect_image_sources, _image_part_from_source, _resolve_multimodal_model_ref
+    from tools.image import (
+        _collect_image_sources,
+        _image_part_from_source,
+        _resolve_multimodal_model_ref,
+    )
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2289,10 +2356,11 @@ def test_image_model_routing_falls_back_to_vision_model():
 
 
 async def _file_list_and_memory_search():
-    from tools.file import file_list, file_read
-    from tools.memory_ops import memory_search, memory_add_semantic
-    from store.semantic import MemoryNode, SemanticMemory
     from pathlib import Path
+
+    from store.semantic import MemoryNode, SemanticMemory
+    from tools.file import file_list, file_read
+    from tools.memory_ops import memory_add_semantic, memory_search
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2337,9 +2405,10 @@ def test_memory_add_semantic_disambiguates_duplicate_titles():
 
 
 async def _memory_add_semantic_disambiguates_duplicate_titles():
-    from tools.memory_ops import memory_add_semantic
-    from store.semantic import SemanticMemory
     from pathlib import Path
+
+    from store.semantic import SemanticMemory
+    from tools.memory_ops import memory_add_semantic
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2372,10 +2441,10 @@ def test_reflect_structural_disambiguates_duplicate_titles():
 
 
 async def _reflect_structural_disambiguates_duplicate_titles():
+    from memory.working import WMItem, WorkingMemory
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from memory.working import WorkingMemory, WMItem
     from tools.memory_ops import reflect_structural
 
     with tempfile.TemporaryDirectory() as d:
@@ -2412,7 +2481,8 @@ def test_exec_process_write_pipe_roundtrip():
 
 async def _exec_process_write_pipe_roundtrip():
     import json
-    from tools.exec import exec_run, process_write, process_poll, process_log, _MANAGER
+
+    from tools.exec import _MANAGER, exec_run, process_log, process_poll, process_write
 
     _MANAGER.clear()
     ctx = _tool_ctx()
@@ -2442,7 +2512,8 @@ def test_exec_process_timeout_background():
 
 async def _exec_process_timeout_background():
     import json
-    from tools.exec import exec_run, process_poll, _MANAGER
+
+    from tools.exec import _MANAGER, exec_run, process_poll
 
     _MANAGER.clear()
     ctx = _tool_ctx()
@@ -2741,6 +2812,7 @@ def test_execution_dispatch_routes_fact_monitored_action_to_llm_worker():
 
 async def _execution_dispatch_routes_fact_monitored_action_to_llm_worker():
     from tempfile import TemporaryDirectory
+
     from store.task import TaskStore
     from tools.registry import ToolRegistry
 
@@ -2848,6 +2920,10 @@ def test_execution_plan_gate_keeps_reader_tools_available():
     asyncio.run(_execution_plan_gate_keeps_reader_tools_available())
 
 
+def test_execution_dispatch_binds_run_to_ctx_focus_task():
+    asyncio.run(_execution_dispatch_binds_run_to_ctx_focus_task())
+
+
 async def _execution_plan_gate_keeps_reader_tools_available():
     from pathlib import Path
     from tempfile import TemporaryDirectory
@@ -2883,6 +2959,54 @@ async def _execution_plan_gate_keeps_reader_tools_available():
         assert result.error is None
         assert "分析问题" in result.summary
 
+        await store.close()
+
+
+async def _execution_dispatch_binds_run_to_ctx_focus_task():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        global_active_id = await store.add_task(
+            "全局活跃任务",
+            goal="不应抢走 run 归属",
+            status="in_progress",
+        )
+        focus_task_id = await store.add_task(
+            "当前焦点任务",
+            goal="run 应绑定这里",
+            status="pending",
+        )
+        focus_task = await store.get_task_by_id(focus_task_id)
+        assert focus_task is not None
+
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store, active_task=focus_task)
+
+        result = await layer.dispatch(
+            _judgment_output(
+                decision="act",
+                chosen_action_id="memory.set_fact",
+                params={"key": "focus:run-binding", "value": "ok"},
+                rationale="验证 run 归属跟随当前 focus task",
+            ),
+            ctx,
+        )
+
+        run_id = int(result.metadata.get("run_id") or 0)
+        run = await store.get_run_by_id(run_id)
+        global_active = await store.get_task_by_id(global_active_id)
+
+        assert run is not None
+        assert run.task_id == focus_task_id
+        assert global_active is not None and global_active.status == "in_progress"
         await store.close()
 
 
@@ -3011,8 +3135,8 @@ def test_ingest_actionable_meta_reflections_dedupes():
 
 async def _ingest_actionable_meta_reflections_dedupes():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -3094,8 +3218,8 @@ def test_meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
 
 async def _meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with tempfile.TemporaryDirectory() as d:
@@ -3163,8 +3287,8 @@ def test_consume_task_runtime_hints_surfaces_replan_and_routing_once():
 
 async def _consume_task_runtime_hints_surfaces_replan_and_routing_once():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -3230,8 +3354,8 @@ def test_meta_reflection_threshold_apply_queues_explicit_policy_hint():
 
 async def _meta_reflection_threshold_apply_queues_explicit_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -3278,8 +3402,8 @@ def test_consume_task_runtime_hints_surfaces_preferred_tier_hint():
 
 async def _consume_task_runtime_hints_surfaces_preferred_tier_hint():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -3319,8 +3443,8 @@ def test_consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
 
 async def _consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -3359,8 +3483,8 @@ def test_ingest_actionable_meta_reflections_queues_generic_control_hint():
 
 async def _ingest_actionable_meta_reflections_queues_generic_control_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -4288,7 +4412,7 @@ Strong body.
 def test_skill_catalog_pinned_mark_appears_for_last_applied():
     """catalog 格式中，last_applied 的 skill 应带 [↑] 标记。"""
     from core.judgment.context import _fmt_skill_catalog
-    from core.skill import SkillRegistry, Skill
+    from core.skill import SkillRegistry
 
     # 构建两个最小 skill
     reg = SkillRegistry()

@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 CONFIG_PATH = Path("~/.lingzhou/lingzhou.json").expanduser()
 

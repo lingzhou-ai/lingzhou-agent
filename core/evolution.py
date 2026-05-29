@@ -11,27 +11,27 @@ import asyncio
 import contextlib
 import importlib
 import importlib.util
-from importlib.machinery import SourceFileLoader
 import json
+import logging
 import sys
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
-import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from core.perception.ethos import ETHOS_DIMENSIONS
-from core.skill import ensure_workspace_skill_file, _split_frontmatter, workspace_skill_file
 from core.metabolic import StateProposal
+from core.perception.ethos import ETHOS_DIMENSIONS
+from core.skill import _split_frontmatter, ensure_workspace_skill_file, workspace_skill_file
 
 _log = logging.getLogger("lingzhou.evolution")
 
 if TYPE_CHECKING:
     from core.config import Config
-    from tools.registry import ToolContext, ToolRegistry
     from provider.base import Provider
     from store.task import Failure
+    from tools.registry import ToolContext, ToolRegistry
 
 
 @dataclass
@@ -182,7 +182,7 @@ class EvolutionEngine:
     - backup=True 时进化前保留 .bak 备份
     """
 
-    def __init__(self, cfg: Config, provider: Provider, registry: ToolRegistry) -> None:
+    def __init__(self, cfg: Config, provider: Any, registry: ToolRegistry) -> None:
         self._cfg = cfg
         self._provider = provider
         self._registry = registry
@@ -218,7 +218,8 @@ class EvolutionEngine:
         """
         import subprocess
         import textwrap
-        from core.smoke_tests import SMOKE_TESTS, FALLBACK_SNIPPET
+
+        from core.smoke_tests import FALLBACK_SNIPPET, SMOKE_TESTS
 
         try:
             rel_path = str(module_path.relative_to(project_root)).replace("\\", "/")
@@ -483,8 +484,8 @@ print("SMOKE_OK")
             return results
 
         # ── 时间窗过滤：只看最近 trigger_window_minutes 内的失败 ────────────────
-        from datetime import datetime, timedelta
         from collections import Counter
+        from datetime import datetime, timedelta
         _window = timedelta(minutes=self._cfg.evolution.trigger_window_minutes)
         _now = datetime.now(UTC)
         _cutoff = _now - _window
@@ -572,8 +573,8 @@ print("SMOKE_OK")
           3. 代谢器官：升级事件写入生命史账本
           4. 写入候选模型 fact（soul:proposed_model），人类确认后生效
         """
-        from core.immune.policy import three_organ_preflight
         from core.immune.constitution import verify_constitution_integrity
+        from core.immune.policy import three_organ_preflight
 
         # ── 步骤 1：三器官预检 ────────────────────────────────────────────
         organ_failures = await three_organ_preflight(ctx.task_store)
@@ -637,8 +638,9 @@ print("SMOKE_OK")
         if not self._cfg.evolution.enabled:
             return EvolutionResult(success=False, target="ethos_baseline", reason="evolution disabled")
 
-        from provider.base import Message
         import json
+
+        from provider.base import Message
 
         _dims = ETHOS_DIMENSIONS
         baseline_seed = self._cfg.soul.ethos.baseline
@@ -1288,8 +1290,9 @@ print("SMOKE_OK")
         追加到 DREAMS.md 末尾——这是灵舟自己写给自己的成长记录，不是摘要。
         同时在 DB 写一条 evolution:history:{ts} fact，保证身份叙事可追溯。
         """
-        from provider.base import Message
         from datetime import datetime
+
+        from provider.base import Message
 
         dreams_path = self._cfg.workspace_dir / "DREAMS.md"
         if not dreams_path.exists():

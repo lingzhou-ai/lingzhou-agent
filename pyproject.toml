@@ -52,5 +52,17 @@ packages = ["channels", "cli", "core", "memory", "provider", "store", "tools"]
 target-version = "py312"
 line-length = 100
 
+[tool.ruff.lint]
+# E/W: pycodestyle  F: pyflakes  I: isort  UP: pyupgrade  B: bugbear  SIM: simplify
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # 行长由 formatter 管，不重复报
+    "B008",   # 函数默认参数调用（FastAPI / typer 常用）
+    "SIM108", # 三元表达式强制（可读性优先）
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "store", "memory", "provider", "tools", "channels", "cli"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

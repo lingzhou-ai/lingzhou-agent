@@ -11,9 +11,9 @@ from typing import Annotated, Any
 
 import typer
 
-from cli._common import console, load_cfg, PROJECT_ROOT, DEFAULT_CONFIG_PATH
-from cli.diag import version, doctor
-from core.version import __version__, __codename__
+from cli._common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg
+from cli.diag import doctor, version
+from core.version import __codename__, __version__
 
 dev_app = typer.Typer(
     name="dev",
@@ -118,7 +118,7 @@ def _set_db_routing_override(cfg_path: Path, *, tier: str, model_ref: str) -> No
         if not db_path.exists():
             return
 
-        conn = _sqlite3.connect(str(db_path))
+        conn = _sqlite3.connect(str(db_path), timeout=30)
         try:
             row = conn.execute(
                 "SELECT value FROM facts WHERE key='pref:routing_overrides'"
@@ -208,7 +208,7 @@ def _sync_db_routing_overrides(cfg_path: Path, *, old_model: str, new_model: str
         db_path = cfg.db_path
         if not db_path.exists():
             return
-        conn = _sqlite3.connect(str(db_path))
+        conn = _sqlite3.connect(str(db_path), timeout=30)
         row = conn.execute(
             "SELECT value FROM facts WHERE key='pref:routing_overrides'"
         ).fetchone()
@@ -255,9 +255,9 @@ def evolve(
     cfg = load_cfg(config)
 
     async def _run() -> None:
+        from core.evolution import EvolutionEngine
         from provider import create_provider
         from tools.registry import ToolRegistry
-        from core.evolution import EvolutionEngine
 
         provider = create_provider(cfg)
         registry = ToolRegistry()
@@ -342,7 +342,7 @@ def model(
     interactive: Annotated[bool, typer.Option("--interactive", "-i", help="交互式选择 provider 和模型")] = False,
 ) -> None:
     """查看或切换当前使用的 LLM provider / 模型。"""
-    from provider.catalog import list_providers, list_provider_models
+    from provider.catalog import list_provider_models, list_providers
 
     if list_all:
         for pname in list_providers():
@@ -482,7 +482,7 @@ def model(
 
             # copilot 走 auth login 的 token exchange 链，不需要手动填 key
             if chosen_provider == "copilot":
-                from store.auth import get_auth_profile, COPILOT_PROFILE_ID
+                from store.auth import COPILOT_PROFILE_ID, get_auth_profile
                 existing_auth = get_auth_profile(COPILOT_PROFILE_ID)
                 if existing_auth and existing_auth.get("token"):
                     console.print("\n[green]✓ 已检测到 Copilot 登录凭证[/green]  [dim](lingzhou auth login 已完成)[/dim]")

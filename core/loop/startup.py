@@ -175,7 +175,7 @@ def _build_routing_providers(cfg: Config) -> dict[str, Any]:
     """根据 cfg.routing 构建分层路由 providers 字典。"""
     if not cfg.routing:
         return {}
-    from provider.catalog import lookup_model_ref, lookup_model
+    from provider.catalog import lookup_model, lookup_model_ref
     catalog_path = cfg.workspace_dir / "models.json"
     providers: dict[str, Any] = {}
     for tier, model_ref in cfg.routing.items():

@@ -3,15 +3,14 @@ import json
 import math
 import sqlite3
 import tempfile
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
 
 # SemanticMemory — Ebbinghaus 衰减
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_semantic_ebbinghaus():
-    from store.semantic import SemanticMemory, MemoryNode, effective_activation
+    from store.semantic import MemoryNode, SemanticMemory, effective_activation
 
     now_ts = datetime.now(UTC).isoformat()
     old_ts = (datetime.now(UTC) - timedelta(days=7)).isoformat()
@@ -69,7 +68,7 @@ def test_semantic_importance_slows_decay():
 
 
 def test_semantic_retrieve_ranking_uses_effective_activation():
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
@@ -103,7 +102,7 @@ def test_semantic_retrieve_ranking_uses_effective_activation():
 
 
 def test_semantic_retrieve_prefers_stable_long_term_memory_over_recent_event_echo():
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     old_ts = (datetime.now(UTC) - timedelta(days=45)).isoformat()
     now_ts = datetime.now(UTC).isoformat()
@@ -501,7 +500,7 @@ def test_semantic_retrieve_with_mock_embedding():
     mock embed_fn：含 'python' → [1,0]，否则 [0,1]；
     查询向量 [1,0] → python 节点相似度高 → 应排第一。
     """
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     def _mock_embed(text: str) -> list[float]:
         return [1.0, 0.0] if "python" in text.lower() else [0.0, 1.0]
@@ -525,7 +524,7 @@ def test_semantic_multi_anchor_uses_embedding_when_available():
     两节点内容完全相同（关键词得分相等），但 embedding 方向不同；
     embedding 对齐查询方向的节点应得分更高 → 验证向量路径生效。
     """
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     # embed_fn 统一返回 [1,0]，保证 query_vec = [1,0]
     def _mock_embed(text: str) -> list[float]:
@@ -550,7 +549,7 @@ def test_semantic_multi_anchor_uses_embedding_when_available():
 
 def test_semantic_fts_short_ascii_filtered():
     """FTS5 短 ASCII 词（≤4字符）被过滤后，中文词主导检索排序。"""
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -572,7 +571,7 @@ def test_semantic_fts_short_ascii_filtered():
 
 def test_semantic_upsert_disables_fts_when_sync_fails_and_retrieval_falls_back():
     """FTS 同步失败后，不应继续依赖残缺索引。"""
-    from store.semantic import SemanticMemory, MemoryNode
+    from store.semantic import MemoryNode, SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)

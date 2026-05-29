@@ -11,52 +11,60 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import copy
+import dataclasses
 import logging
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.panel import Panel
 
 _log = logging.getLogger("lingzhou.loop")
 
+from core.behavior_tracker import BehaviorTracker
 from core.config import Config
-from core.metabolic import MetabolicEngine, StateProposal
-from core.perception import (
-    PerceptionLayer, EmotionState,
-)
-from core.judgment import JudgmentLayer, JudgmentOutput
+from core.evolution import EvolutionEngine
 from core.execution import (
     ExecutionLayer,
 )
-from core.evolution import EvolutionEngine
-from .run_driver import RunDriver
-from .tick import (
-    _post_tick_memory_impl,
-    _tick_impl,
+from core.judgment import JudgmentLayer, JudgmentOutput
+from core.metabolic import MetabolicEngine, StateProposal
+from core.perception import (
+    EmotionState,
+    PerceptionLayer,
 )
-from memory.working import WorkingMemory, WMItem
-from memory.consolidation import build_consolidation_plan, build_daily_summary_node, current_week_key, merge_promoted_node
-from store.episodic import EpisodicMemory
-from store.semantic import SemanticMemory
-from store.task import TaskStore, Task
+from core.probe import ProbeManager
+from core.soul import SoulManager
+from memory.consolidation import (
+    build_consolidation_plan,
+    build_daily_summary_node,
+    current_week_key,
+    merge_promoted_node,
+)
+from memory.working import WMItem, WorkingMemory
 from provider import create_provider
 from provider.base import EmbeddingProvider
-from tools.registry import ToolRegistry, ToolContext
-from core.behavior_tracker import BehaviorTracker
-from core.soul import SoulManager
-from core.probe import ProbeManager
+from store.episodic import EpisodicMemory
+from store.semantic import SemanticMemory
+from store.task import Task, TaskStore
+from tools.registry import ToolContext, ToolRegistry
+
+from .chat import _process_pending_chat_turn, _tick_interact_impl
 from .dispatcher import ConcurrentTickDispatcher, TickJob
 from .driver import _run_cycle_impl, _wait_after_cycle_impl
-from .chat import _process_pending_chat_turn, _tick_interact_impl
+from .focus import resolve_focus_task
 from .reload import _maybe_hot_reload_provider_impl
+from .run_driver import RunDriver
 from .startup import (
     _open_runtime_impl,
     _prepare_runtime_run_impl,
+)
+from .tick import (
+    _post_tick_memory_impl,
+    _tick_impl,
 )
 
 console = Console()
@@ -133,11 +141,11 @@ class CognitionLoop:
         # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
         # embedding 混合检索(embed_fn=None 则纯关键词模式)
-        _embed_fn = None
+        _embed_fn: Callable[..., Any] | None = None
         if cfg.memory.local_embed_model:
             try:
-                import os as _os
                 import importlib
+                import os as _os
 
                 _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
                 _os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -147,8 +155,9 @@ class CognitionLoop:
                 _st_module = importlib.import_module("sentence_transformers")
                 _ST = _st_module.SentenceTransformer
                 _local_st = _ST(cfg.memory.local_embed_model, **_st_kwargs)
-                def _embed_fn(texts):
+                def _do_embed(texts: Any) -> Any:
                     return _local_st.encode(texts, normalize_embeddings=True).tolist()
+                _embed_fn = _do_embed
             except Exception as _e:
                 import logging as _lg
                 _lg.getLogger("lingzhou.loop").warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", _e)
@@ -219,6 +228,8 @@ class CognitionLoop:
         self._judgment._probe_manager = self._probe_manager
         # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
+        # 当前执行链标识(由 _run_chain_job 临时注入)
+        self._current_chain_key: str = ""
         # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
         self._pending_tier: str | None = None
         self._pending_idle_gap: float | None = None  # LLM 通过 model_strategy.next_idle_gap_secs 动态调控等待时长
@@ -263,7 +274,7 @@ class CognitionLoop:
     async def _maybe_hot_reload_provider(self) -> None:
         await _maybe_hot_reload_provider_impl(self)
 
-    def _make_ctx(self) -> ToolContext:
+    def _make_ctx(self, *, active_task: Any | None = None) -> ToolContext:
         return ToolContext(
             config=self._cfg,
             wm=self._wm,
@@ -271,6 +282,7 @@ class CognitionLoop:
             episodic=self._episodic,
             semantic=self._semantic,
             emotion=self._emotion,
+            active_task=active_task,
             probe_manager=self._probe_manager,
             judgment=self._judgment,
             execution=self._execution,
@@ -353,8 +365,8 @@ class CognitionLoop:
         chat_id: str | None = None,
         source: str = "auto",
     ) -> str:
-        # chat 消息始终使用独立的 per-session 链，与 task 自动 tick 并行
-        # 避免 auto-tick 队列积压导致聊天消息饥饿（starved behind auto ticks）
+        # chat 在无任务焦点时使用独立 per-session 链；
+        # 一旦上游已解析出明确的 focus task，则复用 task 链，避免同一任务被 chat/auto 并发推进。
         cid = str(chat_id or "").strip()
         if cid:
             return f"chat:{cid}"
@@ -442,7 +454,7 @@ class CognitionLoop:
             # 记录当前链标识，供 _maybe_inject_self_drive 判断链类型
             view._current_chain_key = job.chain_key
             # provider 热切换后，链内 judgment 始终跟随当前 provider
-            view._judgment._provider = self._provider
+            view._judgment._executor._provider = self._provider
             if self._routing_providers:
                 view._judgment.set_routing_providers(dict(self._routing_providers))
             view._judgment._probe_manager = self._probe_manager
@@ -511,7 +523,7 @@ class CognitionLoop:
         # 补充检查：LLM 可能连续做 wait 决策等待子代理完成，此时 last_decision != "act"
         # 但 task store 里确实有活跃任务或运行中的 run，不应视为空闲
         if not has_real_work:
-            _active = await self._task_store.get_active()
+            _active = await resolve_focus_task(self)
             if _active is not None:
                 # source=self_drive 任务若 next_step 指向空转/监听，不视为真实工作，
                 # 以防该任务一直挂着 in_progress 却不做事，导致自驱信号被永久压制。
@@ -641,7 +653,7 @@ class CognitionLoop:
 
         P2-A: 扩展字段,包含行为循环探针、空闲计数、WM 压力等诊断信息。
         """
-        active_task = await self._task_store.get_active()
+        active_task = await resolve_focus_task(self)
         running_runs = await self._task_store.list_runs(status="running", limit=5)
         wm_items = self._wm.get_top(3)
         _bt = self._behavior.snapshot()

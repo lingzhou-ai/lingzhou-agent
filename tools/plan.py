@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext, CAPS_EXEMPT
+from tools.registry import CAPS_EXEMPT, ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 
 @tool(ToolManifest(
@@ -73,7 +73,7 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if task_id:
             task = await ctx.task_store.get_task_by_id(int(task_id))
         else:
-            task = await ctx.task_store.get_active()
+            task = await ctx.get_active_task()
 
     if not task:
         return ToolResult(

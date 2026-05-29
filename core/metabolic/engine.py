@@ -16,7 +16,7 @@ from core.immune.policy import check_tool_blocked
 from core.metabolic.proposal import StateProposal
 
 if TYPE_CHECKING:
-    from store.task import TaskStore
+    from tools.view_protocols import TaskStoreViewProtocol
 
 _log = logging.getLogger("lingzhou.metabolic")
 
@@ -27,7 +27,7 @@ class MetabolicEngine:
     Phase 2：先做免疫检查，通过后落地并追加生命史账本。
     """
 
-    def __init__(self, task_store: TaskStore) -> None:
+    def __init__(self, task_store: TaskStoreViewProtocol) -> None:
         self._task_store = task_store
 
     async def submit(self, proposal: StateProposal) -> None:

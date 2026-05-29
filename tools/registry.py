@@ -12,21 +12,21 @@ import importlib.util
 import logging
 import sys
 import traceback
-from importlib.machinery import SourceFileLoader
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from collections.abc import Callable, Awaitable
 
-from tools.view_protocols import TaskStoreViewProtocol, EpisodicViewProtocol, SemanticViewProtocol
+from tools.view_protocols import EpisodicViewProtocol, SemanticViewProtocol, TaskStoreViewProtocol
 
 _log = logging.getLogger("lingzhou.registry")
 
 if TYPE_CHECKING:
     from core.config import Config
-    from memory.working import WorkingMemory
     from core.perception import EmotionState
+    from memory.working import WorkingMemory
 
 
 # ── 数据模型 ───────────────────────────────────────────────────────────────────
@@ -174,6 +174,7 @@ class ToolContext:
     episodic: EpisodicViewProtocol
     semantic: SemanticViewProtocol
     emotion: EmotionState
+    active_task: Any = None    # 当前 tick 已解析出的焦点任务，由 loop._make_ctx() 注入
     probe_manager: Any = None  # ProbeManager，由 CognitionLoop._make_ctx() 注入
     judgment: Any = None       # JudgmentLayer，由 CognitionLoop._make_ctx() 注入
     execution: Any = None      # ExecutionLayer，由 CognitionLoop._make_ctx() 注入
@@ -183,6 +184,11 @@ class ToolContext:
     @property
     def dry_run(self) -> bool:
         return not self.config.loop.act
+
+    async def get_active_task(self) -> Any:
+        if self.active_task is not None:
+            return self.active_task
+        return None
 
 
 # ── ToolHandler 类型别名 ───────────────────────────────────────────────────────

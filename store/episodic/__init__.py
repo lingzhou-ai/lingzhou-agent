@@ -18,13 +18,13 @@
 """
 from __future__ import annotations
 
-from contextlib import contextmanager, suppress
 import hashlib
 import json
 import logging
 import re
 import sqlite3
-from datetime import datetime, UTC, timedelta
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -179,7 +179,11 @@ class EpisodicMemory:
             return conn
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # timeout=60: C 层等待 60s；WAL + busy_timeout 防止多线程/多进程写冲突
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=60)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
 

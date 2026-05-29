@@ -16,30 +16,29 @@ import logging
 from typing import TYPE_CHECKING, Literal
 
 from core.workspace.defaults import (
-    IDENTITY_MD,
     BOOTSTRAP_MD,
-    USER_MD,
-    TOOLS_MD,
-    HEARTBEAT_MD,
-    MEMORY_MD,
     CONSTITUTION_MD,
+    HEARTBEAT_MD,
+    IDENTITY_MD,
+    MEMORY_MD,
+    TOOLS_MD,
+    USER_MD,
 )
-
 from core.workspace.state import (
     BootstrapMode,
+    _now_iso,
     bootstrap_status,
     read_workspace_state,
     reconcile_bootstrap_completion,
     resolve_bootstrap_mode,
     write_workspace_state,
-    _now_iso,
 )
 
 if TYPE_CHECKING:
     from core.config import Config
     from core.judgment import JudgmentLayer
-    from store.task import TaskStore
     from memory.working import WorkingMemory
+    from store.task import TaskStore
 
 _log = logging.getLogger("lingzhou.soul")
 

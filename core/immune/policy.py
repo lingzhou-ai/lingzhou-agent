@@ -100,6 +100,7 @@ async def three_organ_preflight(task_store: Any) -> list[str]:
     返回空列表 = 全部通过；返回非空列表 = 拒绝原因列表。
     """
     import json as _json
+
     from core.perception.ethos import EthosValues
 
     failures: list[str] = []

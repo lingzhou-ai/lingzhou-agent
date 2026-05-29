@@ -5,15 +5,15 @@ from typing import Annotated
 
 import typer
 
-from core.version import __version__, __codename__
-from cli._common import console, DEFAULT_CONFIG_PATH
+from cli._common import DEFAULT_CONFIG_PATH, console
 from cli.auth import auth_app
-from cli.bootstrap import setup, init, onboard, is_onboarded
+from cli.bootstrap import init, is_onboarded, onboard, setup
 from cli.chat import chat
 from cli.config import config_app
 from cli.dev import dev_app
 from cli.gateway import gateway_app, gateway_start, run, stop
 from cli.task import task_app
+from core.version import __codename__, __version__
 
 
 def _version_callback(value: bool) -> None:

@@ -12,7 +12,7 @@ from provider import create_provider, create_provider_with_model
 from provider.base import Message
 from provider.catalog import find_model_ref_for_capability, model_supports
 from tools.file import resolve_read_path
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 
 def _collect_image_sources(params: dict[str, Any]) -> list[str]:

@@ -34,11 +34,11 @@ from core.config import ThresholdsConfig
 from core.metabolic import StateProposal
 
 if TYPE_CHECKING:
-    from store.semantic import SemanticMemory
-    from store.episodic import EpisodicMemory
-    from store.task import TaskStore
-    from provider.base import Provider
     from core.metabolic import MetabolicEngine
+    from provider.base import Provider
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
 _log = logging.getLogger("lingzhou.reference")
 
@@ -723,6 +723,7 @@ class ReferenceResolver:
             return
 
         from datetime import UTC, datetime
+
         from store.semantic import MemoryNode
 
         cues = self._extract_identity_cues(message, chat_id=chat_id, source_hint=source_hint)

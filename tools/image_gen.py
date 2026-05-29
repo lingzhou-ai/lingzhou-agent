@@ -10,12 +10,12 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from core.paths import generated_dir
 from typing import Any
 
 import httpx
 
-from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
+from core.paths import generated_dir
+from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 # ── 选项 ─────────────────────────────────────────────────────────────────────
 GEN_TIMEOUT = 120

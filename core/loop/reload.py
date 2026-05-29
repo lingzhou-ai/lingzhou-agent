@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, Any
 from core.config import Config
 from core.evolution import EvolutionEngine
 from core.execution import ExecutionLayer
-from .run_driver import RunDriver
 from core.judgment import JudgmentLayer
 from core.perception import PerceptionLayer
 from provider import create_provider
 from provider.base import EmbeddingProvider
 
+from .run_driver import RunDriver
 from .startup import _build_routing_providers
 
 if TYPE_CHECKING:

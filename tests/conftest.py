@@ -55,6 +55,7 @@ def _tool_ctx(
     episodic: Any = None,
     semantic: Any = None,
     emotion: Any = None,
+    active_task: Any = None,
 ):
     from tools.registry import ToolContext
 
@@ -74,6 +75,7 @@ def _tool_ctx(
         episodic=cast("Any", episodic),
         semantic=cast("Any", semantic),
         emotion=cast("Any", emotion),
+        active_task=cast("Any", active_task),
     )
 
 

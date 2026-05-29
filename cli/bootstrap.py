@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH, resolve_config_path
+from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg, resolve_config_path
 
 _ENV_VAR_RE = _re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
@@ -87,7 +87,7 @@ def _setup_impl(
     force: bool,
     show_next_steps: bool,
 ) -> Path:
-    from provider.catalog import list_providers, list_provider_models
+    from provider.catalog import list_provider_models, list_providers
 
     if output.exists() and not force:
         console.print(f"[yellow]{output} 已存在，使用 --force 强制重新生成[/yellow]")
@@ -276,9 +276,10 @@ def _run_init(
 
     async def _run() -> bool:
         import datetime as _dt
+
         from core.soul import SoulManager
-        from store.task import TaskStore
         from memory.working import WorkingMemory
+        from store.task import TaskStore
 
         seeded = False
 

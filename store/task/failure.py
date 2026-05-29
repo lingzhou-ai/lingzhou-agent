@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-
 from ._base import BaseAsyncStore
 from .models import Failure
 

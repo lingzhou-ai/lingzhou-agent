@@ -8,7 +8,7 @@ r"""memory/quality_checker.py — 语义记忆检索质量评估。
 from __future__ import annotations
 
 import re
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 

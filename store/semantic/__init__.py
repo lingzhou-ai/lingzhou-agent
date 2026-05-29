@@ -12,18 +12,18 @@
 """
 from __future__ import annotations
 
-from contextlib import contextmanager, suppress
 import json
+import logging as _log_sem
 import math
 import re
 import sqlite3
+from collections.abc import Callable
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
-import logging as _log_sem
 from memory.quality_checker import evaluate_retrieval_quality
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
@@ -375,7 +375,11 @@ class SemanticMemory:
             self._fts5_ok = False
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # timeout=60: C 层等待 60s；WAL + busy_timeout 防止多线程/多进程写冲突
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=60)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
         return conn
 

@@ -5,10 +5,8 @@
 """
 from __future__ import annotations
 
-from typing import Any
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
-
+from typing import Any, Protocol, runtime_checkable
 
 MessageContent = str | list[dict[str, Any]]
 

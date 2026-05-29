@@ -15,18 +15,22 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .executor import JudgmentExecutor
 from .assembler import JudgmentContextAssembler
-from .parser import (
-    simulate_safe_output as _simulate_safe_output_fn,
-    coerce_reply_only_output as _coerce_reply_only_output_fn,
-    apply_memory_honesty_guard as _apply_memory_honesty_guard,
-)
+from .context import _clear_context_cache
+from .executor import JudgmentExecutor
 from .output import (
     JudgmentOutput,
     ModelSelection,
 )
-from .context import _clear_context_cache
+from .parser import (
+    apply_memory_honesty_guard as _apply_memory_honesty_guard,
+)
+from .parser import (
+    coerce_reply_only_output as _coerce_reply_only_output_fn,
+)
+from .parser import (
+    simulate_safe_output as _simulate_safe_output_fn,
+)
 
 _log = logging.getLogger("lingzhou.judgment")
 
@@ -34,15 +38,19 @@ _log = logging.getLogger("lingzhou.judgment")
 if TYPE_CHECKING:
     from core.config import Config
     from core.perception import (
-        Percept, EmotionState, EthosState, JudgmentSignals, PerceptionReplaySummary,
         CognitiveSignals,
+        EmotionState,
+        EthosState,
+        JudgmentSignals,
+        Percept,
+        PerceptionReplaySummary,
     )
     from memory.working import WorkingMemory
-    from store.task import TaskStore
+    from provider.base import Provider
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
-    from provider.base import Provider
 
 
 # ── 认知基底（传入 decide/assemble_context 的感知+记忆层快照） ────────────────
@@ -64,7 +72,7 @@ class CognitionFrame:
 class JudgmentLayer:
     def __init__(
         self,
-        provider: Provider,
+        provider: Any,
         registry: ToolRegistry,
         cfg: Config,
     ) -> None:
@@ -88,7 +96,7 @@ class JudgmentLayer:
     @_probe_manager.setter
     def _probe_manager(self, v: Any) -> None:
         self._assembler._probe_manager = v
-    def set_routing_providers(self, providers: dict[str, Provider]) -> None:
+    def set_routing_providers(self, providers: dict[str, Any]) -> None:
         """注入分层路由 providers（由 CognitionLoop.open() 调用）。"""
         self._executor.set_routing_providers(providers)
 
@@ -119,6 +127,14 @@ class JudgmentLayer:
     @property
     def last_call_meta(self) -> dict[str, Any]:
         return self._executor.last_call_meta
+
+    @property
+    def _last_call_meta(self) -> dict[str, Any]:
+        return self._executor._last_call_meta
+
+    @_last_call_meta.setter
+    def _last_call_meta(self, v: dict[str, Any]) -> None:
+        self._executor._last_call_meta = v
 
     def _finalize_continue_output(
         self,

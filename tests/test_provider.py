@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+
 def test_auth_store_profile_roundtrip(tmp_path):
     from store.auth import load_auth_profiles, set_token_profile
 
@@ -21,7 +22,7 @@ def test_auth_store_profile_roundtrip(tmp_path):
 
 
 def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
-    from store.auth import resolve_copilot_token, set_token_profile, save_legacy_credentials
+    from store.auth import resolve_copilot_token, save_legacy_credentials, set_token_profile
 
     monkeypatch.setenv("GH_TOKEN", "env-gh-token")
     monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
@@ -42,6 +43,7 @@ def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
 
 def test_github_device_client_id_prefers_env(monkeypatch, tmp_path):
     import json
+
     import store.auth as auth_mod
 
     state_file = tmp_path / "github-device.json"
@@ -170,8 +172,8 @@ def test_hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
 
 
 async def _hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
-    from core.config import Config
     import core.loop.reload as reload_mod
+    from core.config import Config
 
     cfg_path = tmp_path / "lingzhou.json"
     old_mtime = time.time() - 10
@@ -222,8 +224,8 @@ def test_hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path):
 
 
 async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path):
-    from core.config import Config
     import core.loop.reload as reload_mod
+    from core.config import Config
 
     cfg_path = tmp_path / "lingzhou.json"
     old_mtime = time.time() - 10
@@ -290,8 +292,8 @@ def test_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp
 
 
 async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
-    from core.config import Config
     import core.loop.reload as reload_mod
+    from core.config import Config
 
     cfg_path = tmp_path / "lingzhou.json"
     old_mtime = time.time() - 10
@@ -486,6 +488,7 @@ def test_models_gen_ready_cache_is_bounded():
 
 def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
     import httpx
+
     from provider.base import Message
     from provider.openai_compat import OpenAICompatProvider
 
@@ -545,6 +548,7 @@ def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
 
 def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     import httpx
+
     from provider.base import Message
     from provider.openai_compat import OpenAICompatProvider
 
@@ -637,6 +641,7 @@ def test_copilot_gpt5_responses_payload_omits_temperature():
 
 def test_copilot_gpt5_responses_400_surfaces_error_body():
     import httpx
+
     from provider.base import Message
     from provider.openai_compat import OpenAICompatProvider
 
@@ -692,7 +697,7 @@ def test_copilot_base_url_derives_from_proxy_ep():
 
 
 def test_copilot_normalize_base_url_uses_default_base_url():
-    from provider.openai_compat import _normalize_copilot_api_base_url, DEFAULT_COPILOT_API_BASE_URL
+    from provider.openai_compat import DEFAULT_COPILOT_API_BASE_URL, _normalize_copilot_api_base_url
 
     assert _normalize_copilot_api_base_url("") == DEFAULT_COPILOT_API_BASE_URL
     assert _normalize_copilot_api_base_url("https://api.githubcopilot.com") == DEFAULT_COPILOT_API_BASE_URL
@@ -700,6 +705,7 @@ def test_copilot_normalize_base_url_uses_default_base_url():
 
 def test_login_copilot_help_is_registered():
     from typer.testing import CliRunner
+
     from lingzhou import app
 
     runner = CliRunner()

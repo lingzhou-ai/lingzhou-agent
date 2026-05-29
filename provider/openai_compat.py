@@ -5,19 +5,19 @@ import json
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
-from collections.abc import Awaitable, Callable
 
 import httpx
 
+from provider.base import Message
+from provider.catalog import lookup_model
 from store.auth import (
     load_copilot_token_cache,
     resolve_copilot_token,
     save_copilot_token_cache,
 )
-from provider.base import Message
-from provider.catalog import lookup_model
 
 if TYPE_CHECKING:
     from core.config import Config

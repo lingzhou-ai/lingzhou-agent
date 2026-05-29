@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from rich.console import Console
 
 from core.judgment import JudgmentOutput
+from core.metabolic import StateProposal
 from core.perception import (
     EthosValues,
     build_emotion_replay,
@@ -23,16 +24,15 @@ from core.perception import (
     derive_ethos_state,
 )
 from core.run_refresh import refresh_running_runs
-from core.metabolic import StateProposal
 from core.task_runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
     _sync_task_progress_state,
 )
+from memory.working import WMItem
 from store.episodic import EpisodicMemory
 from store.semantic import MemoryNode
 from store.task import Task
-from memory.working import WMItem
 from tools.registry import ToolResult
 
 from .chat import _bind_chat_id, _resolve_reply_chat_id
@@ -54,6 +54,14 @@ from .common import (
     _thinking_floor,
     _tool_history_entry,
 )
+from .continue_phase import _run_continue_phase
+from .focus import (
+    adopt_result_task,
+    claim_focus_task,
+    finalize_focus_task,
+    prepare_focus_task,
+    resolve_focus_task,
+)
 from .logging import (
     _clip_reply_for_log,
     _clip_signal_text,
@@ -66,11 +74,10 @@ from .postprocess import (
     _should_track_success_stall_tool,
     _write_success_stall_meta_reflection,
 )
-from .continue_phase import _run_continue_phase
 from .progress import (
-    action_key_param,
     _action_made_progress,
     _result_fingerprint,
+    action_key_param,
 )
 
 console = Console()
@@ -294,7 +301,7 @@ def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
 
 async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: str | None) -> Any:
     """在进入 perception/judgment 前，完成活跃任务与用户消息 inbox 的准备。"""
-    active_task = await loop._task_store.get_active()
+    active_task = await prepare_focus_task(loop, user_message=user_message, chat_id=chat_id)
     await _ingest_actionable_meta_reflections(loop._task_store, loop._wm, metabolic=_loop_metabolic(loop))
     active_task = await _consume_task_runtime_hints(loop._task_store, active_task, loop._wm, metabolic=_loop_metabolic(loop))
     active_task = await _maybe_steer_active_task_from_user_message(
@@ -304,6 +311,7 @@ async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: s
     )
     active_task = await _consume_active_task_inbox(loop._task_store, active_task)
     await _bind_chat_id(loop, active_task, chat_id)
+    await claim_focus_task(loop, active_task, chat_id=chat_id, clear_current=not bool(str(chat_id or "").strip()))
 
     if not user_message:
         await loop._maybe_inject_self_drive()
@@ -765,8 +773,10 @@ async def _finalize_tick_user_reply(
         if not action.reply_to_user:
             action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
     elif action.speech_intent and not action.reply_to_user:
-        # 自主 tick：大脑有主动发言意图，直接使用（无执行结果需要校正）
-        action.reply_to_user = action.speech_intent
+        # 自主 tick：只有 pause / wait 决策（需要用户介入或主动告知里程碑）才主动发言。
+        # act 决策（正在执行工具）属于中间执行态，不向外发进度更新，避免多轮刷屏。
+        if action.decision != "act":
+            action.reply_to_user = action.speech_intent
 
     await _persist_tick_user_reply(loop, action, active_task, chat_id, user_message)
 
@@ -1064,7 +1074,6 @@ class _TickMemoryPhase:
 async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str | None = None) -> str:
     """执行一轮完整认知 tick,返回 reply_to_user(interact 模式时非空)。"""
     cfg = loop._cfg
-    ctx = loop._make_ctx()
 
     if user_message:
         loop._wm.add(WMItem(
@@ -1075,6 +1084,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     loop._maybe_inject_budget_warning()
 
     prep, active_task = await _TickPerceptionPhase.run(loop, user_message, chat_id)
+    ctx = loop._make_ctx(active_task=active_task)
 
     action = await _TickJudgmentPhase.run(
         loop, ctx, cycle, user_message, active_task, chat_id, prep
@@ -1132,6 +1142,7 @@ async def _sync_tick_action_state(
     chat_id: str | None,
 ) -> Task | None:
     previous_task_next_step = (active_task.next_step or "") if active_task else ""
+    focus_task = await adopt_result_task(loop, active_task, action, result)
     prev_sig = loop._last_action_sig
     prev_fp = loop._last_result_fp
     cur_sig = f"{action.chosen_action_id or ''}|{action_key_param(action.params)}" if action.decision == "act" else ""
@@ -1172,10 +1183,14 @@ async def _sync_tick_action_state(
     loop._last_action_sig = cur_sig
     loop._last_result_fp = cur_fp
 
+    focus_previous_next_step = previous_task_next_step
+    if focus_task is not None and (active_task is None or focus_task.id != active_task.id):
+        focus_previous_next_step = str(getattr(focus_task, "next_step", "") or "")
+
     active_task = await _sync_task_progress_state(
         loop._task_store,
-        active_task,
-        previous_next_step=previous_task_next_step,
+        focus_task,
+        previous_next_step=focus_previous_next_step,
         action=action,
         progressful=loop._last_act_progressful,
         state_delta=result.state_delta,
@@ -1211,7 +1226,7 @@ async def _apply_tick_model_strategy(
     if raw_gap is not None:
         try:
             gap_f = float(raw_gap)
-            has_task = (await loop._task_store.get_active()) is not None
+            has_task = (await resolve_focus_task(loop)) is not None
             if has_task:
                 bounds = cfg.loop.idle_with_task_bounds
                 lo, hi = float(bounds[0]) / 1000.0, float(bounds[1]) / 1000.0
@@ -1366,6 +1381,13 @@ async def _tick_finalize_impl(
     await _maybe_run_tick_evolution(loop, cycle, perception_replay)
 
     active_task = await _sync_tick_action_state(loop, action, result, active_task, cycle, chat_id)
+    active_task = await finalize_focus_task(
+        loop,
+        action=action,
+        active_task=active_task,
+        chat_id=chat_id,
+        user_message=user_message,
+    )
     active_task = await _apply_tick_model_strategy(loop, action, active_task)
     await _persist_tick_post_state(loop, action, active_task, cycle, ethos_state=ethos_state)
 

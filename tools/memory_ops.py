@@ -8,10 +8,10 @@ from typing import Any
 
 _log = logging.getLogger("lingzhou.tools")
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
+from memory.quality_checker import evaluate_retrieval_quality
 from memory.working import WMItem
 from store.semantic import MemoryNode
-from memory.quality_checker import evaluate_retrieval_quality
+from tools.registry import CAPS_EXEMPT, ToolContext, ToolManifest, ToolParam, ToolResult, tool
 
 _PRIORITY_ALIASES = {"high": 0.9, "medium": 0.6, "mid": 0.6, "low": 0.3, "critical": 1.0}
 
@@ -54,8 +54,8 @@ def _disambiguate_semantic_title(ctx: ToolContext, raw_title: str, kind: str, no
     title = (raw_title or "").strip()
     if not title:
         return ""
-    finder = getattr(ctx.semantic, "find_by_title", None)
-    if not callable(finder):
+    finder: Any = getattr(ctx.semantic, "find_by_title", None)
+    if finder is None:
         return title
     try:
         existing = list(finder(title, limit=3) or [])
@@ -313,7 +313,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
     ctx.semantic.upsert(node)
 
     # 同时写入情节记忆，保留推理轨迹
-    task = await ctx.task_store.get_active()
+    task = await ctx.get_active_task()
     ctx.episodic.record(
         role="reflection",
         content=f"**{title}**\n\n{insight}",
@@ -336,7 +336,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
 async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     wm_items = ctx.wm.get_top(20)
     failures = await ctx.task_store.list_failures(limit=5)
-    task = await ctx.task_store.get_active()
+    task = await ctx.get_active_task()
 
     pressure_before = ctx.wm.pressure
 

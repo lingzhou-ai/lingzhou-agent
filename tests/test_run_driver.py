@@ -1,9 +1,10 @@
 """tests/test_run_driver.py — RunDriver 路由层单元测试（Phase 3b/3c）。"""
 from __future__ import annotations
 
-import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 辅助
@@ -80,7 +81,7 @@ def test_default_tier_for_unknown_run_type_returns_task_default():
 
 def test_run_driver_merges_catalog_routing_over_defaults():
     """catalog 路由应覆盖内置默认值。"""
-    from core.loop.run_driver import RunDriver, _RUN_TYPE_DEFAULT_TIER
+    from core.loop.run_driver import RunDriver
 
     # 模拟 catalog 返回自定义映射
     custom_routing = {"judge": "reasoner", "custom_type": "reader"}
@@ -96,7 +97,7 @@ def test_run_driver_merges_catalog_routing_over_defaults():
 
 def test_run_driver_falls_back_to_defaults_when_catalog_empty():
     """catalog 为空时完全使用内置默认值。"""
-    from core.loop.run_driver import RunDriver, _RUN_TYPE_DEFAULT_TIER
+    from core.loop.run_driver import _RUN_TYPE_DEFAULT_TIER, RunDriver
 
     with patch("core.loop.run_driver._load_catalog_routing", return_value={}):
         execution = _make_execution_mock()
@@ -109,7 +110,7 @@ def test_run_driver_falls_back_to_defaults_when_catalog_empty():
 
 def test_run_driver_tolerates_catalog_load_failure():
     """catalog 加载失败时不应抛出异常，回退到内置默认值。"""
-    from core.loop.run_driver import RunDriver, _RUN_TYPE_DEFAULT_TIER
+    from core.loop.run_driver import RunDriver
 
     with patch("core.loop.run_driver._load_catalog_routing", side_effect=RuntimeError("load fail")):
         # _load_catalog_routing 内部已 catch；但万一 RunDriver.__init__ 自身抛，也应处理
@@ -155,9 +156,10 @@ def test_get_run_type_routing_values_are_strings():
 @pytest.mark.asyncio
 async def test_cancel_stale_runs_marks_old_running_as_cancelled():
     """超过 stale 阈值的 running/pending Run 应被标为 cancelled。"""
-    import tempfile, os
-    from store.task import TaskStore
+    import tempfile
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -189,8 +191,9 @@ async def test_cancel_stale_runs_marks_old_running_as_cancelled():
 async def test_cancel_stale_runs_does_not_cancel_recent_runs():
     """最近的 running Run 不应被 cancel_stale_runs 影响。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -210,9 +213,11 @@ async def test_cancel_stale_runs_does_not_cancel_recent_runs():
 @pytest.mark.asyncio
 async def test_cancel_stale_runs_ignores_terminal_runs():
     """已完成（succeeded/failed/cancelled）的 Run 不受影响。"""
-    import tempfile, datetime
-    from store.task import TaskStore
+    import datetime
+    import tempfile
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -298,8 +303,9 @@ def test_config_run_type_routing_accepts_overrides():
 async def test_get_pending_runs_returns_pending_only():
     """get_pending_runs 只返回 status='pending' 的 Run。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -319,10 +325,11 @@ async def test_get_pending_runs_returns_pending_only():
 @pytest.mark.asyncio
 async def test_get_pending_runs_ordered_by_created_at():
     """get_pending_runs 按 created_at 升序返回（最早优先）。"""
-    import tempfile
     import asyncio
-    from store.task import TaskStore
+    import tempfile
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -342,8 +349,9 @@ async def test_get_pending_runs_ordered_by_created_at():
 async def test_add_run_pending_has_started_at():
     """pending Run 的 started_at 应已写入（NOT NULL 约束，默认为创建时间）。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -359,8 +367,9 @@ async def test_add_run_pending_has_started_at():
 async def test_cancel_stale_runs_does_not_cancel_fresh_pending_run():
     """cancel_stale_runs 不应取消刚创建的 pending Run（started_at=当前时间，未过超时）。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -380,10 +389,11 @@ async def test_cancel_stale_runs_does_not_cancel_fresh_pending_run():
 async def test_poll_pending_runs_claims_judge_run_and_enqueues_tick():
     """poll_pending_runs 找到 pending judge Run → 认领并注入 TickJob，返回新 cycle。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
-    from core.loop.run_driver import RunDriver
+
     from core.loop.dispatcher import TickJob
+    from core.loop.run_driver import RunDriver
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -424,9 +434,10 @@ async def test_poll_pending_runs_claims_judge_run_and_enqueues_tick():
 async def test_poll_pending_runs_returns_none_when_no_pending():
     """无 pending Run 时 poll_pending_runs 返回 None。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
     from core.loop.run_driver import RunDriver
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -446,9 +457,10 @@ async def test_poll_pending_runs_returns_none_when_no_pending():
 async def test_poll_pending_runs_skips_non_judge_run():
     """poll_pending_runs 跳过非 judge 类型的 pending Run。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
     from core.loop.run_driver import RunDriver
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -474,9 +486,10 @@ async def test_poll_pending_runs_skips_non_judge_run():
 async def test_poll_pending_runs_restores_pending_when_queue_full():
     """dispatcher 队列满时，认领失败应将 Run 回退到 pending。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
     from core.loop.run_driver import RunDriver
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")
@@ -508,11 +521,67 @@ async def test_poll_pending_runs_restores_pending_when_queue_full():
 
 
 @pytest.mark.asyncio
+async def test_poll_pending_runs_uses_focus_task_chain_over_global_active():
+    import tempfile
+    from pathlib import Path
+
+    from core.loop.focus import claim_focus_task
+    from core.loop.run_driver import RunDriver
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = TaskStore(Path(tmpdir) / "test.db")
+        await store.open()
+
+        await store.add_run(run_type="judge", status="pending")
+        await store.add_task("全局活跃任务", goal="旧 get_active 会误命中这里", status="in_progress")
+        focus_id = await store.add_task(
+            "当前焦点任务",
+            goal="poll 应沿 focus task chain 入队",
+            status="pending",
+            chain_id="focus-chain",
+        )
+        focus_task = await store.get_task_by_id(focus_id)
+        assert focus_task is not None
+
+        loop_ref = SimpleNamespace(_task_store=store)
+        await claim_focus_task(loop_ref, focus_task, clear_current=True)
+
+        seen_chain_keys: list[str] = []
+
+        class _FakeDispatcher:
+            enabled = True
+
+            async def enqueue(self, job):
+                seen_chain_keys.append(job.chain_key)
+                return True
+
+        class _FakeLoop:
+            _task_store = store
+            _tick_dispatcher = _FakeDispatcher()
+
+            async def _next_dispatch_cycle(self):
+                return 42
+
+            def _resolve_tick_chain_key(self, *, active_task, source):
+                return f"task:{active_task.id}" if active_task is not None else "default"
+
+        execution = _make_execution_mock()
+        driver = RunDriver(execution)
+        result = await driver.poll_pending_runs(_FakeLoop(), cycle=1)
+
+        assert result == 42
+        assert seen_chain_keys == [f"task:{focus_id}"]
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_startup_bootstrap_creates_pending_run():
     """startup 应在无 pending Run 时写入 bootstrap pending Run。"""
     import tempfile
-    from store.task import TaskStore
     from pathlib import Path
+
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = TaskStore(Path(tmpdir) / "test.db")

@@ -11,7 +11,7 @@ Phase 2 起：
   - 生命史账本（只追加）
   - ~40 处散落 set_fact 全部收归此入口
 """
-from core.metabolic.proposal import StateProposal
 from core.metabolic.engine import MetabolicEngine
+from core.metabolic.proposal import StateProposal
 
 __all__ = ["MetabolicEngine", "StateProposal"]

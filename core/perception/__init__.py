@@ -18,7 +18,13 @@ from core.perception.emotion import (
     build_emotion_replay,
     build_perception_replay,
 )
-from core.perception.ethos import ETHOS_DIMENSIONS, EthosBias, EthosState, EthosValues, derive_ethos_state
+from core.perception.ethos import (
+    ETHOS_DIMENSIONS,
+    EthosBias,
+    EthosState,
+    EthosValues,
+    derive_ethos_state,
+)
 from core.perception.layer import Percept, PerceptionLayer
 from core.perception.signals import CognitiveSignals, JudgmentSignals, compute_judgment_signals
 

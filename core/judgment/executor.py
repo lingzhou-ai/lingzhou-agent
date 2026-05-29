@@ -16,11 +16,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from core.self_model import SelfModel
+
 from .output import JudgmentOutput, ModelHealth, ModelSelection
 
 if TYPE_CHECKING:
-    from provider.base import Provider
     from core.config import Config
+    from provider.base import Provider
 
 _log = logging.getLogger("lingzhou.judgment")
 

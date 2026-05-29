@@ -18,10 +18,10 @@ import importlib.util
 import json
 import logging
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 _log = logging.getLogger("lingzhou.plugin")
 

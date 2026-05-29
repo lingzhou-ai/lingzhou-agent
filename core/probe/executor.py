@@ -105,8 +105,8 @@ async def _run_python(code: str, timeout: int) -> tuple[str, str | None]:
     """
 
     def _blocking() -> tuple[str, str | None]:
-        import math
         import datetime as _dt
+        import math
 
         safe_globals: dict = {
             "__builtins__": {

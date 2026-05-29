@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from core.config import Config
-    from core.execution import ExecutionLayer
     from core.evolution import EvolutionEngine
+    from core.execution import ExecutionLayer
     from core.judgment import JudgmentLayer, JudgmentOutput
     from core.loop import CognitionLoop
     from core.perception import EmotionState, Percept, PerceptionLayer
