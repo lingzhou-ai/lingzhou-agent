@@ -161,6 +161,43 @@ def _trim_messages_for_prompt_limit_impl(
         compressed_indices.add(idx)
         changed = True
 
+    if changed:
+        return new_messages
+
+    # 常规压缩未产生变化时，启用一次激进裁剪兜底，避免超限错误原样重试。
+    if prompt_count and prompt_count > target_prompt_budget:
+        last_index = len(new_messages) - 1
+        ratio = max(0.05, min(0.25, target_prompt_budget / float(prompt_count)))
+        fallback_candidates: list[tuple[int, int, int, str]] = []
+        for idx, role, _, content in content_slots:
+            if not content:
+                continue
+            tokens = executor._estimate_text_tokens(content)
+            role_priority = 0 if role != "system" else 1
+            fallback_candidates.append((tokens, role_priority, idx, content))
+
+        for tokens, _, idx, content in sorted(fallback_candidates, key=lambda item: item[0], reverse=True):
+            role = getattr(new_messages[idx], "role", "user")
+            if idx == last_index and role == "user":
+                continue
+            keep_tokens = max(96, int(tokens * ratio))
+            trimmed_content = executor._compress_text_to_budget(content, keep_tokens)
+            if trimmed_content == content:
+                continue
+            if Message is not None:
+                new_messages[idx] = Message(role=role, content=trimmed_content)
+            else:
+                new_messages[idx] = type(new_messages[idx])(role=role, content=trimmed_content)
+            changed = True
+
+            current_total = 0
+            for msg in new_messages:
+                msg_content = getattr(msg, "content", None)
+                if isinstance(msg_content, str):
+                    current_total += executor._estimate_text_tokens(msg_content)
+            if current_total <= target_prompt_budget:
+                break
+
     return new_messages if changed else messages
 
 
@@ -184,7 +221,8 @@ async def _chat_with_retry_impl(
 ) -> tuple[str | None, ModelSelection, Exception | None]:
     raw: str | None = None
     last_error: Exception | None = None
-    for _attempt in range(2):
+    max_attempts = 3
+    for _attempt in range(max_attempts):
         executor._set_last_call_meta(
             selection,
             thinking_override=thinking_override,
@@ -222,7 +260,9 @@ async def _chat_with_retry_impl(
             last_error = exc
             _err = str(exc) or repr(exc)
             prompt_count, prompt_limit = executor._extract_prompt_limit(_err)
-            if prompt_limit:
+            is_output_overflow = executor._is_output_overflow_error(_err)
+            overflow_kind = "output" if is_output_overflow else ("prompt" if prompt_limit else "none")
+            if prompt_limit and not is_output_overflow:
                 try:
                     from provider.catalog import set_context_window_hint
 
@@ -236,9 +276,11 @@ async def _chat_with_retry_impl(
                 )
                 if trimmed_messages is not messages:
                     _log.warning(
-                        "%s LLM 提示词超限，自适应压缩后同模型重试: model=%s prompt=%s limit=%s attempt=%s messages=%s est_tokens=%s",
+                        "%s LLM 提示词超限，自适应压缩后同模型重试: model=%s tier=%s overflow_kind=%s compression_applied=true prompt=%s limit=%s attempt=%s messages=%s est_tokens=%s",
                         log_prefix,
                         selection.model_ref,
+                        selection.tier,
+                        overflow_kind,
                         prompt_count,
                         prompt_limit,
                         _attempt + 1,
@@ -248,8 +290,22 @@ async def _chat_with_retry_impl(
                     messages = trimmed_messages
                     continue
 
+            if is_output_overflow:
+                available_output = executor._extract_available_output_tokens(_err)
+                _log.warning(
+                    "%s LLM 输出预算超限，跳过提示词压缩: model=%s tier=%s overflow_kind=%s compression_applied=false available_output=%s attempt=%s/%s err=%s",
+                    log_prefix,
+                    selection.model_ref,
+                    selection.tier,
+                    overflow_kind,
+                    available_output,
+                    _attempt + 1,
+                    max_attempts,
+                    _err,
+                )
+
             executor._mark_model_failure(selection.model_ref, _err)
-            if _attempt == 0:
+            if _attempt < max_attempts - 1:
                 _fallback_tier = fallback_prefer_tier or executor._fallback_tiers(selection.tier)[0]
                 fb_provider, fb_selection = executor._select_provider(
                     phase=phase,
@@ -262,18 +318,36 @@ async def _chat_with_retry_impl(
                 )
                 if fb_selection.model_ref != selection.model_ref:
                     _log.warning(
-                        "%s LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
+                        "%s LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) overflow_kind=%s attempt=%s/%s err=%s",
                         log_prefix,
                         selection.model_ref,
                         selection.tier,
                         fb_selection.model_ref,
                         fb_selection.tier,
+                        overflow_kind,
+                        _attempt + 1,
+                        max_attempts,
                         _err,
                     )
                     selected_provider, selection = fb_provider, fb_selection
                     continue
-                _log.warning("%s LLM 调用失败，1s 后重试: %s", log_prefix, _err)
-                await asyncio.sleep(1.0)
+                retry_after = executor._extract_retry_after_seconds(_err, exc)
+                delay = executor._retry_delay_seconds(
+                    _attempt + 1,
+                    retry_after_seconds=retry_after,
+                )
+                _log.warning(
+                    "%s LLM 调用失败，%.2fs 后重试: overflow_kind=%s attempt=%s/%s retry_after_seconds=%s backoff_seconds=%.2f err=%s",
+                    log_prefix,
+                    delay,
+                    overflow_kind,
+                    _attempt + 1,
+                    max_attempts,
+                    f"{retry_after:.2f}s" if retry_after is not None else "none",
+                    delay,
+                    _err,
+                )
+                await asyncio.sleep(delay)
                 continue
             _log.warning("%s LLM 调用失败: %s", log_prefix, _err)
     return raw, selection, last_error

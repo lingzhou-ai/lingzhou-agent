@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated
 
@@ -171,7 +172,17 @@ def logs_stats() -> None:
     ticks = text.count("[loop]")
     decisions_act = text.count("decision=act")
     decisions_wait = text.count("decision=wait")
-    llm_fails = text.count("LLM.*失败")
+    llm_fails = len(re.findall(r"LLM[^\n]*失败|LLM 不可用", text))
+    overflow_prompt = text.count("overflow_kind=prompt")
+    overflow_output = text.count("overflow_kind=output")
+    compression_applied = text.count("compression_applied=true")
+    compression_skipped = text.count("compression_applied=false")
+    backoff_values = [
+        float(v)
+        for v in re.findall(r"backoff_seconds=([0-9]+(?:\.[0-9]+)?)", text)
+    ]
+    backoff_count = len(backoff_values)
+    backoff_avg = (sum(backoff_values) / backoff_count) if backoff_count else 0.0
 
     console.print(f"  总行数:    {total}")
     console.print(f"  启动次数:  {boots}")
@@ -181,6 +192,9 @@ def logs_stats() -> None:
     console.print(f"  chat:      {chats} 条用户消息")
     console.print(f"  微信:      {wechat_msgs} 收 / {wechat_sent} 发")
     console.print(f"  LLM失败:   {llm_fails}")
+    console.print(f"  overflow:  prompt={overflow_prompt} output={overflow_output}")
+    console.print(f"  压缩路径:  applied={compression_applied} skipped={compression_skipped}")
+    console.print(f"  backoff:   {backoff_count} 次 (avg={backoff_avg:.2f}s)")
     console.print(f"  日志文件:  {log_file}  ({log_file.stat().st_size:,} bytes)")
 
 

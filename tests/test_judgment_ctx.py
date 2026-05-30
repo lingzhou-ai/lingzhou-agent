@@ -896,6 +896,363 @@ def test_fmt_soul_uses_config_ethos_fallback_when_db_missing():
     assert '"truth": 0.85' in text
 
 
+def test_executor_extract_prompt_limit_supports_multiple_patterns():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+
+    prompt, limit = layer._executor._extract_prompt_limit(
+        "prompt token count of 161904 exceeds the limit of 128000"
+    )
+    assert prompt == 161904
+    assert limit == 128000
+
+    prompt2, limit2 = layer._executor._extract_prompt_limit("context_length_exceeded: 131072")
+    assert prompt2 is None
+    assert limit2 == 131072
+
+
+def test_executor_detects_output_overflow_and_available_tokens():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+
+    err_text = (
+        "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 "
+        "= available_tokens: 10000"
+    )
+    assert layer._executor._is_output_overflow_error(err_text) is True
+    assert layer._executor._extract_available_output_tokens(err_text) == 10000
+
+
+def test_executor_retry_after_and_backoff_respects_lower_bound():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+
+    retry_after = layer._executor._extract_retry_after_seconds("Too many requests, retry after 7")
+    assert retry_after == 7.0
+
+    delay = layer._executor._retry_delay_seconds(
+        1,
+        base_delay=1.0,
+        max_delay=30.0,
+        retry_after_seconds=retry_after,
+    )
+    assert delay >= 7.0
+    assert delay <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_applies_retry_after_backoff_and_fallback(monkeypatch):
+    from provider.base import Message
+    from core.config import Config
+    from core.judgment import JudgmentLayer, ModelSelection
+    from tools.registry import ToolRegistry
+
+    class _ProviderAlwaysFail:
+        def __init__(self, model_ref: str):
+            self.model_ref = model_ref
+            self.last_usage = {}
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            raise RuntimeError("429 Too Many Requests; retry after 2")
+
+        async def close(self):
+            return None
+
+    class _ProviderSucceed:
+        def __init__(self, model_ref: str):
+            self.model_ref = model_ref
+            self.last_usage = {}
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "routing": {
+            "reasoner": "copilot/gpt-5.4",
+            "reader": "bailian/qwen3.6-plus",
+        },
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    main_provider = _ProviderAlwaysFail("copilot/gpt-5.4")
+    fallback_provider = _ProviderSucceed("bailian/qwen3.6-plus")
+    layer = JudgmentLayer(main_provider, ToolRegistry(), cfg)
+    layer.set_routing_providers({"reader": fallback_provider})
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("core.judgment.executor_helpers.asyncio.sleep", _fake_sleep)
+
+    messages = [Message(role="user", content="hello")]
+    selected_provider = main_provider
+    selection = ModelSelection(
+        phase="initial",
+        tier="reasoner",
+        model_ref="copilot/gpt-5.4",
+        thinking="off",
+    )
+
+    raw, final_selection, err = await layer._executor._chat_with_retry(
+        selected_provider=selected_provider,
+        selection=selection,
+        messages=messages,
+        phase="initial",
+        user_message="hello",
+        thinking_override=None,
+        routing_overrides=None,
+        log_prefix="[test]",
+        fallback_prefer_tier="reader",
+        skills="none",
+    )
+
+    assert err is None
+    assert raw == '{"decision":"wait"}'
+    assert final_selection.model_ref == "bailian/qwen3.6-plus"
+    assert sleep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_same_model_uses_retry_after_delay(monkeypatch):
+    from provider.base import Message
+    from core.config import Config
+    from core.judgment import JudgmentLayer, ModelSelection
+    from tools.registry import ToolRegistry
+
+    class _ProviderFailThenOk:
+        def __init__(self, model_ref: str):
+            self.model_ref = model_ref
+            self.last_usage = {}
+            self.calls = 0
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("429 Too Many Requests; retry after 2")
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _ProviderFailThenOk("bailian/qwen3.6-plus")
+    layer = JudgmentLayer(provider, ToolRegistry(), cfg)
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("core.judgment.executor_helpers.asyncio.sleep", _fake_sleep)
+
+    raw, final_selection, err = await layer._executor._chat_with_retry(
+        selected_provider=provider,
+        selection=ModelSelection(
+            phase="initial",
+            tier="reasoner",
+            model_ref="bailian/qwen3.6-plus",
+            thinking="off",
+        ),
+        messages=[Message(role="user", content="hello")],
+        phase="initial",
+        user_message="hello",
+        thinking_override=None,
+        routing_overrides=None,
+        log_prefix="[test]",
+        fallback_prefer_tier="reasoner",
+        skills="none",
+    )
+
+    assert err is None
+    assert raw == '{"decision":"wait"}'
+    assert final_selection.model_ref == "bailian/qwen3.6-plus"
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] >= 2.0
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_output_overflow_skips_prompt_compression(monkeypatch, caplog):
+    from provider.base import Message
+    from core.config import Config
+    from core.judgment import JudgmentLayer, ModelSelection
+    from tools.registry import ToolRegistry
+
+    class _ProviderOutputOverflowThenOk:
+        def __init__(self, model_ref: str):
+            self.model_ref = model_ref
+            self.last_usage = {}
+            self.calls = 0
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 "
+                    "= available_tokens: 10000; retry after 1"
+                )
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _ProviderOutputOverflowThenOk("bailian/qwen3.6-plus")
+    layer = JudgmentLayer(provider, ToolRegistry(), cfg)
+
+    trim_calls: list[int] = []
+
+    def _fake_trim(messages, prompt_limit, *, prompt_count=None):
+        trim_calls.append(1)
+        return messages
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(layer._executor, "_trim_messages_for_prompt_limit", _fake_trim)
+    monkeypatch.setattr("core.judgment.executor_helpers.asyncio.sleep", _fake_sleep)
+
+    caplog.set_level(logging.WARNING, logger="lingzhou.judgment")
+
+    raw, final_selection, err = await layer._executor._chat_with_retry(
+        selected_provider=provider,
+        selection=ModelSelection(
+            phase="initial",
+            tier="reasoner",
+            model_ref="bailian/qwen3.6-plus",
+            thinking="off",
+        ),
+        messages=[Message(role="user", content="hello")],
+        phase="initial",
+        user_message="hello",
+        thinking_override=None,
+        routing_overrides=None,
+        log_prefix="[test]",
+        fallback_prefer_tier="reasoner",
+        skills="none",
+    )
+
+    assert err is None
+    assert raw == '{"decision":"wait"}'
+    assert final_selection.model_ref == "bailian/qwen3.6-plus"
+    assert trim_calls == []
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] >= 1.0
+    assert "overflow_kind=output" in caplog.text
+    assert "compression_applied=false" in caplog.text
+
+
 def test_fmt_chat_history_keeps_full_content():
     from core.judgment.context import _fmt_chat_history
 

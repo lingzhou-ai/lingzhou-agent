@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,22 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger("lingzhou.judgment")
 _PROMPT_LIMIT_RE = re.compile(r"prompt token count of\s*(\d+)\s*exceeds the limit of\s*(\d+)", re.IGNORECASE)
+_PROMPT_LIMIT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _PROMPT_LIMIT_RE,
+    re.compile(r"maximum context length is\s*(\d+)\s*tokens", re.IGNORECASE),
+    re.compile(r"context_length_exceeded\s*[:=]\s*(\d+)", re.IGNORECASE),
+    re.compile(r"model\W*s max context length is\s*(\d+)", re.IGNORECASE),
+)
+_OUTPUT_AVAILABLE_RE = re.compile(
+    r"available[_\s-]?tokens\s*[:=]\s*(\d+)",
+    re.IGNORECASE,
+)
+_OUTPUT_WINDOW_RE = re.compile(
+    r"max[_\s-]?tokens\s*[:=]?\s*(\d+)\s*>\s*context[_\s-]?window\s*[:=]?\s*(\d+)\s*-\s*input[_\s-]?tokens\s*[:=]?\s*(\d+)",
+    re.IGNORECASE,
+)
+_RETRY_AFTER_RE = re.compile(r"retry[-_ ]?after\s*[:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+_RETRY_IN_SECONDS_RE = re.compile(r"retry(?:ing)?[^\n]*?in\s*(\d+(?:\.\d+)?)\s*s", re.IGNORECASE)
 
 
 class JudgmentExecutor:
@@ -330,15 +347,99 @@ class JudgmentExecutor:
 
     @staticmethod
     def _extract_prompt_limit(err_text: str) -> tuple[int | None, int | None]:
-        match = _PROMPT_LIMIT_RE.search(err_text or "")
+        text = err_text or ""
+        match = _PROMPT_LIMIT_RE.search(text)
+        if match:
+            try:
+                prompt = int(match.group(1))
+                limit = int(match.group(2))
+                return prompt, limit
+            except Exception:
+                return None, None
+
+        for pattern in _PROMPT_LIMIT_PATTERNS[1:]:
+            m = pattern.search(text)
+            if not m:
+                continue
+            try:
+                return None, int(m.group(1))
+            except Exception:
+                continue
+        return None, None
+
+    @staticmethod
+    def _extract_available_output_tokens(err_text: str) -> int | None:
+        text = err_text or ""
+        match = _OUTPUT_AVAILABLE_RE.search(text)
+        if match:
+            try:
+                value = int(match.group(1))
+                return value if value > 0 else None
+            except Exception:
+                return None
+        match = _OUTPUT_WINDOW_RE.search(text)
         if not match:
-            return None, None
+            return None
         try:
-            prompt = int(match.group(1))
-            limit = int(match.group(2))
-            return prompt, limit
+            _, context_window, input_tokens = match.groups()
+            value = int(context_window) - int(input_tokens)
+            return value if value > 0 else None
         except Exception:
-            return None, None
+            return None
+
+    @staticmethod
+    def _is_output_overflow_error(err_text: str) -> bool:
+        text = (err_text or "").lower()
+        if "max_tokens" in text and "available_tokens" in text:
+            return True
+        if "max_tokens" in text and "context_window" in text and "input_tokens" in text:
+            return True
+        return False
+
+    @staticmethod
+    def _extract_retry_after_seconds(err_text: str, exc: Exception | None = None) -> float | None:
+        if exc is not None:
+            response = getattr(exc, "response", None)
+            headers = getattr(response, "headers", None)
+            if headers is not None:
+                value = headers.get("retry-after") if hasattr(headers, "get") else None
+                if isinstance(value, str):
+                    try:
+                        sec = float(value.strip())
+                        if sec >= 0:
+                            return sec
+                    except Exception:
+                        pass
+
+        text = err_text or ""
+        for pattern in (_RETRY_AFTER_RE, _RETRY_IN_SECONDS_RE):
+            m = pattern.search(text)
+            if not m:
+                continue
+            try:
+                sec = float(m.group(1))
+                if sec >= 0:
+                    return sec
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _retry_delay_seconds(
+        attempt: int,
+        *,
+        base_delay: float = 1.2,
+        max_delay: float = 30.0,
+        retry_after_seconds: float | None = None,
+    ) -> float:
+        exp = max(0, attempt - 1)
+        delay = min(max_delay, base_delay * (2 ** exp))
+        if retry_after_seconds is not None:
+            delay = max(delay, retry_after_seconds)
+            jitter = random.uniform(0.0, min(0.2 * delay, 1.5))
+            return min(max_delay, delay + jitter)
+        jitter = random.uniform(-0.2 * delay, 0.2 * delay)
+        return max(0.1, min(max_delay, delay + jitter))
 
     @staticmethod
     def _estimate_text_tokens(text: str) -> int:
