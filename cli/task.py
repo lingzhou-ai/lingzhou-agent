@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 
 task_app = typer.Typer(
     name="task",

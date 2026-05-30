@@ -9,7 +9,7 @@ from core.metabolic import StateProposal
 from core.perception.ethos import ETHOS_DIMENSIONS
 from core.skill import _split_frontmatter, ensure_workspace_skill_file, workspace_skill_file
 
-from ._types import EvolutionResult
+from .types import EvolutionResult
 
 if TYPE_CHECKING:
     from core.evolution import EvolutionEngine

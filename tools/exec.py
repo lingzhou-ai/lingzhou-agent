@@ -373,14 +373,16 @@ async def process_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not procs:
         return ToolResult(summary=f"无进程（filter={status_filter})")
     lines = []
+    process_items = []
     for p in procs:
+        process_items.append(p.to_dict())
         state = "running" if not p.finished else f"done(exit={p.return_code})"
         mode = "pty" if p.pty else "pipe"
         duration = time.time() - p.started_at
         lines.append(f"  {p.session_id}: {state} [{mode}] | {p.command} | {duration:.0f}s")
     return ToolResult(
         summary=f"进程列表 ({len(procs)} 个):\n" + "\n".join(lines),
-        metadata={"count": len(procs), "status_filter": status_filter},
+        metadata={"count": len(procs), "status_filter": status_filter, "items": process_items},
     )
 
 
@@ -390,29 +392,7 @@ async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     info = _MANAGER.get(session_id)
     if not info:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")
-    duration = time.time() - info.started_at
-    interaction_available = bool(
-        not info.finished and not info.handle_lost and (
-            (info.pty and info.master_fd is not None) or (info.proc is not None)
-        )
-    )
-    status = {
-        "session_id": info.session_id,
-        "command": info.command,
-        "status": "running" if not info.finished else "finished",
-        "pid": info.pid,
-        "pty": info.pty,
-        "return_code": info.return_code,
-        "duration_seconds": round(duration, 1),
-        "output_length": len(info.stdout),
-        "error": info.error,
-        "timed_out": info.timed_out,
-        "restored": info.restored,
-        "handle_lost": info.handle_lost,
-        "interaction_available": interaction_available,
-        "meta_path": info.meta_path,
-        "log_path": info.log_path,
-    }
+    status = info.to_dict()
     return ToolResult(
         summary=json.dumps(status, ensure_ascii=False, indent=2),
         resource_key=session_id,

@@ -733,7 +733,7 @@ def test_onboard_runs_setup_then_init_for_fresh_install(monkeypatch, tmp_path):
 def test_find_config_missing_instructs_onboard(monkeypatch, tmp_path):
     from click.exceptions import Exit
 
-    from cli import _common as common
+    from cli import common
 
     printed: list[str] = []
 
@@ -1080,7 +1080,7 @@ def test_configure_lingzhou_logging_resets_console_log_each_time():
 
 
 def test_judgment_context_budget_trims_low_priority_sections():
-    from core.judgment.context_formatters_runtime import apply_context_budget
+    from core.judgment.context import apply_context_budget
 
     ctx = {
         "task_section": "T" * 2000,
@@ -2749,7 +2749,7 @@ async def _file_list_and_memory_search():
 
     from store.semantic import MemoryNode, SemanticMemory
     from tools.file import file_list, file_read
-    from tools.memory_ops import memory_add_semantic, memory_search
+    from tools.memory import memory_add_semantic, memory_search
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2797,7 +2797,7 @@ async def _memory_add_semantic_disambiguates_duplicate_titles():
     from pathlib import Path
 
     from store.semantic import SemanticMemory
-    from tools.memory_ops import memory_add_semantic
+    from tools.memory import memory_add_semantic
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2834,7 +2834,7 @@ async def _reflect_structural_disambiguates_duplicate_titles():
     from store.episodic import EpisodicMemory
     from store.semantic import SemanticMemory
     from store.task import TaskStore
-    from tools.memory_ops import reflect_structural
+    from tools.memory import reflect_structural
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -4902,7 +4902,7 @@ Strong body.
 
 def test_skill_catalog_pinned_mark_appears_for_last_applied():
     """catalog 格式中，last_applied 的 skill 应带 [↑] 标记。"""
-    from core.judgment.context_formatters_skills import _fmt_skill_catalog
+    from core.judgment.context import _fmt_skill_catalog
     from core.skill import SkillRegistry
 
     # 构建两个最小 skill
@@ -4967,7 +4967,7 @@ body.
 
 def test_primary_skill_uses_last_applied_memory(tmp_path):
     """primary_skill_section 应基于 LLM 上轮记忆（last_applied），而不是 keyword 预选。"""
-    from core.judgment.context_formatters_skills import _fmt_primary_skill
+    from core.judgment.context import _fmt_primary_skill
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
@@ -5009,7 +5009,7 @@ body.
 
 def test_primary_skill_none_when_no_last_applied():
     """无 last_applied 历史时，primary_skill 降级为空文本提示，不崩溃。"""
-    from core.judgment.context_formatters_skills import _fmt_primary_skill
+    from core.judgment.context import _fmt_primary_skill
 
     result = _fmt_primary_skill(None)
     assert result  # 有内容
@@ -5117,7 +5117,7 @@ def test_builtin_skill_catalog_coverage():
 
 def test_skill_catalog_section_contains_activation_hint():
     """catalog 格式字符串应包含 skill.activate 提示，告知 LLM 主动激活。"""
-    from core.judgment.context_formatters_skills import _fmt_skill_catalog
+    from core.judgment.context import _fmt_skill_catalog
     from core.skill import SkillRegistry
 
     reg = SkillRegistry()

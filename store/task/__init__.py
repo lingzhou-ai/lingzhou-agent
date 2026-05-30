@@ -2,18 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from store.task._migrate import (
-    migrate_interlocutor_facts,
-    migrate_ledger_run_id,
-    migrate_legacy_schema,
-)
-from store.task._query import (
+from store.task.query import (
     find_similar_open_tasks as _find_similar_open_tasks,
     query_open_tasks,
 )
@@ -26,15 +20,6 @@ from store.task.models import Failure, MetaReflection, Run, Task
 from store.task.reflection import MetaReflectionStore
 from store.task.run import RunStore
 from store.task.schema import (
-    _CREATE_CHAT,
-    _CREATE_FACTS,
-    _CREATE_FAILURES,
-    _CREATE_INDEXES,
-    _CREATE_LIFE_LEDGER,
-    _CREATE_META_REFLECTIONS,
-    _CREATE_RUNS,
-    _CREATE_SIGNALS,
-    _CREATE_TASKS,
     OPEN_TASK_STATUSES,
     RUNNABLE_TASK_STATUSES,
     TASK_DUPLICATE_REUSE_SCORE,
@@ -44,8 +29,6 @@ from store.task.schema import (
 from store.task.schema import build_task_similarity_query as build_task_similarity_query  # re-export
 from store.task.signal import SignalStore
 from store.task.state import TaskStateStore, build_task_data, build_task_insert
-
-logger = logging.getLogger(__name__)
 
 
 class TaskStore:
@@ -67,65 +50,19 @@ class TaskStore:
 
     @property
     def _db(self) -> aiosqlite.Connection:
-        assert self._db_conn is not None, "TaskStore not open — call open() first"
-        return self._db_conn
+        raise RuntimeError("task db binding missing")
 
     async def open(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        # timeout=60 在 C 层设置 sqlite3_busy_timeout(60000ms)，比 PRAGMA 更可靠；
-        # PRAGMA busy_timeout 对 SQLITE_BUSY_SNAPSHOT（WAL 快照冲突）无效，
-        # 须配合 Python 层 _write() 指数退避重试共同保障。
-        self._db_conn = await aiosqlite.connect(str(self._path), timeout=60)
-        await self._db.execute("PRAGMA journal_mode=WAL")
-        await self._db.execute("PRAGMA busy_timeout=30000")
-        await self._db.execute("PRAGMA synchronous=NORMAL")
-        await self._db.execute("PRAGMA wal_autocheckpoint=100")
-        await self._db.execute("PRAGMA foreign_keys=ON")
-        await migrate_legacy_schema(self._db)
-        await self._db.executescript(
-            _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS
-            + _CREATE_CHAT + _CREATE_RUNS + _CREATE_META_REFLECTIONS
-            + _CREATE_LIFE_LEDGER + _CREATE_INDEXES
-        )
-        await self._db.execute(
-            "UPDATE chat_messages SET status='pending' WHERE role='user' AND status='processing'"
-        )
-        await self._db.commit()
-        await migrate_interlocutor_facts(self._db)
-        await migrate_ledger_run_id(self._db)
+        raise RuntimeError("task open binding missing")
 
     async def close(self) -> None:
-        if self._db_conn:
-            await self._db_conn.close()
-            self._db_conn = None
+        raise RuntimeError("task close binding missing")
 
     async def wal_checkpoint(self) -> None:
-        """触发 WAL checkpoint（TRUNCATE 模式）。"""
-        await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        await self._db.commit()
+        raise RuntimeError("task checkpoint binding missing")
 
     async def _write_with_retry(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
-        """所有写操作的统一入口：串行锁 + 指数退避重试。
-
-        aiosqlite 单连接在同进程内仍可能遭遇 SQLITE_BUSY_SNAPSHOT（WAL 快照冲突）
-        或来自 IngressStore 同步连接的写竞争。PRAGMA busy_timeout 对
-        SQLITE_BUSY_SNAPSHOT 无效（不触发 busy handler），必须在 Python 层重试。
-        """
-        for attempt in range(6):
-            try:
-                async with self._write_lock:
-                    return await fn(*args, **kwargs)
-            except Exception as exc:
-                if "database is locked" in str(exc).lower() and attempt < 5:
-                    try:
-                        await self._db.rollback()
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.15 * (2 ** attempt))  # 0.15→0.3→0.6→1.2→2.4s
-                    logger.debug("[task_store] database locked, retry %d/5", attempt + 1)
-                else:
-                    raise
-        return None  # unreachable
+        raise RuntimeError("task write retry binding missing")
 
     # ── 任务操作 ─────────────────────────────────────────────────────────
 
@@ -420,13 +357,12 @@ class TaskStore:
         return await self._chat.get_recent_messages(limit, chat_id=chat_id)
 
     async def reset_in_progress_tasks(self) -> int:
-        async def _do() -> int:
-            result = await self._db.execute(
-                "UPDATE tasks SET status='pending' WHERE status='in_progress'"
-            )
-            await self._db.commit()
-            return result.rowcount if result else 0
-        return await self._write_with_retry(_do)
+        raise RuntimeError("task reset binding missing")
+
+
+from store.task.impl import bind_task_store
+
+bind_task_store(TaskStore)
 
 
 __all__ = [

@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from ._base import BaseAsyncStore
+from .base import BaseAsyncStore
 from .models import Task
 
 logger = logging.getLogger(__name__)

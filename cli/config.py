@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
-from cli._common import DEFAULT_CONFIG_PATH, console, resolve_config_path
+from cli.common import DEFAULT_CONFIG_PATH, console, resolve_config_path
 
 config_app = typer.Typer(name="config", help="配置文件管理", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 

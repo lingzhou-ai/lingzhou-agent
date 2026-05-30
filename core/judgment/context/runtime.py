@@ -7,9 +7,9 @@ import json
 import os
 import shutil
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from .context_utils import _cache_put, _context_fmt_cache, _estimate_tokens
+from .utils import _cache_put, _context_fmt_cache, _estimate_tokens
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -129,12 +129,12 @@ def _fmt_wm(
     rest = [item for item in items if item.get("kind") != "self_awareness"]
     ordered = anti_loop + rest
     lines = [header] + [f"- [{item['kind']}|p={item.get('priority', 0):.2f}] {item['content']}" for item in ordered]
-    large_items = sorted(ordered, key=lambda x: _estimate_tokens(x.get("content", "")), reverse=True)
-    large_items = [x for x in large_items if _estimate_tokens(x.get("content", "")) > 100]
+    large_items = sorted(ordered, key=lambda item: _estimate_tokens(item.get("content", "")), reverse=True)
+    large_items = [item for item in large_items if _estimate_tokens(item.get("content", "")) > 100]
     if large_items:
         warnings_str = ", ".join(
-            f"[{x.get('kind')}] ~{_estimate_tokens(x.get('content', ''))} tokens"
-            for x in large_items
+            f"[{item.get('kind')}] ~{_estimate_tokens(item.get('content', ''))} tokens"
+            for item in large_items
         )
         lines.append(f"⚠ 大条目（可能坠占预算）: {warnings_str}")
     return "\n".join(lines)
@@ -177,7 +177,7 @@ def _fmt_memory_system(
     max_concurrent_ticks: int,
     max_tick_queue: int,
 ) -> str:
-    stats = semantic.stats()
+    stats = cast(Any, semantic).stats()
     lines = [
         f"runtime_db: {runtime_db}",
         f"memory_dir: {memory_dir}",

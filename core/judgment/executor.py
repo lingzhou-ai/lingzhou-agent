@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.self_model import SelfModel
 
-from ._executor_helpers import (
+from .executor_helpers import (
     _chat_with_retry_impl,
     _repair_output_impl,
     _select_provider_impl,

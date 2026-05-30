@@ -63,7 +63,7 @@ class IngressWriter(_IngressBase):
     --------
     本类（及其子类 IngressStore）使用同步 sqlite3，供线程侧（channel/webhook）
     写入任务和消息。Runtime 内部的读写通过独立的 aiosqlite 异步路径
-    git push cnb HEAD:bot --force    （store/task/_base.py + TaskStore 等）完成。两条路径共享同一个 SQLite 文件。
+    git push cnb HEAD:bot --force    （store/task/base.py + TaskStore 等）完成。两条路径共享同一个 SQLite 文件。
 
     SQLite WAL 模式允许读写并发，但写写仍然串行。同一进程内两个连接并发写会触发
     SQLITE_LOCKED（不同于跨进程的 SQLITE_BUSY），且不受 sqlite3.connect(timeout)

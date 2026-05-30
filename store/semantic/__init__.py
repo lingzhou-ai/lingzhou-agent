@@ -211,7 +211,7 @@ class SemanticMemory:
         raise RuntimeError("semantic index validation binding missing")
 
 
-from ._impl import bind_semantic_memory
+from .impl import bind_semantic_memory
 
 bind_semantic_memory(SemanticMemory)
 

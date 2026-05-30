@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from cli._common import console
+from cli.common import console
 
 plugin_app = typer.Typer(name="plugin", help="插件管理", no_args_is_help=True)
 PLUGINS_DIR = Path(__file__).parent.parent / "plugins"

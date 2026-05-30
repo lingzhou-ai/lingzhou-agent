@@ -1,4 +1,4 @@
-"""cli/_common.py — CLI 公共工具：console、_load_cfg、PROJECT_ROOT。"""
+"""cli/common.py — CLI 公共工具：console、_load_cfg、PROJECT_ROOT。"""
 from __future__ import annotations
 
 from pathlib import Path

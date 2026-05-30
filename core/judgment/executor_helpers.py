@@ -1,4 +1,4 @@
-"""core/judgment/_executor_helpers.py — JudgmentExecutor 内部实现函数。"""
+"""core/judgment/executor_helpers.py — JudgmentExecutor 内部实现函数。"""
 from __future__ import annotations
 
 import asyncio

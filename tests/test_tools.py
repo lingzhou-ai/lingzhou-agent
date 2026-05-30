@@ -60,7 +60,7 @@ def test_task_tools_do_not_reenter_terminal_tasks():
 
 async def _task_tools_do_not_reenter_terminal_tasks():
     from store.task import TaskStore
-    from tools.task_ops import task_advance, task_complete
+    from tools.task import task_advance, task_complete
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -106,7 +106,7 @@ def test_task_tools_prefer_ctx_focus_task_over_global_active():
 
 async def _task_tools_prefer_ctx_focus_task_over_global_active():
     from store.task import TaskStore
-    from tools.task_ops import task_advance
+    from tools.task import task_advance
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -252,7 +252,7 @@ def test_skill_list_and_search():
     asyncio.run(_skill_list_and_search())
 
 async def _skill_list_and_search():
-    from tools.skill_ops import skill_list, skill_search
+    from tools.skill import skill_list, skill_search
 
     ws = _proj_root() / "workspace"
     ctx = _tool_ctx(workspace_dir=str(ws))
@@ -278,7 +278,7 @@ def test_skill_activate_reads_skill_markdown_and_resources():
 
 
 async def _skill_activate_reads_skill_markdown_and_resources():
-    from tools.skill_ops import skill_activate
+    from tools.skill import skill_activate
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -311,7 +311,7 @@ def test_skill_evolve_uses_judgment_provider_and_registry(monkeypatch):
 async def _skill_evolve_uses_judgment_provider_and_registry(monkeypatch):
     import core.evolution as evolution_mod
     from tools.registry import ToolContext, ToolRegistry
-    from tools.skill_ops import skill_evolve
+    from tools.skill import skill_evolve
 
     provider = object()
     registry = ToolRegistry()
@@ -355,8 +355,8 @@ def test_config_set_rejects_unknown_interval_key(monkeypatch):
 
 
 async def _config_set_rejects_unknown_interval_key(monkeypatch):
-    import tools.config_ops as config_mod
-    from tools.config_ops import config_set
+    import tools.config as config_mod
+    from tools.config import config_set
 
     with tempfile.TemporaryDirectory() as d:
         cfg_path = Path(d) / "lingzhou.json"
@@ -377,8 +377,8 @@ def test_config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
 
 
 async def _config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
-    import tools.config_ops as config_mod
-    from tools.config_ops import config_set
+    import tools.config as config_mod
+    from tools.config import config_set
 
     with tempfile.TemporaryDirectory() as d:
         cfg_path = Path(d) / "lingzhou.json"
@@ -1656,7 +1656,7 @@ def test_subagent_absorb_persists_parent_semantic_node_with_provenance():
 
 async def _subagent_absorb_persists_parent_semantic_node_with_provenance():
     from store.semantic import SemanticMemory
-    from tools.subagent_ops import subagent_absorb
+    from tools.subagent import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -1707,7 +1707,7 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
     from store.semantic import MemoryNode, SemanticMemory
     from store.task import TaskStore
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
-    from tools.subagent_ops import subagent_run
+    from tools.subagent import subagent_run
 
     @tool(ToolManifest(
         name="probe.semantic_note",
@@ -1811,7 +1811,7 @@ def test_subagent_absorb_surfaces_truncation_and_invalid_nodes():
 
 async def _subagent_absorb_surfaces_truncation_and_invalid_nodes():
     from store.semantic import SemanticMemory
-    from tools.subagent_ops import subagent_absorb
+    from tools.subagent import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)

@@ -1,4 +1,4 @@
-"""store/task/_query.py — TaskStore 复杂查询逻辑（包私有）。"""
+"""store/task/query.py — TaskStore 复杂查询逻辑（包私有）。"""
 from __future__ import annotations
 
 from typing import Any

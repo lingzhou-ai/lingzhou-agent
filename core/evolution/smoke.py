@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from core.metabolic import StateProposal
 
-from ._types import (
+from .types import (
     EvolutionResult,
     _clear_smoke_failure_artifacts,
     _format_smoke_failure_message,
@@ -240,7 +240,7 @@ async def write_pending_verification_fact(
 
 
 async def process_pending_verifications(engine: EvolutionEngine, ctx: ToolContext) -> list[EvolutionResult]:
-    from ._breaker import _update_target_breaker_state
+    from .breaker import _update_target_breaker_state
 
     facts = await ctx.task_store.list_facts(prefix="evolution:verify:", limit=50)
     results: list[EvolutionResult] = []

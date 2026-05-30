@@ -7,7 +7,7 @@ from __future__ import annotations
 
 
 
-from ._base import BaseAsyncStore
+from .base import BaseAsyncStore
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

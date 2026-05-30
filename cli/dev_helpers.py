@@ -4,7 +4,7 @@ import json as _json
 from pathlib import Path
 from typing import Any
 
-from cli._common import console
+from cli.common import console
 
 _RUNTIME_ROUTING_TIERS = frozenset({"reader", "reasoner", "repair"})
 _MODEL_TARGET_ALIASES = {

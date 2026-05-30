@@ -154,7 +154,7 @@ def test_task_add_reuses_similar_open_task():
 
 async def _task_add_reuses_similar_open_task():
     from store.task import TaskStore
-    from tools.task_ops import task_add
+    from tools.task import task_add
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "task-add-reuse.db")
@@ -190,7 +190,7 @@ def test_task_add_does_not_reuse_self_drive_task_for_external_request():
 
 async def _task_add_does_not_reuse_self_drive_task_for_external_request():
     from store.task import TaskStore
-    from tools.task_ops import task_add
+    from tools.task import task_add
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "task-add-no-self-drive-reuse.db")
@@ -269,7 +269,7 @@ def test_task_update_can_clear_runtime_fields():
 
 async def _task_update_can_clear_runtime_fields():
     from store.task import TaskStore
-    from tools.task_ops import task_update
+    from tools.task import task_update
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "tasks.db")
@@ -347,7 +347,7 @@ def test_task_wait_resume_can_clear_runtime_fields():
 
 async def _task_wait_resume_can_clear_runtime_fields():
     from store.task import TaskStore
-    from tools.task_ops import task_resume, task_wait
+    from tools.task import task_resume, task_wait
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "wait-resume.db")
@@ -454,7 +454,7 @@ def test_task_wait_allows_external_wait_without_wait_key():
 
 async def _task_wait_allows_external_wait_without_wait_key():
     from store.task import TaskStore
-    from tools.task_ops import task_wait
+    from tools.task import task_wait
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "wait-guard.db")
@@ -488,7 +488,7 @@ def test_task_wait_rejects_unknown_wait_kind():
 
 async def _task_wait_rejects_unknown_wait_kind():
     from store.task import TaskStore
-    from tools.task_ops import task_wait
+    from tools.task import task_wait
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "wait-kind.db")
@@ -521,7 +521,7 @@ def test_task_steer_inbox_is_consumed_once():
 
 async def _task_steer_inbox_is_consumed_once():
     from store.task import TaskStore
-    from tools.task_ops import task_steer
+    from tools.task import task_steer
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "steer.db")

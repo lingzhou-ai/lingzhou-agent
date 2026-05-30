@@ -41,6 +41,32 @@ class ProcessInfo:
     handle_lost: bool = False
     _output_chunks: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        now = time.time()
+        duration = max(0.0, now - float(self.started_at or 0.0)) if self.started_at else 0.0
+        interaction_available = bool(
+            not self.finished and not self.handle_lost and (
+                (self.pty and self.master_fd is not None) or (self.proc is not None)
+            )
+        )
+        return {
+            "session_id": self.session_id,
+            "command": self.command,
+            "status": "running" if not self.finished else "finished",
+            "pid": self.pid,
+            "pty": self.pty,
+            "return_code": self.return_code,
+            "duration_seconds": round(duration, 1),
+            "output_length": len(self.stdout),
+            "error": self.error,
+            "timed_out": self.timed_out,
+            "restored": self.restored,
+            "handle_lost": self.handle_lost,
+            "interaction_available": interaction_available,
+            "meta_path": self.meta_path,
+            "log_path": self.log_path,
+        }
+
 
 class ProcessManager:
     """追踪所有通过 exec 启动的进程，并把最小状态持久化到磁盘。"""

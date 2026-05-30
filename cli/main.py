@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from cli._common import DEFAULT_CONFIG_PATH, console
+from cli.common import DEFAULT_CONFIG_PATH, console
 from cli.auth import auth_app
 from cli.bootstrap import init, is_onboarded, onboard, setup
 from cli.chat import chat

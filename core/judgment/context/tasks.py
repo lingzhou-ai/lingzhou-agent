@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .context_utils import (
+from .utils import (
     _cache_put,
     _clip_text,
     _context_fmt_cache,
@@ -83,12 +83,11 @@ def _fmt_task(task: Task | None) -> str:
         if plan_lines:
             lines.append("当前计划:")
             lines.extend(plan_lines)
-            # 有 in_progress 步骤时注入高优先级事实信号，避免计划态在判断层被忽略。
             in_progress_step = next(
                 (
-                    str(s.get("step") or "").strip()
-                    for s in raw_plan
-                    if isinstance(s, dict) and s.get("status") == "in_progress"
+                    str(step_info.get("step") or "").strip()
+                    for step_info in raw_plan
+                    if isinstance(step_info, dict) and step_info.get("status") == "in_progress"
                 ),
                 None,
             )
@@ -97,19 +96,18 @@ def _fmt_task(task: Task | None) -> str:
                     f"⚠️ 计划信号：步骤 [{in_progress_step}] 当前处于 in_progress。"
                     "若没有更强的新证据或 inbox 新消息，优先直接推进这一步，而不是重新 plan。"
                 )
-    # inbox_messages：由 task.steer / tick 注入的新用户消息，应先评估它是否改变当前方向
     inbox: list = task.extras.get("inbox_messages") or [] if isinstance(task.extras, dict) else []
     if isinstance(inbox, list) and inbox:
         lines.append(f"⚠️ 新增用户消息（inbox {len(inbox)} 条，先评估这些新消息是否改变当前方向）:")
-        for i, msg in enumerate(inbox, 1):
-            lines.append(f"  [{i}] {str(msg)}")
+        for index, msg in enumerate(inbox, 1):
+            lines.append(f"  [{index}] {str(msg)}")
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
     return "\n".join(lines)
 
 
 def _fmt_recent_runs(runs: list[Run]) -> str:
-    cache_key = f"_fmt_recent_runs:{hash(tuple(r.id for r in runs)) if runs else 'none'}"
+    cache_key = f"_fmt_recent_runs:{hash(tuple(run.id for run in runs)) if runs else 'none'}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
     if not runs:
@@ -180,7 +178,7 @@ def _fmt_evolution_breakers(facts: list[tuple[str, str]]) -> str:
 
 
 def _fmt_waiting_tasks(tasks: list[Task]) -> str:
-    cache_key = f"_fmt_waiting_tasks:{hash(tuple(t.id for t in tasks)) if tasks else 'none'}"
+    cache_key = f"_fmt_waiting_tasks:{hash(tuple(task.id for task in tasks)) if tasks else 'none'}"
     if cache_key in _context_fmt_cache:
         return _context_fmt_cache[cache_key]
     if not tasks:
@@ -203,7 +201,7 @@ def _fmt_waiting_tasks(tasks: list[Task]) -> str:
 
 def _fmt_runnable_tasks(tasks: list[Task], active_task_id: int | None = None) -> str:
     cache_key = (
-        f"_fmt_runnable_tasks:{hash(tuple((t.id, t.status) for t in tasks)) if tasks else 'none'}:"
+        f"_fmt_runnable_tasks:{hash(tuple((task.id, task.status) for task in tasks)) if tasks else 'none'}:"
         f"{active_task_id or 0}"
     )
     if cache_key in _context_fmt_cache:
@@ -256,7 +254,7 @@ def _fmt_failures(failures: list[Failure]) -> str:
     return "\n".join(lines)
 
 
-def _fmt_durable_failures(snapshot: dict[str, object]) -> str:
+def _fmt_durable_failures(snapshot: dict[str, Any]) -> str:
     threshold = int(snapshot.get("threshold") or 0)
     ttl_sec = int(snapshot.get("ttl_sec") or 0)
     lines = [f"policy: threshold={threshold} ttl_sec={ttl_sec}"]

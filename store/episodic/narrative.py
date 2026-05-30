@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ._source import source_from_role
+from .source import source_from_role
 
 _log = logging.getLogger("lingzhou.episodic")
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from core.metabolic import StateProposal
 
-from ._types import _breaker_fact_key, _global_breaker_fact_key
+from .types import _breaker_fact_key, _global_breaker_fact_key
 
 if TYPE_CHECKING:
     from core.evolution import EvolutionEngine

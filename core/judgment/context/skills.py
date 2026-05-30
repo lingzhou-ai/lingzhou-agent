@@ -72,14 +72,10 @@ def _fmt_cognitive_signals(signals: CognitiveSignals | None) -> str:
 
 
 def _fmt_blind_spots(probes: list[Any]) -> str:
-    """计算当前可能存在的感知盲点——LLM 意识不到的缺失。
-
-    不是命令，是让 LLM 自己决定是否需要关注这些潜在盲区。
-    """
     coverage_tags = {
         tag
-        for p in probes
-        for tag in normalize_probe_coverage_tags(getattr(p, "coverage_tags", []))
+        for probe in probes
+        for tag in normalize_probe_coverage_tags(getattr(probe, "coverage_tags", []))
     }
     has_channel_health = "ops:channel_health" in coverage_tags
     has_api_quota = "ops:api_quota" in coverage_tags
@@ -105,11 +101,6 @@ def _fmt_blind_spots(probes: list[Any]) -> str:
 
 
 def _fmt_probe_sensors(probes: list[Any]) -> str:
-    """将当前已部署的探针传感器网络格式化为 LLM 可读的感知面板。
-
-    每个探针显示：状态 / 名称 / 部署目的 / 执行规格 / 最近读数。
-    让 LLM 随时知道自己的感知网络状态及每个探针的意义。
-    """
     if not probes:
         return (
             "⚠️ 你目前没有部署任何探针。探针是你的『感知触手』——采集外部信息，结果自动注入工作记忆。\n"
@@ -123,46 +114,44 @@ def _fmt_probe_sensors(probes: list[Any]) -> str:
         "探针结果不是绝对真相：confidence<0.60 或标记为布放可疑时，先校验探针布放（spec/target/trigger），再据此决策。",
         "盲点推断只读取显式 coverage_tags，不再从 purpose/spec 猜测；未声明 coverage_tags 的探针不会计入覆盖。",
     ]
-    for p in probes:
-        mark = "✓" if p.enabled else "⊘"
-        trigger_desc = p.trigger or "manual"
-        alert_mark = " 🔔" if p.alert_expr else ""
-        confidence = getattr(p, "last_confidence", None)
+    for probe in probes:
+        mark = "✓" if probe.enabled else "⊘"
+        trigger_desc = probe.trigger or "manual"
+        alert_mark = " 🔔" if probe.alert_expr else ""
+        confidence = getattr(probe, "last_confidence", None)
         confidence_mark = ""
         if isinstance(confidence, (int, float)):
             confidence_mark = f" confidence={float(confidence):.2f}"
-        suspect_mark = " ⚠️布放可疑" if getattr(p, "last_suspect", False) else ""
-        # 目的说明
-        purpose_line = f"  └ 目的: {p.purpose}" if getattr(p, "purpose", "") else ""
-        # 最近读数
+        suspect_mark = " ⚠️布放可疑" if getattr(probe, "last_suspect", False) else ""
+        purpose_line = f"  └ 目的: {probe.purpose}" if getattr(probe, "purpose", "") else ""
         reading_line = ""
-        if p.last_run_at:
-            t = p.last_run_at
-            if p.last_error:
-                reading_line = f"  └ @{t} ❌ {p.last_error}"
-            elif p.last_result:
-                result_text = p.last_result.strip().replace("\n", " ")
-                reading_line = f"  └ @{t} → {result_text}"
+        if probe.last_run_at:
+            timestamp = probe.last_run_at
+            if probe.last_error:
+                reading_line = f"  └ @{timestamp} ❌ {probe.last_error}"
+            elif probe.last_result:
+                result_text = probe.last_result.strip().replace("\n", " ")
+                reading_line = f"  └ @{timestamp} → {result_text}"
             else:
-                reading_line = f"  └ @{t} (无输出)"
+                reading_line = f"  └ @{timestamp} (无输出)"
         else:
             reading_line = "  └ 尚未执行"
-        conf_reason = str(getattr(p, "last_confidence_reason", "") or "").strip()
+        conf_reason = str(getattr(probe, "last_confidence_reason", "") or "").strip()
         conf_line = ""
         if conf_reason:
             conf_line = f"  └ 可信度依据: {conf_reason}"
         alert_line = ""
-        if getattr(p, "last_alerted", False):
-            detail = str(getattr(p, "last_alert_detail", "") or "").strip()
+        if getattr(probe, "last_alerted", False):
+            detail = str(getattr(probe, "last_alert_detail", "") or "").strip()
             alert_line = f"  └ 🔔 上次告警: {detail}" if detail else "  └ 🔔 上次告警已触发"
-        coverage_tags = normalize_probe_coverage_tags(getattr(p, "coverage_tags", []))
+        coverage_tags = normalize_probe_coverage_tags(getattr(probe, "coverage_tags", []))
         coverage_line = (
             f"  └ coverage: {', '.join(coverage_tags)}"
             if coverage_tags else
             "  └ coverage: （未声明，不计入盲点覆盖）"
         )
         header = (
-            f"  {mark} [{p.name}] {p.kind}/{trigger_desc} →{p.data_back}{alert_mark}"
+            f"  {mark} [{probe.name}] {probe.kind}/{trigger_desc} →{probe.data_back}{alert_mark}"
             f"{confidence_mark}{suspect_mark}"
         )
         entry = header

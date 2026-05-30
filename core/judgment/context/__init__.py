@@ -1,8 +1,17 @@
-"""core/judgment/context.py - judgment 上下文组装相关格式化与预算 helper。"""
+"""Compatibility facade for judgment context helpers.
+
+This module keeps the stable import path ``core.judgment.context`` while the
+implementation is grouped by topic inside this package.
+"""
 
 from __future__ import annotations
 
-from .context_formatters_runtime import (
+from .facts import (
+    _FACT_CONTEXT_EXCLUDE_PREFIXES,
+    _load_context_facts_snapshot,
+    _load_durable_failure_snapshot,
+)
+from .runtime import (
     _fmt_chat_continuity,
     _fmt_chat_history,
     _fmt_chat_memories,
@@ -24,7 +33,7 @@ from .context_formatters_runtime import (
     _fmt_wm,
     apply_context_budget,
 )
-from .context_formatters_skills import (
+from .skills import (
     _fmt_blind_spots,
     _fmt_cognitive_signals,
     _fmt_primary_skill,
@@ -33,7 +42,7 @@ from .context_formatters_skills import (
     _fmt_skills,
     _short_skill_desc,
 )
-from .context_formatters_tasks import (
+from .tasks import (
     _fmt_context_facts,
     _fmt_durable_failures,
     _fmt_evolution_breakers,
@@ -45,12 +54,7 @@ from .context_formatters_tasks import (
     _fmt_waiting_tasks,
     _task_narrative,
 )
-from .context_sections_facts import (
-    _FACT_CONTEXT_EXCLUDE_PREFIXES,
-    _load_context_facts_snapshot,
-    _load_durable_failure_snapshot,
-)
-from .context_utils import (
+from .utils import (
     _CONTEXT_SCHEMA_KEYS,
     _MAX_CONTEXT_CACHE_SIZE,
     _cache_put,

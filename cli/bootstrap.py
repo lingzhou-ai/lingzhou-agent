@@ -10,7 +10,7 @@ from typing import Annotated
 import typer
 from rich.panel import Panel
 
-from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg, resolve_config_path
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg, resolve_config_path
 
 _ENV_VAR_RE = _re.compile(r"^[A-Z_][A-Z0-9_]*$")
 

@@ -19,7 +19,7 @@ from rich.panel import Panel
 if TYPE_CHECKING:
     from store.task import TaskStore
 
-from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from store.task import sanitize_chat_content
 
 # 等待回复最长秒数（-a 模式）

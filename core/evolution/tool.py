@@ -9,8 +9,8 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ._smoke import smoke_test_module, write_pending_verification_fact
-from ._types import EvolutionResult, _clean_old_backups
+from .smoke import smoke_test_module, write_pending_verification_fact
+from .types import EvolutionResult, _clean_old_backups
 
 if TYPE_CHECKING:
     from core.evolution import EvolutionEngine

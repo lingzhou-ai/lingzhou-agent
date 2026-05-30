@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ._base import BaseAsyncStore
+from .base import BaseAsyncStore
 
 FACT_UPSERT_SQL = (
     "INSERT INTO facts (key, value, scope, updated_at) VALUES (?,?,?,datetime('now')) "

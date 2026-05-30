@@ -1,4 +1,4 @@
-"""store/task/_migrate.py — TaskStore 一次性 DB 迁移逻辑（包私有）。"""
+"""store/task/migrate.py — TaskStore 一次性 DB 迁移逻辑（包私有）。"""
 from __future__ import annotations
 
 import json

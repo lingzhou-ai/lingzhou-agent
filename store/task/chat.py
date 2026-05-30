@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ._base import BaseAsyncStore
+from .base import BaseAsyncStore
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CHAT_ZERO_WIDTH_CHARS = {"\ufeff", "\u200b", "\u200c", "\u200d", "\u2060"}

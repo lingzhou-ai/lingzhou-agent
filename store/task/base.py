@@ -1,4 +1,4 @@
-"""store/memory/_base.py — 异步 Store 基类。"""
+"""store/task/base.py — 异步 Store 基类。"""
 from __future__ import annotations
 
 

@@ -11,9 +11,6 @@ from typing import Any
 
 _log = logging.getLogger("lingzhou.judgment")
 
-# --- 纯计算格式化函数缓存（per-tick 粒度）---
-# key = tick_id + 函数名 + hash(参数); value = 格式化结果或预算后的上下文字典
-# _MAX_CONTEXT_CACHE_SIZE：每 tick 最多缓存条数，防止异常长 tick 内存无界增长
 _context_fmt_cache: OrderedDict[str, Any] = OrderedDict()
 _MAX_CONTEXT_CACHE_SIZE = 512
 
@@ -82,7 +79,6 @@ def _fill_template(template: str, ctx: dict[str, Any]) -> str:
     return re.sub(r"\{\{([^}]+)\}\}", replace, template)
 
 
-# 简单缓存，避免重复计算高频短文本
 @functools.lru_cache(maxsize=8192)
 def _estimate_tokens(text: str) -> int:
     if not text:
@@ -183,9 +179,8 @@ def _compress_text_segments(text: str, keep_tokens: int) -> str:
 
     body = keep_head + (["\n[...省略...]\n"] if head_idx <= tail_idx else []) + keep_tail[::-1]
     result = "".join(body)
-    # 结构安全保护：自动补全未闭合的括号/引号，防止压缩破坏代码/JSON结构
     open_chars = "([{"
-    close_chars = ")]}"
+    close_chars = ")] }".replace(" ", "")
     stack = []
     for ch in result:
         if ch in open_chars:
@@ -195,7 +190,6 @@ def _compress_text_segments(text: str, keep_tokens: int) -> str:
     return result + "".join(reversed(stack))
 
 
-# --- 严格 Schema 校验 ---
 _CONTEXT_SCHEMA_KEYS = ["identity", "tasks", "memory", "perception"]
 
 

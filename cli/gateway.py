@@ -16,7 +16,7 @@ from typing import Annotated, Any
 import typer
 
 from channels import describe_channel_runtime, start_channel_runtime
-from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from cli.bootstrap import onboarding_status
 from cli.logs import logs_crash, logs_errors, logs_stats, logs_tail, logs_wechat
 from cli.plugin import plugin_app

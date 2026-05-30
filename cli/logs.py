@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from cli._common import console
+from cli.common import console
 
 LOG_DIR = Path("~/.lingzhou/logs").expanduser()
 DAILY_LOG = LOG_DIR / "lingzhou-2026-05-17.log"  # fallback，运行时动态拼接

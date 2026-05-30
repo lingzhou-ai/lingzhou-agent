@@ -11,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from cli._common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg
+from cli.common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg
 from cli.dev_helpers import (
     _apply_model_target_selection,
     _effective_target_model,
@@ -149,7 +149,7 @@ def model(
     cfg_path = config if config.exists() else None
     # 尝试在搜索路径中找到配置
     if cfg_path is None:
-        from cli._common import find_config
+        from cli.common import find_config
         try:
             cfg_path = find_config(config)
         except SystemExit:

@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 import typer
 from rich.panel import Panel
 
-from cli._common import DEFAULT_CONFIG_PATH, console, load_cfg
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from store.auth import (
     AUTH_PROFILES_PATH,
     COPILOT_PROFILE_ID,
