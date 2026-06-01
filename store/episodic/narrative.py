@@ -242,6 +242,22 @@ def load_markdown_context(path: Path, max_chars: int = 4000) -> str:
     return text
 
 
+def _load_recent_blocks(path: Path, n_recent: int) -> str:
+    """按完整情节块（--- 分隔）加载最近 n_recent 条，不做字节截断。
+
+    统一机制（Tulving 1983 episode unit）：
+    - 每条 --- 块是一个完整的交互事件，是语义原子，不可在块内截断。
+    - n_recent 控制注入深度，而非字节数；内容密度变化时自动适应。
+    - 越新的块越靠近尾部，天然满足 recency bias（Murdock 1962）。
+    """
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    blocks = [b.strip() for b in text.split("---") if b.strip()]
+    recent = blocks[-n_recent:] if len(blocks) > n_recent else blocks
+    return "\n---\n".join(recent)
+
+
 def load_for_speaker_recognition(memory, interlocutor_id: str | None, *, n_recent: int = 5) -> str:
     """取最近 n_recent 条完整交互块，专用于说话人识别（recognition，非 recall）。
 
@@ -263,28 +279,28 @@ def load_for_speaker_recognition(memory, interlocutor_id: str | None, *, n_recen
     return "\n---\n".join(recent)
 
 
-def load_for_context(memory, task_id: str | None, max_chars: int = 4000) -> str:
-    """读取情节记忆，注入 LLM context（保留全文，不做字符级硬截断）。"""
-    return memory._load_markdown_context(memory._resolve_task_path(task_id), max_chars)
+def load_for_context(memory, task_id: str | None, n_recent: int = 20) -> str:
+    """读取情节记忆，注入 LLM context；取最近 n_recent 条完整事件块。"""
+    return _load_recent_blocks(memory._resolve_task_path(task_id), n_recent)
 
 
-def load_for_chat_context(memory, chat_id: str | None, max_chars: int = 4000) -> str:
+def load_for_chat_context(memory, chat_id: str | None, n_recent: int = 20) -> str:
     """读取 chat 维度的情节连续性，跨 task 保留同一 chat 的完整对话线索。"""
     if not chat_id:
         return ""
-    return memory._load_markdown_context(memory._chat_path(chat_id), max_chars)
+    return _load_recent_blocks(memory._chat_path(chat_id), n_recent)
 
 
-def load_for_interlocutor_context(memory, interlocutor_id: str | None, max_chars: int = 4000) -> str:
+def load_for_interlocutor_context(memory, interlocutor_id: str | None, n_recent: int = 20) -> str:
     """读取当前交互对象维度的情节连续性，跨 chat 保留同一对象的互动片段。"""
     if not interlocutor_id:
         return ""
-    return memory._load_markdown_context(memory._interlocutor_path(interlocutor_id), max_chars)
+    return _load_recent_blocks(memory._interlocutor_path(interlocutor_id), n_recent)
 
 
-def load_for_task_narrative(memory, task_id: str | None, max_chars: int = 4000) -> str:
+def load_for_task_narrative(memory, task_id: str | None, n_recent: int = 20) -> str:
     """任务叙事模式（Ricoeur 1984）：跨 chat 读取该任务的完整情节流。"""
-    return memory.load_for_context(task_id, max_chars)
+    return memory.load_for_context(task_id, n_recent)
 
 
 def load_recent_daily_context(memory, days: int = 2, max_chars: int = 1200) -> str:

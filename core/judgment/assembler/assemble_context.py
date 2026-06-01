@@ -146,8 +146,8 @@ async def _load_context_artifacts(
     loop = asyncio.get_running_loop()
     task_id_str = str(task.id) if task else None
     futures: list[tuple[str, Any]] = [
-        ("episodic_text", loop.run_in_executor(None, episodic.load_for_context, task_id_str, assembler._cfg.memory.episodic_max_chars)),
-        ("chat_continuity", loop.run_in_executor(None, episodic.load_for_chat_context, resolved_chat_id, assembler._cfg.memory.episodic_max_chars) if resolved_chat_id else None),
+        ("episodic_text", loop.run_in_executor(None, episodic.load_for_context, task_id_str, assembler._cfg.memory.episodic_n_recent)),
+        ("chat_continuity", loop.run_in_executor(None, episodic.load_for_chat_context, resolved_chat_id, assembler._cfg.memory.episodic_n_recent) if resolved_chat_id else None),
         ("recent_turns", loop.run_in_executor(None, functools.partial(episodic.get_recent_turns, task_id_str, assembler._cfg.thresholds.chat_history_turn_limit, chat_id=resolved_chat_id)) if (resolved_chat_id or task_id_str) else None),
         ("chat_memories", loop.run_in_executor(None, functools.partial(semantic.retrieve, search_query or resolved_chat_id or "", min(3, assembler._cfg.memory.semantic_top_k), tag=f"chat:{str(resolved_chat_id or '').strip()}", source="chat_summary")) if resolved_chat_id else None),
         ("speaker_hint", asyncio.create_task(task_store.get_fact(f"chat:{resolved_chat_id}:interlocutor_profile_id")) if resolved_chat_id else None),
@@ -246,7 +246,7 @@ async def _resolve_context_references(
             source_hint=str(getattr(task, "source", "") or "") if task else "",
         )
         if resolved_speaker.node_id != cached_speaker_id or not interlocutor_continuity_text:
-            interlocutor_continuity_text = await loop.run_in_executor(None, episodic.load_for_interlocutor_context, resolved_speaker.node_id, assembler._cfg.memory.episodic_max_chars)
+            interlocutor_continuity_text = await loop.run_in_executor(None, episodic.load_for_interlocutor_context, resolved_speaker.node_id, assembler._cfg.memory.episodic_n_recent)
     return {
         "resolved_entities": resolved_entities,
         "resolved_speaker": resolved_speaker,

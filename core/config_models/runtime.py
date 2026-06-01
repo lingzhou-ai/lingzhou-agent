@@ -37,7 +37,8 @@ class MemoryConfig(BaseModel):
             "0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。"
         ),
     )
-    episodic_max_chars: int = Field(default=0, ge=0, description="注入 context 的情节记忆字符上限；0 = 不限制；资源充裕模型可适当增大以保留更多任务历史证据")
+    episodic_max_chars: int = Field(default=0, ge=0, description="[已弃用] 字符级硬截断；改用 episodic_n_recent 进行块级加载，此字段不再被主路径读取")
+    episodic_n_recent: int = Field(default=20, ge=1, description="注入 context 的情节记忆块数上限（每块 = 一条完整交互事件，--- 分隔）；越新越靠后（recency bias，Murdock 1962）；Tulving 1983 episode unit")
     semantic_top_k: int = Field(default=5, ge=1, description="语义检索返回条目数")
     failure_limit: int = Field(default=10, ge=1, description="注入 bundle 的失败记录数")
     consolidate_threshold: float = Field(default=0.90, ge=0.0, le=1.0, description="WM 压力超过此値触发整合；提高阈値可减少快照频率，让更多证据在 WM 中存活更长")
