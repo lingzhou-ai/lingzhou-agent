@@ -389,7 +389,7 @@ def test_episodic_migrates_legacy_root_narrative_files():
         assert not legacy_global.exists()
         assert EpisodicMemory.narrative_path_for_dir(memory_dir, "legacy").read_text(encoding="utf-8") == "旧任务叙事"
         assert EpisodicMemory.narrative_path_for_dir(memory_dir, None).read_text(encoding="utf-8") == "旧全局叙事"
-        assert ep.load_for_context("legacy", max_chars=200) == "旧任务叙事"
+        assert ep.load_for_context("legacy", n_recent=200) == "旧任务叙事"
         assert "legacy" in ep.list_tasks()
 
 

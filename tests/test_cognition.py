@@ -645,7 +645,7 @@ async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
             semantic = SemanticMemory(root / "semantic")
             loop = cast("Any", SimpleNamespace(
                 _task_store=store,
-                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "任务完成叙事"),
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, n_recent=40000: "任务完成叙事"),
                 _semantic=semantic,
                 _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
                 _wm=SimpleNamespace(add=lambda item: None),
@@ -726,7 +726,7 @@ async def _consolidate_promotes_semantic_nodes_and_durable_user_facts():
             assert weekly_summary.kind == "daily_summary"
             assert "切换策略" in weekly_summary.body or "我叫bat" in weekly_summary.body
 
-            narrative = loop._episodic.load_for_context(str(task_id), max_chars=2000)
+            narrative = loop._episodic.load_for_context(str(task_id), n_recent=2000)
             assert "切换策略" in narrative
         finally:
             await store.close()
@@ -758,7 +758,7 @@ async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
             semantic = SemanticMemory(root / "semantic")
             loop = cast("Any", SimpleNamespace(
                 _task_store=store,
-                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, n_recent=40000: "", record=lambda **kwargs: None),
                 _semantic=semantic,
                 _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
                 _wm=SimpleNamespace(add=lambda item: None),
@@ -818,7 +818,7 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
             semantic = SemanticMemory(root / "semantic")
             loop = cast("Any", SimpleNamespace(
                 _task_store=store,
-                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, max_chars=40000: "", record=lambda **kwargs: None),
+                _episodic=SimpleNamespace(load_for_context=lambda task_id_str, n_recent=40000: "", record=lambda **kwargs: None),
                 _semantic=semantic,
                 _emotion=SimpleNamespace(valence=0.66, arousal=0.44),
                 _wm=SimpleNamespace(add=lambda item: None),
@@ -826,6 +826,7 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
                     thresholds=SimpleNamespace(wm_pri_insight=0.8),
                     memory=SimpleNamespace(chat_crystallize_every=1),
                     emotion=SimpleNamespace(),
+                ),
                 ),
             ))
             action = cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection="事件反思", rationale=""))

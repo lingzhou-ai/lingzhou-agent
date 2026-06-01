@@ -232,16 +232,6 @@ def record(
             _log.warning("[episodic] FTS5 写入失败（narrative 已提交，search 将退回 .md 扫描）: %s", fts_err)
 
 
-def load_markdown_context(path: Path, max_chars: int = 4000) -> str:
-    if not path.exists():
-        return ""
-    text = path.read_text(encoding="utf-8")
-    if max_chars and max_chars > 0 and len(text) > max_chars:
-        # 保留最新的尾部：情节记忆按时序追加，越新越相关（recency effect，Murdock 1962）
-        text = text[-max_chars:]
-    return text
-
-
 def _load_recent_blocks(path: Path, n_recent: int) -> str:
     """按完整情节块（--- 分隔）加载最近 n_recent 条，不做字节截断。
 
@@ -269,14 +259,7 @@ def load_for_speaker_recognition(memory, interlocutor_id: str | None, *, n_recen
     """
     if not interlocutor_id:
         return ""
-    path = memory._interlocutor_path(interlocutor_id)
-    if not path.exists():
-        return ""
-    text = path.read_text(encoding="utf-8")
-    # 以 --- 为分隔符切块，每块是一条完整的交互事件
-    blocks = [b.strip() for b in text.split("---") if b.strip()]
-    recent = blocks[-n_recent:] if len(blocks) > n_recent else blocks
-    return "\n---\n".join(recent)
+    return _load_recent_blocks(memory._interlocutor_path(interlocutor_id), n_recent)
 
 
 def load_for_context(memory, task_id: str | None, n_recent: int = 20) -> str:

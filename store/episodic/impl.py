@@ -91,7 +91,6 @@ def bind_episodic_memory(cls: type[EpisodicMemory]) -> None:
     cls._insert_narrative_row = narrative.insert_narrative_row
     cls._sync_narrative_fts = narrative.sync_narrative_fts
     cls.record = narrative.record
-    cls._load_markdown_context = staticmethod(narrative.load_markdown_context)
     cls.load_for_context = narrative.load_for_context
     cls.load_for_chat_context = narrative.load_for_chat_context
     cls.load_for_interlocutor_context = narrative.load_for_interlocutor_context

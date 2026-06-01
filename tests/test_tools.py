@@ -1677,7 +1677,7 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
 
             assert result.completed is True
             assert result.last_summary == "wrote episodic"
-            assert episodic.load_for_context(None, max_chars=4000) == ""
+            assert episodic.load_for_context(None, n_recent=4000) == ""
             assert episodic.get_recent_turns(task_id=None, limit=5) == []
         finally:
             await store.close()

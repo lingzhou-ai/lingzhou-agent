@@ -333,7 +333,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     # 程序性记忆编译：任务叙事 → 语义记忆节点（Anderson 1983 ACT-R）
     task_id_str = str(task.id)
-    narrative = ctx.episodic.load_for_context(task_id_str, max_chars=1200)
+    narrative = ctx.episodic.load_for_context(task_id_str, n_recent=5)
     if narrative.strip():
         node = MemoryNode(
             id=f"skill-{uuid.uuid4().hex[:12]}",

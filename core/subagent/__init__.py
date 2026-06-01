@@ -95,8 +95,8 @@ class _SubagentEpisodicView:
     def record_event(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def load_for_context(self, task_id: str | None, *, max_chars: int = 4000) -> str:
-        return self._parent.load_for_context(task_id, max_chars=max_chars)
+    def load_for_context(self, task_id: str | None, *, n_recent: int = 20) -> str:
+        return self._parent.load_for_context(task_id, n_recent=n_recent)
 
     def search(self, query: str, max_chars: int = 2000, exclude_task_id: str | None = None) -> str:
         return self._parent.search(query, max_chars=max_chars, exclude_task_id=exclude_task_id)
