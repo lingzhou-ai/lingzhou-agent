@@ -180,17 +180,17 @@ def _build_mode_adapter(
     *,
     mode: str,
     base_url: str,
-    api_key_env: str,
+    api_key: str,
     timeout: float,
 ) -> _ModeAdapter:
     """根据 provider.mode 创建对应的适配器。
 
+    接收已解析的 api_key（调用方负责凭证解析），
     这是唯一需要 if 的地方——模式选择在构造时完成一次，
     之后所有模式差异通过多态分发。
     """
     if mode == "copilot":
-        resolved = resolve_copilot_token(api_key_env)
-        if not resolved:
+        if not api_key:
             raise OSError(
                 "未找到 Copilot 的 GitHub token。\n"
                 "Lingzhou 使用：GitHub token → Copilot token exchange → Copilot API\n"
@@ -200,16 +200,13 @@ def _build_mode_adapter(
                 "  export GH_TOKEN=your_token\n"
                 "  export GITHUB_TOKEN=your_token"
             )
-        return _CopilotMode(base_url, resolved.token, timeout)
+        return _CopilotMode(base_url, api_key, timeout)
 
     # openai 模式（百炼、DeepSeek 等标准 OpenAI 兼容）
-    if not api_key_env.strip():
-        raise OSError("OpenAI 兼容 provider 缺少 api_key_env，不能构造空 Authorization header")
-    api_key = os.environ.get(api_key_env, "").strip()
     if not api_key:
         raise OSError(
-            f"OpenAI 兼容 provider 的环境变量 {api_key_env!r} 为空，"
-            "请设置该变量或从 routing/model_fallbacks 中移除此 provider。"
+            "OpenAI 兼容 provider 的 API key 为空，"
+            "请执行 `lingzhou auth bailian` 或设置对应环境变量。"
         )
     return _OpenAIMode(base_url, api_key, timeout)
 
@@ -239,11 +236,19 @@ class OpenAICompatProvider:
         self._embed_model: str | None = cfg.memory.embedding_model
         self._provider_mode = provider.mode
 
+        # 凭证解析：openai 用 provider.api_key（env→credentials.json→auth-profile 三层回退）
+        #           copilot 用 resolve_copilot_token（COPILOT_ENV_ORDER + credentials + profile）
+        if provider.mode == "copilot":
+            _res = resolve_copilot_token(provider.api_key_env)
+            _resolved_key = _res.token if _res else ""
+        else:
+            _resolved_key = provider.api_key
+
         # 模式适配器：封装 openai / copilot 的差异行为
         self._mode = _build_mode_adapter(
             mode=provider.mode,
             base_url=self._base_url,
-            api_key_env=provider.api_key_env,
+            api_key=_resolved_key,
             timeout=cfg.timeout,
         )
 
