@@ -159,6 +159,22 @@ class TaskStore:
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
         await self._write_with_retry(self._tasks.update_task_data, task_id, extra_dict)
 
+    async def amend_task(
+        self,
+        task_id: int,
+        *,
+        title: str | None = None,
+        goal: str | None = None,
+        priority: str | None = None,
+        amendment_reason: str = "",
+    ) -> bool:
+        return await self._write_with_retry(
+            self._tasks.amend_task,
+            task_id,
+            title=title, goal=goal, priority=priority,
+            amendment_reason=amendment_reason,
+        )
+
     async def pop_task_inbox(self, task_id: int) -> list[str]:
         return await self._write_with_retry(self._tasks.pop_task_inbox, task_id)
 

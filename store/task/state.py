@@ -73,10 +73,19 @@ class TaskStateStore(BaseAsyncStore):
         )
         await self._db.commit()
 
+    async def _save_task_title(self, task_id: int, title: str) -> None:
+        await self._db.execute(
+            "UPDATE tasks SET title=? WHERE id=?",
+            (title.strip(), task_id),
+        )
+        await self._db.commit()
+
     async def _patch_task(
         self,
         task_id: int,
         *,
+        title: Any = _UNSET,
+        goal: Any = _UNSET,
         status: Any = _UNSET,
         next_step: Any = _UNSET,
         current_step: Any = _UNSET,
@@ -91,6 +100,13 @@ class TaskStateStore(BaseAsyncStore):
         task = await self.get_task_by_id(task_id)
         if not task:
             return False
+        if title is not _UNSET:
+            new_title = str(title or "").strip()
+            if new_title:
+                await self._save_task_title(task_id, new_title)
+                task.title = new_title
+        if goal is not _UNSET:
+            task.goal = str(goal or "")
         if status is not _UNSET:
             task.status = str(status or "")
         if next_step is not _UNSET:
@@ -115,6 +131,51 @@ class TaskStateStore(BaseAsyncStore):
                 task.result_json = incoming
         if extras:
             task.extras.update(extras)
+        await self._save_task(task)
+        return True
+
+    async def amend_task(
+        self,
+        task_id: int,
+        *,
+        title: str | None = None,
+        goal: str | None = None,
+        priority: str | None = None,
+        amendment_reason: str = "",
+    ) -> bool:
+        """修正任务目标（适用于新信息纠正了原始意图）。
+
+        - 只更新传入的非 None 字段，其余保持不变。
+        - amendment_reason 写入 extras["amendments"] 历史，不可覆盖。
+        """
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return False
+        # 先记录旧值，再做更新
+        old_title = task.title
+        old_goal = task.goal
+        if title is not None:
+            new_title = title.strip()
+            if new_title:
+                await self._save_task_title(task_id, new_title)
+                task.title = new_title
+        if goal is not None:
+            task.goal = goal
+        if priority is not None:
+            task.priority = priority.strip() or task.priority
+        # 记录修正历史
+        if amendment_reason:
+            from datetime import UTC, datetime
+            amendments: list = task.extras.get("amendments") or []
+            if not isinstance(amendments, list):
+                amendments = []
+            amendments.append({
+                "ts": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "reason": amendment_reason,
+                "prev_title": old_title,
+                "prev_goal": old_goal,
+            })
+            task.extras["amendments"] = amendments
         await self._save_task(task)
         return True
 

@@ -619,3 +619,66 @@ async def task_steer(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             inbox_count=len(existing),
         ),
     )
+
+
+@tool(ToolManifest(
+    name="task.amend",
+    description=(
+        "修正任务的目标或标题。当新信息表明原始任务意图有误时使用（例如：补充说明让目标变了，"
+        "之前的理解基于不完整信息）。与 task.steer 不同，amend 直接修改任务定义，不是注入转向指令。"
+    ),
+    progress_category="mutation",
+    capabilities=CAPS_EXEMPT,
+    params=[
+        ToolParam("task_id", "number", "目标任务 id；不传则使用当前 active task", required=False),
+        ToolParam("title", "string", "新的任务标题（不传则保持原标题）", required=False),
+        ToolParam("goal", "string", "新的任务目标描述（不传则保持原目标）", required=False),
+        ToolParam("priority", "string", "新的优先级 low/normal/high（不传则保持不变）", required=False),
+        ToolParam("reason", "string", "修正原因（必填，说明为何需要纠正原意图）", required=True),
+    ],
+))
+async def task_amend(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    task = await _resolve_task(params.get("task_id"), ctx)
+    if not task:
+        return ToolResult(summary="找不到目标任务", skipped=True)
+    reason = (params.get("reason") or "").strip()
+    if not reason:
+        return ToolResult(summary="必须提供修正原因 reason", skipped=True)
+    new_title: str | None = (params.get("title") or "").strip() or None
+    new_goal: str | None = params.get("goal")
+    if new_goal is not None:
+        new_goal = new_goal.strip() or None
+    new_priority: str | None = (params.get("priority") or "").strip() or None
+
+    if new_title is None and new_goal is None and new_priority is None:
+        return ToolResult(summary="至少需要提供 title/goal/priority 之一", skipped=True)
+
+    ok = await ctx.task_store.amend_task(
+        task.id,
+        title=new_title,
+        goal=new_goal,
+        priority=new_priority,
+        amendment_reason=reason,
+    )
+    if not ok:
+        return ToolResult(summary=f"任务 [{task.id}] 修正失败（任务不存在？）", skipped=True)
+
+    changed_parts = []
+    if new_title:
+        changed_parts.append(f"title={new_title!r}")
+    if new_goal is not None:
+        changed_parts.append(f"goal={new_goal[:60]!r}")
+    if new_priority:
+        changed_parts.append(f"priority={new_priority}")
+    summary = f"任务 [{task.id}] 已修正：{', '.join(changed_parts)}"
+    return ToolResult(
+        summary=summary,
+        evidence=f"task_id={task.id} reason={reason[:80]}",
+        resource_key=str(task.id),
+        state_delta={"amended": True},
+        metadata=_task_metadata(
+            task,
+            tool_name="task.amend",
+            log_summary=f"task.amend id={task.id} reason={reason[:60]}",
+        ),
+    )
