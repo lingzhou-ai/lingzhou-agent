@@ -796,3 +796,217 @@ async def _task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# task.amend — 任务意图纠正
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_amend_task_updates_title_and_goal():
+    asyncio.run(_amend_task_updates_title_and_goal())
+
+
+async def _amend_task_updates_title_and_goal():
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend.db")
+        await store.open()
+
+        tid = await store.add_task("发邮件给 Alice", goal="把会议纪要发给 Alice", source="external")
+
+        ok = await store.amend_task(
+            tid,
+            title="发邮件给 Bob",
+            goal="把会议纪要发给 Bob",
+            amendment_reason="用户澄清：收件人是 Bob，不是 Alice",
+        )
+        assert ok is True
+
+        t = await store.get_task_by_id(tid)
+        assert t is not None
+        assert t.title == "发邮件给 Bob"
+        assert t.goal == "把会议纪要发给 Bob"
+
+        # 修正历史已记录
+        amendments = t.extras.get("amendments") or []
+        assert len(amendments) == 1
+        entry = amendments[0]
+        assert entry["prev_title"] == "发邮件给 Alice"
+        assert entry["prev_goal"] == "把会议纪要发给 Alice"
+        assert "Bob" in entry["reason"]
+        assert "ts" in entry
+
+        await store.close()
+
+
+def test_amend_task_partial_update_preserves_unchanged_fields():
+    asyncio.run(_amend_task_partial_update_preserves_unchanged_fields())
+
+
+async def _amend_task_partial_update_preserves_unchanged_fields():
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend-partial.db")
+        await store.open()
+
+        tid = await store.add_task("分析日志", goal="找出崩溃原因", priority="normal", source="external")
+        await store.update_status(tid, "in_progress", "读取日志文件")
+
+        # 只改 goal，不改 title
+        ok = await store.amend_task(
+            tid,
+            goal="找出崩溃原因并给出修复建议",
+            amendment_reason="用户补充：需要给出修复方案",
+        )
+        assert ok is True
+
+        t = await store.get_task_by_id(tid)
+        assert t is not None
+        assert t.title == "分析日志"           # title 未变
+        assert t.goal == "找出崩溃原因并给出修复建议"
+        assert t.status == "in_progress"      # status 未变
+        assert t.next_step == "读取日志文件"  # next_step 未变
+
+        await store.close()
+
+
+def test_amend_task_records_multiple_amendment_history():
+    asyncio.run(_amend_task_records_multiple_amendment_history())
+
+
+async def _amend_task_records_multiple_amendment_history():
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend-multi.db")
+        await store.open()
+
+        tid = await store.add_task("任务初始版本", goal="目标A", source="external")
+
+        await store.amend_task(tid, goal="目标B", amendment_reason="第一次纠正")
+        await store.amend_task(tid, goal="目标C", amendment_reason="第二次纠正")
+
+        t = await store.get_task_by_id(tid)
+        assert t is not None
+        assert t.goal == "目标C"
+        amendments = t.extras.get("amendments") or []
+        assert len(amendments) == 2
+        assert amendments[0]["prev_goal"] == "目标A"
+        assert amendments[1]["prev_goal"] == "目标B"
+        assert amendments[0]["reason"] == "第一次纠正"
+        assert amendments[1]["reason"] == "第二次纠正"
+
+        await store.close()
+
+
+def test_amend_task_returns_false_for_nonexistent_task():
+    asyncio.run(_amend_task_returns_false_for_nonexistent_task())
+
+
+async def _amend_task_returns_false_for_nonexistent_task():
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend-miss.db")
+        await store.open()
+
+        ok = await store.amend_task(
+            99999,
+            title="不存在的任务",
+            amendment_reason="应该返回 False",
+        )
+        assert ok is False
+
+        await store.close()
+
+
+def test_task_amend_tool_end_to_end():
+    asyncio.run(_task_amend_tool_end_to_end())
+
+
+async def _task_amend_tool_end_to_end():
+    from store.task import TaskStore
+    from tools.task import task_amend
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend-tool.db")
+        await store.open()
+
+        tid = await store.add_task("帮用户订票", goal="订 6 月 5 日上海到北京的高铁票", source="external")
+
+        ctx = _tool_ctx(task_store=store)
+
+        # 正常修正
+        res = await task_amend(
+            {
+                "task_id": tid,
+                "title": "帮用户订票（已修正）",
+                "goal": "订 6 月 6 日上海到北京的高铁票",
+                "reason": "用户说出发日期是 6 日，不是 5 日",
+            },
+            ctx,
+        )
+        assert res.error is None
+        assert res.skipped is not True
+
+        t = await store.get_task_by_id(tid)
+        assert t is not None
+        assert "6 日" in t.goal
+        assert t.title == "帮用户订票（已修正）"
+
+        # reason 缺失 → skipped
+        res2 = await task_amend(
+            {"task_id": tid, "goal": "不应该生效"},
+            ctx,
+        )
+        assert res2.skipped is True
+
+        # title/goal/priority 均缺失 → skipped
+        res3 = await task_amend(
+            {"task_id": tid, "reason": "没有给任何字段"},
+            ctx,
+        )
+        assert res3.skipped is True
+
+        # 不存在的任务 → skipped
+        res4 = await task_amend(
+            {"task_id": 99999, "goal": "不存在", "reason": "测试"},
+            ctx,
+        )
+        assert res4.skipped is True
+
+        await store.close()
+
+
+def test_task_amend_tool_uses_active_task_when_no_task_id():
+    asyncio.run(_task_amend_tool_uses_active_task_when_no_task_id())
+
+
+async def _task_amend_tool_uses_active_task_when_no_task_id():
+    from store.task import TaskStore
+    from tools.task import task_amend
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "amend-active.db")
+        await store.open()
+
+        tid = await store.add_task("当前活跃任务", goal="原始目标", source="external")
+        await store.update_status(tid, "in_progress")
+
+        ctx = _tool_ctx(task_store=store)
+
+        res = await task_amend(
+            {
+                "goal": "修正后目标（无需传 task_id）",
+                "reason": "活跃任务自动解析测试",
+            },
+            ctx,
+        )
+        assert res.error is None
+        assert res.skipped is not True
+
+        t = await store.get_task_by_id(tid)
+        assert t is not None
+        assert t.goal == "修正后目标（无需传 task_id）"
+
+        await store.close()
+
