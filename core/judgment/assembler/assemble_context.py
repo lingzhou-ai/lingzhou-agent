@@ -219,9 +219,12 @@ async def _resolve_context_references(
     resolved_entities = await assembler._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
     speaker_hint = data.get("speaker_hint", ("", False))
     cached_speaker_id = str(speaker_hint[0] or "").strip() if isinstance(speaker_hint, tuple) and len(speaker_hint) >= 2 and speaker_hint[1] else ""
-    # 说话人识别是“认人”而非“读史”，只需要最近的交互信号，不需要完整情节叙事
-    _SPEAKER_ID_MAX_CHARS = 800
-    interlocutor_continuity_text = await loop.run_in_executor(None, episodic.load_for_interlocutor_context, cached_speaker_id, _SPEAKER_ID_MAX_CHARS) if cached_speaker_id else ""
+    # 说话人识别是 recognition（认人）而非 recall（读史）。
+    # Tulving (1983)：识别激活的是最近 N 条事件，不是全部历史。
+    # Cowan (2001)：工作记忆有效单元约 4 个 chunk；5 条事件实用上已足够。
+    interlocutor_continuity_text = await loop.run_in_executor(
+        None, episodic.load_for_speaker_recognition, cached_speaker_id
+    ) if cached_speaker_id else ""
     resolved_speaker = await assembler._ref_resolver.resolve_current_speaker(
         user_message,
         semantic,

@@ -237,8 +237,30 @@ def load_markdown_context(path: Path, max_chars: int = 4000) -> str:
         return ""
     text = path.read_text(encoding="utf-8")
     if max_chars and max_chars > 0 and len(text) > max_chars:
+        # 保留最新的尾部：情节记忆按时序追加，越新越相关（recency effect，Murdock 1962）
         text = text[-max_chars:]
     return text
+
+
+def load_for_speaker_recognition(memory, interlocutor_id: str | None, *, n_recent: int = 5) -> str:
+    """取最近 n_recent 条完整交互块，专用于说话人识别（recognition，非 recall）。
+
+    科学依据：
+    - Tulving (1983)：情节记忆的基本单元是事件（episode），按完整块取而非按字节截切。
+    - Cowan (2001)：工作记忆有效处理单元约 4 个 chunk；5 条事件是识别任务的实用上限。
+    - Liu et al. (2023) "Lost in the Middle"：识别准确率随 context 增长而下降；
+      短且聚焦的 context 表现更好。
+    """
+    if not interlocutor_id:
+        return ""
+    path = memory._interlocutor_path(interlocutor_id)
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    # 以 --- 为分隔符切块，每块是一条完整的交互事件
+    blocks = [b.strip() for b in text.split("---") if b.strip()]
+    recent = blocks[-n_recent:] if len(blocks) > n_recent else blocks
+    return "\n---\n".join(recent)
 
 
 def load_for_context(memory, task_id: str | None, max_chars: int = 4000) -> str:

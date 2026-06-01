@@ -95,6 +95,7 @@ def bind_episodic_memory(cls: type[EpisodicMemory]) -> None:
     cls.load_for_context = narrative.load_for_context
     cls.load_for_chat_context = narrative.load_for_chat_context
     cls.load_for_interlocutor_context = narrative.load_for_interlocutor_context
+    cls.load_for_speaker_recognition = narrative.load_for_speaker_recognition
     cls.load_for_task_narrative = narrative.load_for_task_narrative
     cls.load_recent_daily_context = narrative.load_recent_daily_context
     cls.search_recent_daily = narrative.search_recent_daily
