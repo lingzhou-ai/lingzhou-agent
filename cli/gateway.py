@@ -456,11 +456,14 @@ def gateway_start(
 
     如果检测到 systemd 管理且非 wrapper 调用，自动重定向到 systemctl restart。
     """
-    # 检测是否在 wrapper 内调用（避免 wrapper → start → systemctl restart 无限循环）
+    # 检测是否已经运行在 systemd unit 内（INVOCATION_ID 由 systemd 启动时自动注入）
+    # 或在 wrapper 脚本内调用（兼容旧 wrapper）
+    # 两种情况都不应再重定向到 systemctl，否则会造成无限重启循环
+    is_inside_systemd_unit = bool(os.environ.get("INVOCATION_ID"))
     is_inside_wrapper = os.environ.get("LINGZHOU_WRAPPER", "") == "1"
 
-    # 如果 systemd 在管理且非 wrapper 调用，重定向到 systemctl
-    if daemon and _is_systemd_managed() and not is_inside_wrapper:
+    # 如果 systemd 在管理且当前进程不是由 systemd/wrapper 直接启动，重定向到 systemctl
+    if daemon and _is_systemd_managed() and not is_inside_wrapper and not is_inside_systemd_unit:
         console.print("[dim]检测到 systemd 管理，使用 systemctl restart...[/dim]")
         _restart_via_systemd()
         return

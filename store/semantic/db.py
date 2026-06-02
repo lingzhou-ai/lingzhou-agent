@@ -82,23 +82,24 @@ def _conn_setter(self, value: sqlite3.Connection | None) -> None:
 
 @contextmanager
 def _db_session(self):
-    if self._conn_ref is not None:
-        self._session_depth += 1
+    with self._db_lock:
+        if self._conn_ref is not None:
+            self._session_depth += 1
+            try:
+                yield self._conn_ref
+            finally:
+                self._session_depth -= 1
+            return
+
+        conn = self._open_db()
+        self._conn = conn
+        self._session_depth = 1
         try:
-            yield self._conn_ref
+            yield conn
         finally:
             self._session_depth -= 1
-        return
-
-    conn = self._open_db()
-    self._conn = conn
-    self._session_depth = 1
-    try:
-        yield conn
-    finally:
-        self._session_depth -= 1
-        if self._session_depth == 0:
-            self.close()
+            if self._session_depth == 0:
+                self.close()
 
 
 def close(self) -> None:
@@ -172,9 +173,9 @@ def _setup_fts5(self, conn: sqlite3.Connection) -> None:
 
 
 def _connect(self) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=60)
+    conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=120)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA busy_timeout=90000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.row_factory = sqlite3.Row
     return conn

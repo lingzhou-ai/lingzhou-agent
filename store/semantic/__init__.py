@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging as _log_sem
 import math
 import re
+import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -183,6 +184,7 @@ class SemanticMemory:
         self._source_weight = max(0.0, float(source_weight))
         self._temporal_weight = max(0.0, float(temporal_weight))
         self._temporal_window_days = max(0.1, float(temporal_window_days))
+        self._db_lock = threading.RLock()
         self._conn = None
         self._session_depth = 0
         with self._db_session():
