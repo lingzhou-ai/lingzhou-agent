@@ -233,18 +233,54 @@ def record(
 
 
 def _load_recent_blocks(path: Path, n_recent: int) -> str:
-    """按完整情节块（--- 分隔）加载最近 n_recent 条，不做字节截断。
+    """从文件尾部逆向分页读取最近 n_recent 条完整情节块（--- 分隔），凑够即停。
 
     统一机制（Tulving 1983 episode unit）：
     - 每条 --- 块是一个完整的交互事件，是语义原子，不可在块内截断。
-    - n_recent 控制注入深度，而非字节数；内容密度变化时自动适应。
+    - n_recent 控制注入深度；从尾部分页读取，避免将整个大文件加载进内存。
     - 越新的块越靠近尾部，天然满足 recency bias（Murdock 1962）。
     """
-    if not path.exists():
+    if not path.exists() or n_recent <= 0:
         return ""
-    text = path.read_text(encoding="utf-8")
-    blocks = [b.strip() for b in text.split("---") if b.strip()]
-    recent = blocks[-n_recent:] if len(blocks) > n_recent else blocks
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        return ""
+    if file_size == 0:
+        return ""
+
+    _CHUNK = 32 * 1024  # 每页 32 KB
+    _SEP = b"---"
+    blocks: list[str] = []
+    tail_buf = b""
+    offset = file_size
+
+    with path.open("rb") as fh:
+        while offset > 0:
+            read_size = min(_CHUNK, offset)
+            offset -= read_size
+            fh.seek(offset)
+            # 当前 chunk 拼上上一轮保留的尾部碎片
+            chunk = fh.read(read_size) + tail_buf
+            parts = chunk.split(_SEP)
+            # parts[0] 可能被 chunk 边界截断（当 offset > 0 时），保留给下轮
+            tail_buf = parts[0]
+            for raw in reversed(parts[1:]):
+                text = raw.decode("utf-8", errors="replace").strip()
+                if text:
+                    blocks.append(text)
+                if len(blocks) >= n_recent:
+                    break
+            if len(blocks) >= n_recent:
+                break
+        # 文件已全部读完时，tail_buf 是第一个块（文件头部）
+        if offset == 0 and len(blocks) < n_recent and tail_buf:
+            text = tail_buf.decode("utf-8", errors="replace").strip()
+            if text:
+                blocks.append(text)
+
+    # blocks 从新到旧，逆转为时间升序后拼接
+    recent = list(reversed(blocks[:n_recent]))
     return "\n---\n".join(recent)
 
 
