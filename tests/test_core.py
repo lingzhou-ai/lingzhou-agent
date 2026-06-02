@@ -377,6 +377,36 @@ async def test_reference_resolver_llm_reason_exposes_candidate_created_at():
     assert '"created_at":"2026-05-22T08:00:00+00:00"' in captured[0]
 
 
+@pytest.mark.asyncio
+async def test_reference_resolver_llm_reason_compacts_large_candidate_body():
+    from core.reference import ReferenceResolver
+
+    captured: list[str] = []
+
+    class ProviderStub:
+        async def chat(self, messages, temperature=None):
+            captured.append(messages[1].content)
+            return "[]"
+
+    resolver = ReferenceResolver(provider=cast("Any", ProviderStub()))
+    await resolver._reason_about_candidates_with_llm(
+        "昨天那个方案",
+        {
+            "node-1": {
+                "id": "node-1",
+                "kind": "plan",
+                "title": "方案A",
+                "body": "A" * 6000,
+                "created_at": "2026-05-22T08:00:00+00:00",
+            }
+        },
+    )
+
+    assert captured
+    assert len(captured[0]) < 1000, f"候选体积应被压缩，实际 payload_chars={len(captured[0])}"
+    assert '"created_at":"2026-05-22T08:00:00+00:00"' in captured[0]
+
+
 def test_compute_judgment_signals_uses_configured_thresholds():
     from core.perception.signals import compute_judgment_signals
 

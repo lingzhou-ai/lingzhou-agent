@@ -547,6 +547,51 @@ def test_semantic_multi_anchor_uses_embedding_when_available():
             f"向量对齐的节点应排第一（score 更高），实际: {[r['id'] for r in results]}"
 
 
+def test_semantic_retrieve_fts_hit_skips_embed_without_node_embeddings():
+    """FTS 命中且节点没有 embedding 时，不应白跑 query embedding。"""
+    from store.semantic import MemoryNode, SemanticMemory
+
+    calls = 0
+
+    def _mock_embed(text: str) -> list[float]:
+        nonlocal calls
+        calls += 1
+        return [1.0, 0.0]
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0, embed_fn=_mock_embed)
+        sm.upsert(MemoryNode(id="n1", kind="fact", title="模块架构分析", body="关键检索路径", activation=0.5))
+
+        results = sm.retrieve("模块架构 关键检索", top_k=3)
+
+        assert results
+        assert results[0]["id"] == "n1"
+        assert calls == 0, f"FTS 命中且无 embedding 时不应调用 embed，实际 calls={calls}"
+
+
+def test_semantic_multi_anchor_fts_hit_skips_embed_without_node_embeddings():
+    """多锚点 FTS 命中且节点无 embedding 时，不应为每个 anchor 做远程 embedding。"""
+    from store.semantic import MemoryNode, SemanticMemory
+
+    calls = 0
+
+    def _mock_embed(text: str) -> list[float]:
+        nonlocal calls
+        calls += 1
+        return [1.0, 0.0]
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0, embed_fn=_mock_embed)
+        sm.upsert(MemoryNode(id="ab", kind="fact", title="importlib", body="热加载 reload 模块替换", activation=0.0))
+        sm.upsert(MemoryNode(id="a", kind="fact", title="importlib", body="模块导入", activation=0.0))
+
+        results = sm.retrieve_multi_anchor(["importlib", "热加载 reload"], top_k=2, convergence_bonus=0.3)
+
+        assert results
+        assert results[0]["id"] == "ab"
+        assert calls == 0, f"FTS 命中且无 embedding 时不应调用 embed，实际 calls={calls}"
+
+
 def test_semantic_fts_short_ascii_filtered():
     """FTS5 短 ASCII 词（≤4字符）被过滤后，中文词主导检索排序。"""
     from store.semantic import MemoryNode, SemanticMemory

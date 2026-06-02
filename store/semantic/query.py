@@ -146,6 +146,14 @@ def _fallback_candidates(
     return self._load_by_ids([n.id for n in _fb]) if _fb else []
 
 
+def _node_has_rankable_embedding(node: MemoryNode, query_modality: str = "text") -> bool:
+    emb_dict: dict[tuple[str, str], list[float]] = getattr(node, "embeddings", {}) or {}
+    if any(mod == query_modality and vec for (mod, _), vec in emb_dict.items()):
+        return True
+    legacy_raw = getattr(node, "embedding", None)
+    return _blob_to_vec(legacy_raw) is not None if legacy_raw is not None else False
+
+
 def retrieve(
     self,
     query: str,
@@ -160,9 +168,18 @@ def retrieve(
 ) -> list[dict[str, Any]]:
     with self._db_session():
         query_vec: list[float] | None = None
-        if self._embed_fn is not None:
-            with suppress(Exception):
-                query_vec = self._embed_fn(query)
+        query_vec_loaded = False
+
+        def _load_query_vec() -> list[float] | None:
+            nonlocal query_vec, query_vec_loaded
+            if query_vec_loaded:
+                return query_vec
+            query_vec_loaded = True
+            if self._embed_fn is not None:
+                with suppress(Exception):
+                    query_vec = self._embed_fn(query)
+            return query_vec
+
         has_filters = any((kind, tag, source, task_id, path_prefix, id_prefix))
         candidate_ids = self._fts_candidates(query, limit=100 if has_filters else 50)
         if candidate_ids:
@@ -179,17 +196,19 @@ def retrieve(
             if not nodes:
                 # FTS5 命中但被过滤器全部过滤掉 → 向量预筛 + 条件过滤兜底
                 nodes = self._fallback_candidates(
-                    query_vec, kind=kind, tag=tag, source=source,
+                    _load_query_vec(), kind=kind, tag=tag, source=source,
                     task_id=task_id, id_prefix=id_prefix, path_prefix=path_prefix,
                 )
         else:
             # FTS5 无命中 → 向量预筛 + 条件过滤兜底
             nodes = self._fallback_candidates(
-                query_vec, kind=kind, tag=tag, source=source,
+                _load_query_vec(), kind=kind, tag=tag, source=source,
                 task_id=task_id, id_prefix=id_prefix, path_prefix=path_prefix,
             )
         if not nodes:
             return []
+        if self._embed_fn is not None and any(_node_has_rankable_embedding(node) for node in nodes):
+            _load_query_vec()
         scored = [(self._score(query, n, query_vec=query_vec), n) for n in nodes]
         scored.sort(key=lambda x: x[0], reverse=True)
         retrieved = []
@@ -300,13 +319,17 @@ def retrieve_multi_anchor(
             )
             return []
 
+        use_vector_scoring = self._embed_fn is not None and any(_node_has_rankable_embedding(node) for node in nodes)
+        anchor_vecs: dict[str, list[float] | None] = {}
+        if use_vector_scoring:
+            for anchor in valid_anchors:
+                with suppress(Exception):
+                    anchor_vecs[anchor] = self._embed_fn(anchor)
+
         best_score: dict[str, float] = {}
         hit_count: dict[str, int] = {}
         for anchor in valid_anchors:
-            query_vec: list[float] | None = None
-            if self._embed_fn is not None:
-                with suppress(Exception):
-                    query_vec = self._embed_fn(anchor)
+            query_vec = anchor_vecs.get(anchor) if use_vector_scoring else None
             for node in nodes:
                 s = self._score(anchor, node, query_vec=query_vec)
                 if s > 0:
@@ -332,11 +355,12 @@ def retrieve_multi_anchor(
             retrieved.append(item)
 
         _log.info(
-            "[semantic.multi_anchor] done dt=%.3fs route=%s nodes=%d hits=%d",
+            "[semantic.multi_anchor] done dt=%.3fs route=%s nodes=%d hits=%d vector_scoring=%s",
             time.perf_counter() - start_t0,
             retrieval_route,
             len(nodes),
             len(retrieved),
+            use_vector_scoring,
         )
 
         if _log.isEnabledFor(_log_sem.DEBUG):

@@ -396,12 +396,12 @@ class ThresholdsConfig(BaseModel):
         description="recent facts 扫描窗口的最小条数",
     )
     chat_history_turn_limit: int = Field(
-        default=0, ge=0,
-        description="judgment 上下文中保留的最近对话轮数；0 = 不限制",
+        default=3, ge=0,
+        description="judgment 上下文中保留的最近对话轮数；0 = 不限制（不建议常态使用）",
     )
     chat_history_max_chars: int = Field(
-        default=0, ge=0,
-        description="chat history 格式化后的最大字符预算；0 = 不限制",
+        default=300, ge=0,
+        description="chat history 格式化后的最大字符预算；0 = 不限制（不建议常态使用）",
     )
     task_duplicate_reuse_score: float = Field(
         default=0.66, ge=0.0, le=1.0,

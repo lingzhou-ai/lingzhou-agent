@@ -7,6 +7,19 @@ from typing import Any
 from .common import _REASON_SYSTEM, _SPEAKER_REASON_SYSTEM, normalize_text
 
 
+_ENTITY_BODY_SNIPPET_LIMIT = 240
+_SPEAKER_BODY_SNIPPET_LIMIT = 240
+_LLM_REASON_PAYLOAD_SOFT_LIMIT = 12_000
+
+
+def _compact_prompt_text(text: str, limit: int) -> str:
+    normalized = normalize_text(str(text or "")).replace("\n", " ").strip()
+    if len(normalized) <= limit:
+        return normalized
+    keep = max(32, limit - 4)
+    return normalized[:keep].rstrip() + " ..."
+
+
 def categorize_llm_error_code(err_text: str) -> str:
     text = (err_text or "").lower()
     if " 413 " in f" {text} " or "request entity too large" in text or "payload too large" in text:
@@ -37,7 +50,7 @@ async def reason_about_candidates_with_llm(
 
     cand_lines: list[str] = []
     for nid, nd in candidates.items():
-        body_snippet = str(nd.get("body", "")).replace("\n", " ")
+        body_snippet = _compact_prompt_text(str(nd.get("body", "")), _ENTITY_BODY_SNIPPET_LIMIT)
         created_at = str(nd.get("created_at", ""))
         cand_lines.append(
             f'  {{"id":"{nid}","kind":"{nd.get("kind","")}","title":"{nd.get("title","")}","created_at":"{created_at}","body":"{body_snippet}"}}'
@@ -54,6 +67,13 @@ async def reason_about_candidates_with_llm(
             len(candidates),
             len(user_content),
         )
+    if len(user_content) > _LLM_REASON_PAYLOAD_SOFT_LIMIT:
+        resolver._log.warning(
+            "[reference] entities payload too large, skip llm payload_chars=%d candidates=%d",
+            len(user_content),
+            len(candidates),
+        )
+        return []
 
     try:
         raw = await resolver._provider.chat(
@@ -110,7 +130,7 @@ async def reason_about_speaker_with_llm(
     cues = cues or {"names": [], "preferences": [], "explicit": []}
     candidate_lines: list[str] = []
     for node_id, node in candidates.items():
-        body_snippet = str(node.get("body") or "").replace("\n", " ")
+        body_snippet = _compact_prompt_text(str(node.get("body") or ""), _SPEAKER_BODY_SNIPPET_LIMIT)
         candidate_lines.append(
             json.dumps(
                 {
@@ -127,9 +147,12 @@ async def reason_about_speaker_with_llm(
     turns_block = []
     for turn in (recent_turns or [])[-4:]:
         role = str(turn.get("role") or "?")
-        content = normalize_text(str(turn.get("content") or ""))
+        content = _compact_prompt_text(str(turn.get("content") or ""), 240)
         if content:
             turns_block.append(f"- {role}: {content}")
+
+    chat_continuity_text = str(chat_continuity or "")
+    interlocutor_continuity_text = str(interlocutor_continuity or "")
 
     user_content = "\n".join(
         [
@@ -144,13 +167,36 @@ async def reason_about_speaker_with_llm(
             "最近交互片段：",
             "\n".join(turns_block) if turns_block else "（无）",
             "当前 chat 连续性：",
-            chat_continuity or "（无）",
+            chat_continuity_text or "（无）",
             "当前对象跨 chat 交互连续性：",
-            interlocutor_continuity or "（无）",
+            interlocutor_continuity_text or "（无）",
             "候选交互对象画像：",
             "[\n" + ",\n".join(candidate_lines) + "\n]" if candidate_lines else "[]",
         ]
     )
+    if len(user_content) > _LLM_REASON_PAYLOAD_SOFT_LIMIT:
+        chat_continuity_text = _compact_prompt_text(chat_continuity_text, 1800)
+        interlocutor_continuity_text = _compact_prompt_text(interlocutor_continuity_text, 1200)
+        user_content = "\n".join(
+            [
+                f'当前用户消息："{message}"',
+                f"当前 chat 句柄线索：{chat_id or '（无）'}",
+                f"来源路由线索：{source_hint or '（无）'}",
+                "从当前消息提取的线索：",
+                f"- names: {cues.get('names', [])}",
+                f"- preferences: {cues.get('preferences', [])}",
+                f"- explicit: {cues.get('explicit', [])}",
+                f"- source_traits: {cues.get('source_traits', [])}",
+                "最近交互片段：",
+                "\n".join(turns_block) if turns_block else "（无）",
+                "当前 chat 连续性：",
+                chat_continuity_text or "（无）",
+                "当前对象跨 chat 交互连续性：",
+                interlocutor_continuity_text or "（无）",
+                "候选交互对象画像：",
+                "[\n" + ",\n".join(candidate_lines) + "\n]" if candidate_lines else "[]",
+            ]
+        )
     log = getattr(resolver, "_log", None)
     request_t0 = time.perf_counter()
     if log is not None:
@@ -159,10 +205,17 @@ async def reason_about_speaker_with_llm(
             len(message),
             len(candidates),
             len((recent_turns or [])[-4:]),
-            len(chat_continuity),
-            len(interlocutor_continuity),
+            len(chat_continuity_text),
+            len(interlocutor_continuity_text),
             len(user_content),
         )
+    if len(user_content) > _LLM_REASON_PAYLOAD_SOFT_LIMIT:
+        resolver._log.warning(
+            "[reference] speaker payload too large, skip llm payload_chars=%d candidates=%d",
+            len(user_content),
+            len(candidates),
+        )
+        return {}
 
     try:
         raw = await resolver._provider.chat(
