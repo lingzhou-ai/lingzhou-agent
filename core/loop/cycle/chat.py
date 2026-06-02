@@ -70,7 +70,11 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             _log.debug("[chat] tick queue saturated, defer pending chat pickup")
             return cycle, False
 
+    pop_t0 = asyncio.get_running_loop().time()
     chat_message = await loop._task_store.pop_pending_chat_message()
+    pop_dt = asyncio.get_running_loop().time() - pop_t0
+    if pop_dt >= 1.0:
+        _log.warning("[chat] pop_pending_chat_message slow dt=%.3fs", pop_dt)
     if not chat_message:
         return cycle, False
 
@@ -88,7 +92,16 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             delay = loop._cfg.loop.wechat_coalesce_delay
             if delay > 0:
                 await asyncio.sleep(delay)
+        drain_t0 = asyncio.get_running_loop().time()
         follow_ups = await loop._task_store.drain_pending_for_chat(chat_id, after_id=msg_id)
+        drain_dt = asyncio.get_running_loop().time() - drain_t0
+        if drain_dt >= 1.0:
+            _log.warning(
+                "[chat] drain_pending_for_chat slow dt=%.3fs chat_id=%s after_id=%s",
+                drain_dt,
+                chat_id,
+                msg_id,
+            )
         if follow_ups:
             reserved_message_ids.extend(int(m.get("id") or 0) for m in follow_ups if int(m.get("id") or 0) > 0)
             extra = "\n".join(m["content"] for m in follow_ups)

@@ -113,11 +113,16 @@ async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> 
             alert_event.clear()
             _log.info("[wake] %s", format_log_fields(reason="probe_alert"))
             break
-        if await loop._task_store.has_pending_chat_message():
+        pending_check_t0 = event_loop.time()
+        has_pending_chat = await loop._task_store.has_pending_chat_message()
+        pending_check_dt = event_loop.time() - pending_check_t0
+        if pending_check_dt >= 1.0:
+            _log.warning("[wake] has_pending_chat_message slow dt=%.3fs", pending_check_dt)
+        if has_pending_chat:
             dispatcher = getattr(loop, "_tick_dispatcher", None)
             can_accept = getattr(dispatcher, "can_accept", None) if dispatcher is not None else None
             if dispatcher is None or not dispatcher.enabled or not callable(can_accept) or can_accept():
-                _log.debug("[wake] chat 消息到达,提前唤醒")
+                _log.info("[wake] %s", format_log_fields(reason="chat_pending"))
                 break
         if cfg.loop.wake_on_task_change:
             now = await resolve_focus_task(loop)
