@@ -92,9 +92,12 @@ def _select_provider_impl(
                 selected = True
                 break
             except Exception as e:
+                executor._mark_model_failure(model_ref, str(e) or repr(e))
+                code = executor._get_health(model_ref).last_code or "other"
                 _log.warning(
-                    "[routing] %s provider_build_failed err=%s",
+                    "[routing] %s provider_build_failed code=%s err=%s",
                     format_log_fields(tier=cand_tier, model_ref=model_ref),
+                    code,
                     e,
                 )
                 continue

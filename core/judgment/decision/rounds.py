@@ -36,6 +36,41 @@ if TYPE_CHECKING:
     from store.task import TaskStore
 
 _log = logging.getLogger("lingzhou.judgment")
+_ASSEMBLE_CONTEXT_ERROR_STATE: dict[str, Any] = {}
+
+
+def _track_assemble_context_failure(exc: BaseException) -> int:
+    signature = f"{type(exc).__name__}:{exc}"
+    previous = str(_ASSEMBLE_CONTEXT_ERROR_STATE.get("signature") or "")
+    if previous == signature:
+        count = int(_ASSEMBLE_CONTEXT_ERROR_STATE.get("count") or 0) + 1
+    else:
+        count = 1
+    _ASSEMBLE_CONTEXT_ERROR_STATE["signature"] = signature
+    _ASSEMBLE_CONTEXT_ERROR_STATE["count"] = count
+    return count
+
+
+def _assemble_context_failure_backoff_ms(repeat_count: int) -> int:
+    if repeat_count <= 1:
+        return 0
+    return min(60_000, 2_000 * (repeat_count - 1))
+
+
+def _log_assemble_context_failure(exc: BaseException, repeat_count: int) -> None:
+    if repeat_count == 1:
+        _log.error(
+            "[judgment] _assemble_context() 异常，返回 wait 兜底: %s",
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return
+    if repeat_count & (repeat_count - 1) == 0:
+        _log.warning(
+            "[judgment] _assemble_context() 异常重复 x%d，继续 wait 兜底: %s",
+            repeat_count,
+            exc,
+        )
 
 
 @dataclass(slots=True)
@@ -132,14 +167,22 @@ async def decide_initial(
             registry_override=registry_override,
         )
     except Exception as ctx_exc:
-        _log.exception("[judgment] _assemble_context() 异常，返回 wait 兜底: %s", ctx_exc)
-        return _simulate_safe_output_fn(
+        repeat_count = _track_assemble_context_failure(ctx_exc)
+        _log_assemble_context_failure(ctx_exc, repeat_count)
+        safe_output = _simulate_safe_output_fn(
             failure_count=0,
             signals=judgment_signals,
             hard_boundaries=hard_boundaries or [],
             reason=f"上下文组装异常: {ctx_exc}",
         )
+        backoff_ms = _assemble_context_failure_backoff_ms(repeat_count)
+        if backoff_ms > 0:
+            safe_output.model_strategy["next_idle_gap_ms"] = backoff_ms
+        return safe_output
 
+    # 上下文组装成功：清零聚合状态，确保下一波相同异常能重新触发 error 日志
+    if _ASSEMBLE_CONTEXT_ERROR_STATE:
+        _ASSEMBLE_CONTEXT_ERROR_STATE.clear()
     deps.assembler._last_context_text = context_text
     messages = deps.assembler._build_messages(context_text)
 

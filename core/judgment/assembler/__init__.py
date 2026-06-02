@@ -151,7 +151,13 @@ class JudgmentContextAssembler:
         routing_overrides: dict[str, str] | None = None,
         registry: Any | None = None,
     ) -> str:
-        return _build_model_routing_section_impl(
+        impl = globals().get("_build_model_routing_section_impl")
+        if impl is None:
+            # 兜底恢复：运行时若出现半初始化/热更新漂移，按需重新绑定实现，避免 NameError 自旋。
+            from .model_routing import _build_model_routing_section as impl
+
+            globals()["_build_model_routing_section_impl"] = impl
+        return impl(
             self,
             phase=phase,
             user_message=user_message,

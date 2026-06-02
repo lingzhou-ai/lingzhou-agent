@@ -682,6 +682,63 @@ def test_select_provider_matches_routing_provider_by_public_model_ref():
     assert selection.model_ref == "bailian/qwen3.6-plus"
 
 
+def test_select_provider_build_failure_enters_config_cooldown_and_suppresses_duplicate_logs(caplog):
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    layer._executor._tier_model_candidates = lambda tier, routing_overrides=None: ("deepseek/deepseek-v4-flash",)  # type: ignore[method-assign]
+    layer._executor._fallback_tiers = lambda tier, exclude_reader=False: ()  # type: ignore[method-assign]
+    layer._executor._find_or_create_provider = lambda model_ref: (_ for _ in ()).throw(RuntimeError(  # type: ignore[method-assign]
+        "OpenAI 兼容 provider 的环境变量 'DEEPSEEK_API_KEY' 为空，请设置该变量或从 routing/model_fallbacks 中移除此 provider。"
+    ))
+
+    caplog.set_level(logging.WARNING, logger="lingzhou.judgment")
+
+    layer._executor._select_provider(
+        phase="initial",
+        user_message="hello",
+        prefer_tier="reasoner",
+    )
+    layer._executor._select_provider(
+        phase="initial",
+        user_message="hello",
+        prefer_tier="reasoner",
+    )
+
+    warnings = [rec.message for rec in caplog.records if "provider_build_failed" in rec.message]
+    assert len(warnings) == 1
+    # config 语义由 LLM 异步感知；同步规则无法识别时归为 other，仍进入冷却
+    # 第二次调用被冷却跳过，所以只有 1 条 warning
+    assert "code=other" in warnings[0]
+
+    health = layer._executor._get_health("deepseek/deepseek-v4-flash")
+    assert health.last_code == "other"  # LLM 会异步重分类为 config，此处验证同步初始状态
+    assert health.cooldown_until > time.time()
+
+
 def test_fmt_config_snapshot_exposes_judgment_signal_thresholds():
     from core.config import Config
     from core.judgment.context.sections import _fmt_config_snapshot
@@ -1331,6 +1388,67 @@ async def test_reference_failure_is_exposed_in_model_routing_section():
     assert payload["reference_resolution"]["llm_available"] is False
     assert payload["reference_resolution"]["last_error_code"] == "400"
     assert "400 Bad Request" in payload["reference_resolution"]["last_error"]
+
+
+def test_model_routing_section_lazy_recovers_missing_impl_alias(monkeypatch):
+    import core.judgment.assembler as assembler_mod
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    monkeypatch.delitem(assembler_mod.__dict__, "_build_model_routing_section_impl", raising=False)
+
+    payload = json.loads(layer._assembler._build_model_routing_section(
+        phase="initial",
+        user_message="继续",
+        current_action="",
+        tool_history=None,
+        effective_thinking="low",
+    ))
+
+    assert "tier_descriptions" in payload
+    assert callable(assembler_mod.__dict__.get("_build_model_routing_section_impl"))
+
+
+def test_assemble_context_failure_is_coalesced_and_backed_off(caplog):
+    from core.judgment.decision import rounds as rounds_mod
+
+    rounds_mod._ASSEMBLE_CONTEXT_ERROR_STATE.clear()
+    caplog.set_level(logging.WARNING, logger="lingzhou.judgment")
+
+    exc = NameError("_build_model_routing_section_impl is not defined")
+    count1 = rounds_mod._track_assemble_context_failure(exc)
+    rounds_mod._log_assemble_context_failure(exc, count1)
+    count2 = rounds_mod._track_assemble_context_failure(exc)
+    rounds_mod._log_assemble_context_failure(exc, count2)
+
+    assert count1 == 1
+    assert count2 == 2
+    assert rounds_mod._assemble_context_failure_backoff_ms(1) == 0
+    assert rounds_mod._assemble_context_failure_backoff_ms(2) == 2000
+    assert rounds_mod._assemble_context_failure_backoff_ms(99) == 60000
+    assert any("异常重复 x2" in rec.message for rec in caplog.records)
 
 
 def test_model_routing_section_no_longer_exposes_implicit_reader_default():
