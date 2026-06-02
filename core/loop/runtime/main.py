@@ -240,6 +240,8 @@ class CognitionLoop:
         self._pending_routing_overrides: dict[str, str] | None = None
         # LLM 通过 thinking_override 覆盖下轮 thinking 等级
         self._pending_thinking_override: str | None = None
+        # gateway 外围 channel 在 runtime ready 后再启动，避免冷启动期间提前收消息。
+        self._runtime_ready_callback: Callable[[], None] | None = None
 
         cfg_file = cfg._base_dir / "lingzhou.json"
         self._cfg_file: Path = cfg_file
@@ -297,6 +299,11 @@ class CognitionLoop:
                 title="🌱 认知循环",
             )
         )
+
+        ready_callback = self._runtime_ready_callback
+        self._runtime_ready_callback = None
+        if ready_callback is not None:
+            ready_callback()
 
         cycle = 0
         consecutive_errors = 0

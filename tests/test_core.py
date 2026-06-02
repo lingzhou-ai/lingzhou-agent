@@ -1188,6 +1188,72 @@ def test_start_external_channel_runtime_delegates_to_channel_registry(monkeypatc
     ]
 
 
+def test_gateway_start_external_channel_waits_until_runtime_ready(monkeypatch, tmp_path):
+    import core.loop as loop_mod
+    from cli import gateway as gateway_mod
+
+    requested_cfg = tmp_path / "lingzhou.json"
+    requested_cfg.write_text('{"gateway": {"default_channel": "wechat"}}', encoding="utf-8")
+
+    home_dir = tmp_path / "home"
+    gw_dir = home_dir / ".lingzhou" / "gateway"
+    gw_dir.mkdir(parents=True, exist_ok=True)
+    (gw_dir / "wechat.json").write_text('{"channel": "wechat", "token": "abc"}', encoding="utf-8")
+
+    cfg = cast(
+        "Any",
+        SimpleNamespace(
+            gateway=SimpleNamespace(default_channel="wechat", webhook_host="0.0.0.0", webhook_port=8765),
+            loop=SimpleNamespace(debug=False, act=True),
+            _base_dir=tmp_path,
+            model="copilot/gpt-5.4",
+            routing={},
+            db_path=tmp_path / "runtime.db",
+        ),
+    )
+
+    events: list[str] = []
+
+    class _FakeLoop:
+        def __init__(self, _cfg):
+            self._runtime_ready_callback = None
+
+        async def run(self) -> None:
+            events.append("run_enter")
+            assert self._runtime_ready_callback is not None
+            assert events == ["run_enter"]
+            self._runtime_ready_callback()
+            events.append("run_exit")
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr(gateway_mod, "onboarding_status", lambda config: (True, "ok"))
+    monkeypatch.setattr(gateway_mod, "load_cfg", lambda config: cfg)
+    monkeypatch.setattr(gateway_mod, "_is_systemd_managed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_kill_existing_loop", lambda quiet=False: None)
+    monkeypatch.setattr(gateway_mod, "_ensure_singleton", lambda: None)
+    monkeypatch.setattr(gateway_mod, "_PID_FILE", tmp_path / "lingzhou.pid")
+    monkeypatch.setattr(gateway_mod.console, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gateway_mod,
+        "_configure_lingzhou_logging",
+        lambda log_dir, log_level, logger_name="lingzhou": (
+            tmp_path / "lingzhou.log",
+            tmp_path / "console.log",
+        ),
+    )
+    monkeypatch.setattr(gateway_mod, "_startup_config_log_line", lambda *args, **kwargs: "line")
+    monkeypatch.setattr(
+        gateway_mod,
+        "_start_external_channel_runtime",
+        lambda channel, gw_conf, db_path: events.append(f"channel_start:{channel}"),
+    )
+    monkeypatch.setattr(loop_mod, "CognitionLoop", _FakeLoop)
+
+    gateway_mod.gateway_start(channel=None, config=requested_cfg, daemon=False)
+
+    assert events == ["run_enter", "channel_start:wechat", "run_exit"]
+
+
 @pytest.mark.asyncio
 async def test_chat_interactive_assistant_reply_redraws_prompt_once(monkeypatch):
     from cli import chat as chat_mod
