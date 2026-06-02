@@ -506,6 +506,52 @@ def test_reference_resolver_speaker_candidates_skip_raw_message_and_recent_turn_
     assert recent_turn not in queried
 
 
+def test_reference_resolver_speaker_candidates_short_circuit_when_cached_and_no_identity_cues():
+    from core.reference import ReferenceResolver
+
+    queried: list[str] = []
+
+    class CachedNode:
+        kind = "interlocutor"
+
+        def to_dict(self):
+            return {
+                "id": "interlocutor-profile-08d33d65b799",
+                "kind": "interlocutor",
+                "title": "当前交互对象",
+                "body": "画像摘要: 已缓存",
+                "tags": ["interlocutor_profile"],
+            }
+
+    class SemanticStub:
+        def get(self, node_id):
+            return CachedNode() if node_id == "interlocutor-profile-08d33d65b799" else None
+
+        def retrieve(self, query, top_k=5, kind=None, tag=None):
+            queried.append(str(query))
+            return []
+
+    resolver = ReferenceResolver()
+    candidates, cues = resolver._retrieve_speaker_candidates(
+        "继续刚才那个部署问题。",
+        cast("Any", SemanticStub()),
+        chat_id="wechat:chat-1",
+        recent_turns=[
+            {"role": "user", "content": "上一轮继续讨论部署报错。"},
+            {"role": "assistant_reply", "content": "我继续分析部署报错。"},
+        ],
+        chat_continuity="刚才一直在讨论部署报错和修复步骤。",
+        cached_profile_id="interlocutor-profile-08d33d65b799",
+        source_hint="external",
+    )
+
+    assert queried == []
+    assert list(candidates) == ["interlocutor-profile-08d33d65b799"]
+    assert cues.get("names") == []
+    assert cues.get("preferences") == []
+    assert cues.get("explicit") == []
+
+
 def test_compute_judgment_signals_uses_configured_thresholds():
     from core.perception.signals import compute_judgment_signals
 

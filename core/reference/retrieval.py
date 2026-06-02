@@ -160,6 +160,7 @@ def retrieve_speaker_candidates(
     source_hint: str = "",
 ) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]]]:
     cues = extract_identity_cues(message, chat_id=chat_id, source_hint=source_hint)
+    identity_queries = _speaker_identity_queries_from_cues(cues)
     candidates: dict[str, dict[str, Any]] = {}
     log = getattr(resolver, "_log", None)
 
@@ -240,10 +241,21 @@ def retrieve_speaker_candidates(
         if cached is not None and cached.kind == "interlocutor":
             _add([cached.to_dict()], "cached")
 
+    if candidates and not identity_queries:
+        if log is not None:
+            log.info(
+                "[reference.speaker] cached_short_circuit candidates=%d source_traits=%d recent_turns=%d chat_continuity_chars=%d",
+                len(candidates),
+                len(cues.get("source_traits", [])),
+                len((recent_turns or [])[-4:]),
+                len(chat_continuity),
+            )
+        return dict(candidates), cues
+
     for name in cues["names"]:
         _add(_lookup_name(name, top_k=3, signal="self_name"), "self_name")
 
-    for query in [*cues.get("preferences", []), *cues.get("explicit", [])]:
+    for query in identity_queries:
         _add(_lookup_query(query, top_k=1, signal="message_identity"), "message_identity")
 
     if chat_id:
