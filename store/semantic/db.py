@@ -12,6 +12,11 @@ from . import _DDL, _DDL_EMBEDDINGS, _DDL_FTS5, MemoryNode, _parse_table_cols
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 
+# body 存储上限：超过此值截取末尾（保留最近内容），避免历史累积无限增长导致 OOM
+_BODY_STORE_MAX = 2 * 1024 * 1024   # 2 MB
+# FTS 分词上限：FTS5 不需要全文，只需前 256KB 即可支持关键词检索
+_FTS_BODY_MAX = 256 * 1024           # 256 KB
+
 
 def _vec_to_blob(vec: list[float]) -> bytes:
     """float32 列表 → 4 bytes/dim BLOB（与 sqlite-vec / pgvector 惯例一致）。"""
@@ -223,10 +228,11 @@ def _setup_fts5(self, conn: sqlite3.Connection) -> None:
             conn.commit()
         conn.executescript(_DDL_FTS5)
         conn.execute(
-            """
+            f"""
             INSERT INTO nodes_fts(id, title, body, tags)
-            SELECT id, title, body, tags FROM nodes
+            SELECT id, title, SUBSTR(body, 1, {_FTS_BODY_MAX}), tags FROM nodes
             WHERE id NOT IN (SELECT id FROM nodes_fts)
+            AND LENGTH(body) <= {_FTS_BODY_MAX * 8}
             """
         )
         conn.commit()
@@ -304,6 +310,13 @@ def rebuild_index(self) -> None:
 
 def _db_upsert(self, node: MemoryNode) -> None:
     tags_json = json.dumps(node.tags, ensure_ascii=False)
+    body = node.body
+    if body and len(body) > _BODY_STORE_MAX:
+        body = body[-_BODY_STORE_MAX:]  # 保留末尾（最新内容），丢弃远古历史
+        _log.warning(
+            "[semantic] body 超过 %d bytes，已截断至最近 %d bytes: id=%s kind=%s",
+            _BODY_STORE_MAX, _BODY_STORE_MAX, node.id, node.kind,
+        )
     self._conn.execute(
         """INSERT INTO nodes
                          (id, kind, title, body, activation, valence, importance, tags, source, created_at)
@@ -318,7 +331,7 @@ def _db_upsert(self, node: MemoryNode) -> None:
              tags=excluded.tags,
              source=excluded.source""",
         (
-            node.id, node.kind, node.title, node.body,
+            node.id, node.kind, node.title, body,
             node.activation, node.valence,
                             node.importance,
             tags_json,
@@ -350,10 +363,11 @@ def _sync_node_fts(
     body: str,
     tags_json: str,
 ) -> None:
+    body_fts = body[:_FTS_BODY_MAX] if body and len(body) > _FTS_BODY_MAX else body
     self._conn.execute("DELETE FROM nodes_fts WHERE id = ?", (node_id,))
     self._conn.execute(
         "INSERT INTO nodes_fts(id, title, body, tags) VALUES (?, ?, ?, ?)",
-        (node_id, title, body, tags_json),
+        (node_id, title, body_fts, tags_json),
     )
     self._conn.commit()
 
