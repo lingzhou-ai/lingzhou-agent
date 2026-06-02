@@ -574,12 +574,15 @@ def search(
             except Exception:
                 pass
 
+    _MD_SCAN_SIZE_LIMIT = 32 * 1024  # 单文件超过 32KB 跳过降级扫描，避免大文件全量加载
     if total < max_chars:
         keywords = [kw.lower() for kw in query.split() if kw]
         for md_path in memory._iter_narrative_files():
             if exclude_task_id and md_path.name == f"task-{exclude_task_id}.md":
                 continue
             try:
+                if md_path.stat().st_size > _MD_SCAN_SIZE_LIMIT:
+                    continue
                 text = md_path.read_text(encoding="utf-8")
             except Exception:
                 continue

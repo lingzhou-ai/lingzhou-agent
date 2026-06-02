@@ -199,7 +199,7 @@ async def _load_context_artifacts(
                 allowed_sources=("self_drive",) if active_source == "self_drive" else None,
                 excluded_sources=None if active_source == "self_drive" else ("self_drive",),
             )
-    cross_task_episodic_text = await loop.run_in_executor(None, episodic.search, search_query, 16000, task_id_str) if task_id_str and search_query else ""
+    cross_task_episodic_text = await loop.run_in_executor(None, episodic.search, search_query, 4000, task_id_str) if task_id_str and search_query else ""
     _log.info("[context] episodic search=%r cross_task_hit=%s", (search_query or ""), bool(cross_task_episodic_text))
     return {"data": data, "similar_tasks": similar_tasks, "cross_task_episodic_text": cross_task_episodic_text}
 
