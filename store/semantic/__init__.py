@@ -74,6 +74,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 );
 """
 
+# 多模态 embedding 表：PRIMARY KEY (node_id, modality, model)
+# modality: 'text' | 'image' | 'audio' | 'video'
+# model:    e.g. 'openai/text-embedding-3-small', 'openai/clip-vit-base-patch32', ''
+# vector 存 float32 BLOB（4 bytes/dim），与 sqlite-vec / pgvector 行业惯例一致：
+#   - 1536 dim → 6KB BLOB vs ~15KB JSON TEXT
+#   - struct.unpack 反序列化比 json.loads 快 ~10x
+#   - BLOB 长度 ÷ 4 == dim，天然维度校验，无 JSON 精度损失
+# nodes.embedding 列保留（回滚安全窗口），新写入只走此表。
+_DDL_EMBEDDINGS = """
+CREATE TABLE IF NOT EXISTS node_embeddings (
+    node_id    TEXT NOT NULL,
+    modality   TEXT NOT NULL DEFAULT 'text',
+    model      TEXT NOT NULL DEFAULT '',
+    dim        INTEGER NOT NULL,
+    vector     BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (node_id, modality, model)
+);
+CREATE INDEX IF NOT EXISTS idx_node_emb_modality ON node_embeddings(node_id, modality);
+"""
+
 _STABLE_MEMORY_KINDS = frozenset({
     "fact",
     "interlocutor",
@@ -177,6 +198,7 @@ class SemanticMemory:
         self._decay_lambda = decay_lambda
         self._db_path = db_path or (memory_dir / "semantic.db")
         self._fts5_ok: bool = False
+        self._fts5_retry_after: float = 0.0  # FTS5 感知受损后的自愈冷却截止时间
         if embed_fn is not None:
             _log.info("[semantic] 向量混合检索已启用（实验性，embedding_weight=%.2f）", embedding_weight)
         self._embed_fn = embed_fn

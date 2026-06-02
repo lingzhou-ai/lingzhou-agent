@@ -21,6 +21,8 @@ def bind_semantic_memory(cls: type[SemanticMemory]) -> None:
     cls._open_db = db._open_db
     cls._migrate = db._migrate
     cls._setup_fts5 = db._setup_fts5
+    cls._setup_embeddings_table = db._setup_embeddings_table
+    cls._migrate_embeddings = db._migrate_embeddings
     cls._connect = db._connect
     cls._sync_from_files = db._sync_from_files
     cls._validate_and_repair_index = db._validate_and_repair_index
@@ -41,8 +43,10 @@ def bind_semantic_memory(cls: type[SemanticMemory]) -> None:
     cls.list_reflections = query.list_reflections
 
     cls._fts_candidates = query._fts_candidates
+    cls._vec_scan_candidates = query._vec_scan_candidates
+    cls._fallback_candidates = query._fallback_candidates
     cls._load_by_ids = query._load_by_ids
-    cls._load_all = query._load_all
+    cls._load_filtered = query._load_filtered
     cls._score = query._score
     cls._source_score = query._source_score
     cls._temporal_score = query._temporal_score

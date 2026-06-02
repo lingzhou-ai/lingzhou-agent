@@ -3,12 +3,30 @@ from __future__ import annotations
 import json
 import logging as _log_sem
 import sqlite3
+import struct
 from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from typing import Any
 
-from . import _DDL, _DDL_FTS5, MemoryNode, _parse_table_cols
+from . import _DDL, _DDL_EMBEDDINGS, _DDL_FTS5, MemoryNode, _parse_table_cols
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
+
+
+def _vec_to_blob(vec: list[float]) -> bytes:
+    """float32 列表 → 4 bytes/dim BLOB（与 sqlite-vec / pgvector 惯例一致）。"""
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def _blob_to_vec(blob: bytes) -> list[float]:
+    """4 bytes/dim BLOB → float32 列表；兼容旧 JSON TEXT 回退。"""
+    if isinstance(blob, (bytes, bytearray, memoryview)):
+        n = len(blob) // 4
+        return list(struct.unpack(f"{n}f", bytes(blob)[:n * 4]))
+    # 旧格式兼容：JSON TEXT
+    if isinstance(blob, str):
+        return json.loads(blob)
+    return blob  # 已是 list
 
 
 def _normalize_interlocutor_tags(tags: list[str]) -> list[str]:
@@ -111,12 +129,56 @@ def close(self) -> None:
             conn.close()
 
 
+def _setup_embeddings_table(self, conn: sqlite3.Connection) -> None:
+    """创建多模态 embedding 表（幂等，已存在则跳过）。"""
+    try:
+        conn.executescript(_DDL_EMBEDDINGS)
+        conn.commit()
+    except Exception as exc:
+        _log.warning("[semantic] node_embeddings 表初始化失败: %s", exc)
+
+
+def _migrate_embeddings(self) -> None:
+    """将 nodes.embedding 历史数据（一次性幂等）迁移到 node_embeddings 表。"""
+    try:
+        rows = self._conn.execute(
+            "SELECT id, embedding, created_at FROM nodes WHERE embedding IS NOT NULL"
+        ).fetchall()
+        if not rows:
+            return
+        now = datetime.now(UTC).isoformat()
+        count = 0
+        for row in rows:
+            node_id, emb_raw, created_at = row[0], row[1], row[2]
+            if not emb_raw:
+                continue
+            try:
+                # 旧列是 JSON TEXT，转换为 float32 BLOB
+                vec = json.loads(emb_raw) if isinstance(emb_raw, str) else emb_raw
+                blob = _vec_to_blob(vec)
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO node_embeddings"
+                    " (node_id, modality, model, dim, vector, created_at)"
+                    " VALUES (?, 'text', 'legacy', ?, ?, ?)",
+                    (node_id, len(vec), blob, created_at or now),
+                )
+                count += 1
+            except Exception:
+                pass
+        self._conn.commit()
+        if count:
+            _log.info("[semantic] 已迁移 %d 个旧 embedding 到 node_embeddings", count)
+    except Exception as exc:
+        _log.warning("[semantic] embedding 迁移失败，跳过: %s", exc)
+
+
 def _open_db(self) -> sqlite3.Connection:
     try:
         conn = self._connect()
         conn.executescript(_DDL)
         conn.commit()
         self._setup_fts5(conn)
+        self._setup_embeddings_table(conn)
         return conn
     except sqlite3.DatabaseError:
         self._db_path.unlink(missing_ok=True)
@@ -124,6 +186,7 @@ def _open_db(self) -> sqlite3.Connection:
         conn.executescript(_DDL)
         conn.commit()
         self._setup_fts5(conn)
+        self._setup_embeddings_table(conn)
         return conn
 
 
@@ -147,6 +210,7 @@ def _migrate(self) -> None:
         self._conn.commit()
     except Exception:
         pass
+    self._migrate_embeddings()
 
 
 def _setup_fts5(self, conn: sqlite3.Connection) -> None:
@@ -215,6 +279,8 @@ def rebuild_index(self) -> None:
         if self._fts5_ok:
             with suppress(Exception):
                 self._conn.execute("DELETE FROM nodes_fts")
+        with suppress(Exception):
+            self._conn.execute("DELETE FROM node_embeddings")
         self._conn.commit()
         for p in self._dir.glob("*.json"):
             try:
@@ -222,10 +288,14 @@ def rebuild_index(self) -> None:
                 self._db_upsert(MemoryNode.from_dict(d))
                 emb = d.get("embedding")
                 if emb is not None:
-                    emb_json = json.dumps(emb) if not isinstance(emb, str) else emb
+                    vec = json.loads(emb) if isinstance(emb, str) else emb
+                    blob = _vec_to_blob(vec)
                     self._conn.execute(
-                        "UPDATE nodes SET embedding = ? WHERE id = ?",
-                        (emb_json, d.get("id")),
+                        "INSERT OR IGNORE INTO node_embeddings"
+                        " (node_id, modality, model, dim, vector, created_at)"
+                        " VALUES (?, 'text', 'legacy', ?, ?, ?)",
+                        (d.get("id"), len(vec), blob,
+                         d.get("created_at") or datetime.now(UTC).isoformat()),
                     )
             except Exception:
                 pass
@@ -328,9 +398,12 @@ def upsert(self, node: MemoryNode) -> None:
         if self._embed_fn is not None:
             try:
                 vec = self._embed_fn(node.title + " " + node.body)
+                blob = _vec_to_blob(vec)
                 self._conn.execute(
-                    "UPDATE nodes SET embedding = ? WHERE id = ?",
-                    (json.dumps(vec), node.id),
+                    "INSERT OR REPLACE INTO node_embeddings"
+                    " (node_id, modality, model, dim, vector, created_at)"
+                    " VALUES (?, 'text', '', ?, ?, ?)",
+                    (node.id, len(vec), blob, datetime.now(UTC).isoformat()),
                 )
                 self._conn.commit()
             except Exception:
