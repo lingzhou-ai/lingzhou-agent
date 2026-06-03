@@ -6,9 +6,9 @@ import logging
 import uuid
 from typing import Any
 
+from core.metabolic import add_semantic_memory, submit_fact
 from memory.quality_checker import evaluate_retrieval_quality
 from memory.working import WMItem
-from store.semantic import MemoryNode
 from tools.registry import (
     CAPS_EXEMPT,
     ToolContext,
@@ -134,17 +134,20 @@ async def memory_add_semantic(params: dict[str, Any], ctx: ToolContext) -> ToolR
         return ToolResult(summary="title 和 body 不能为空", skipped=True)
     node_id = f"node-{uuid.uuid4().hex[:12]}"
     kind = str(params.get("kind") or "observation")
-    node = MemoryNode(
-        id=node_id,
+    resolved_title = _disambiguate_semantic_title(ctx, title, kind, node_id)
+    await add_semantic_memory(
+        ctx,
+        node_id=node_id,
         kind=kind,
-        title=_disambiguate_semantic_title(ctx, title, kind, node_id),
+        title=resolved_title,
         body=body,
         activation=_parse_float(params.get("activation"), 0.7),
+        source="tools/memory.add_semantic",
+        decision_basis=f"memory.add_semantic title={resolved_title} kind={kind}"[:240],
     )
-    ctx.semantic.upsert(node)
     return ToolResult(
-        summary=f"已写入语义记忆: {node.title}",
-        evidence=f"node_id={node.id}",
+        summary=f"已写入语义记忆: {resolved_title}",
+        evidence=f"node_id={node_id}",
     )
 
 
@@ -163,7 +166,15 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     value = _coerce_fact_value(params.get("value"))
     if not key:
         return ToolResult(summary="key 不能为空", skipped=True)
-    await ctx.task_store.set_fact(key, value, scope=params.get("scope") or "general")
+    scope = params.get("scope") or "general"
+    await submit_fact(
+        ctx,
+        key=key,
+        value=value,
+        scope=scope,
+        source="tools/memory.set_fact",
+        decision_basis=f"memory.set_fact requested key={key} scope={scope}"[:240],
+    )
     return ToolResult(summary=f"已设置事实: {key}={value}", evidence=f"key={key}")
 
 
@@ -318,14 +329,17 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
     body = f"{insight}\n\n来源（工作记忆摘要）:\n{wm_summary}" if wm_summary else insight
     node_id = f"reflect-{uuid.uuid4().hex[:12]}"
 
-    node = MemoryNode(
-        id=node_id,
+    resolved_title = _disambiguate_semantic_title(ctx, title, "structural", node_id)
+    await add_semantic_memory(
+        ctx,
+        node_id=node_id,
         kind="structural",
-        title=_disambiguate_semantic_title(ctx, title, "structural", node_id),
+        title=resolved_title,
         body=body,
         activation=0.85,
+        source="tools/reflect.structural",
+        decision_basis=f"reflect.structural title={resolved_title}"[:240],
     )
-    ctx.semantic.upsert(node)
 
     # 同时写入情节记忆，保留推理轨迹
     task = await ctx.get_active_task()
@@ -336,7 +350,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
     )
     return ToolResult(
         summary=f"结构性洞察已写入语义记忆: {title}",
-        evidence=f"node_id={node.id}",
+        evidence=f"node_id={node_id}",
         priority=0.5,  # 洞察记录本身不需要长时间留在 WM
     )
 

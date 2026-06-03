@@ -37,6 +37,69 @@ def test_bootstrap_wm_injection():
         assert sum(1 for i in items if i["kind"].startswith("bootstrap_identity")) == 2
 
 
+def test_soul_engine_renders_soul_md_without_hard_axioms():
+    asyncio.run(_soul_engine_renders_soul_md_without_hard_axioms())
+
+
+async def _soul_engine_renders_soul_md_without_hard_axioms():
+    from core.persona import PersonaEngine
+    from core.soul import SoulEngine
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            await store.set_fact("soul:name", "lingzhou")
+            await store.set_fact(
+                "soul:ethos_baseline",
+                json.dumps({
+                    "truth": 0.8,
+                    "caution": 0.7,
+                    "continuity": 0.6,
+                    "curiosity": 0.5,
+                    "care": 0.4,
+                }),
+            )
+            await store.set_fact("soul:hard_axioms", json.dumps(["do not render this axiom"]))
+
+            cfg = SimpleNamespace(workspace_dir=workspace, soul=SimpleNamespace(name="lingzhou"))
+            soul = SoulEngine(cfg, PersonaEngine(cfg, store))
+            await soul.init_md()
+
+            content = (workspace / "SOUL.md").read_text(encoding="utf-8")
+            assert "do not render this axiom" not in content
+            assert "CONSTITUTION.md" in content
+            assert "constitution_hash" in content
+            assert "真实 (truth):      0.800" in content
+        finally:
+            await store.close()
+
+
+def test_extract_constitution_boundaries_prefers_absolute_boundary_section():
+    from core.immune import extract_constitution_boundaries
+
+    text = """
+# CONSTITUTION.md
+
+## 绝对边界（行动禁区）
+
+1. 不欺骗用户
+2. 不绕过人类监督机制
+
+## 其他
+
+- 不应出现在硬边界摘要
+"""
+    assert extract_constitution_boundaries(text) == [
+        "不欺骗用户",
+        "不绕过人类监督机制",
+    ]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 完整构造链路（不调 LLM）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -48,10 +111,7 @@ def test_cognition_loop_init():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -64,13 +124,13 @@ def test_cognition_loop_init():
         assert loop.episodic.max_events == cfg.memory.max_events
 
 
-def test_memory_config_accepts_legacy_decay_lambda_key_and_property():
+def test_memory_config_uses_semantic_decay_lambda_only():
     from core.config_models import MemoryConfig
 
-    cfg = MemoryConfig.model_validate({"decay_lambda": 0.25})
+    cfg = MemoryConfig.model_validate({"semantic_decay_lambda": 0.25, "decay_lambda": 0.8})
 
     assert cfg.semantic_decay_lambda == 0.25
-    assert cfg.decay_lambda == 0.25
+    assert not hasattr(cfg, "decay_lambda")
 
 
 def test_curiosity_signal_does_not_auto_create_task():
@@ -83,10 +143,7 @@ async def _curiosity_signal_does_not_auto_create_task():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -161,10 +218,7 @@ async def _self_drive_signal_does_not_auto_create_task():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -185,8 +239,14 @@ async def _self_drive_signal_does_not_auto_create_task():
             wm_items = loop._wm.get_top(10)
             self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
             assert len(self_drive_items) == 1
-            assert "task.add" in self_drive_items[0]["content"]
-            assert "source=self_drive" in self_drive_items[0]["content"]
+            content = self_drive_items[0]["content"]
+            assert "[自驱事件]" in content
+            assert "scope: observation" in content
+            assert "proposal:" in content
+            assert "open_questions:" in content
+            assert "available_directions:" in content
+            assert "task.add" not in content
+            assert "source=self_drive" not in content
         finally:
             await loop.task_store.close()
             await loop.provider.close()
@@ -299,10 +359,7 @@ async def _self_drive_signal_bypasses_idle_judge_aggregation():
     from core.loop.tick import _decide_initial_action, _TickJudgmentPrep
     from memory.working import WMItem
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -827,7 +884,6 @@ async def _post_tick_memory_crystallizes_event_title_with_task_id():
                     memory=SimpleNamespace(chat_crystallize_every=1),
                     emotion=SimpleNamespace(),
                 ),
-                ),
             ))
             action = cast("Any", SimpleNamespace(chosen_action_id="", params={}, reflection="事件反思", rationale=""))
             result = SimpleNamespace(summary="", skipped=False, error=None, kind="execute_result", priority=0.5)
@@ -906,12 +962,12 @@ async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
             assert "chat:wechat:chat-1" in node.tags
             assert "继续排查刚才这个部署问题" in node.body
 
-            chat_text = episodic.load_for_chat_context("wechat:chat-1", max_chars=2000)
+            chat_text = episodic.load_for_chat_context("wechat:chat-1", n_recent=20)
             assert "继续排查刚才这个部署问题" in chat_text
             assert "好的，我继续沿着这个 chat 的部署问题往下查。" in chat_text
             assert "先记录 chat 维度记忆。" not in chat_text
 
-            interlocutor_text = episodic.load_for_interlocutor_context("interlocutor-bat", max_chars=2000)
+            interlocutor_text = episodic.load_for_interlocutor_context("interlocutor-bat")
             assert "继续排查刚才这个部署问题" in interlocutor_text
             assert "好的，我继续沿着这个 chat 的部署问题往下查。" in interlocutor_text
 
@@ -962,7 +1018,6 @@ def test_dev_model_switch_repairs_stale_same_provider_reasoner_routes_when_resel
         "routing": {
             "reader": "bailian/qwen3.6-plus",
             "reasoner": "copilot/gpt-5.4",
-            "complex": "copilot/o3",
             "repair": "bailian/qwen3.6-plus",
         },
     }
@@ -973,10 +1028,9 @@ def test_dev_model_switch_repairs_stale_same_provider_reasoner_routes_when_resel
         new_model="copilot/gpt-5.4-mini",
     )
 
-    assert changed == ["reasoner", "complex"]
+    assert changed == ["reasoner"]
     assert cfg_data["routing"]["reader"] == "bailian/qwen3.6-plus"
     assert cfg_data["routing"]["reasoner"] == "copilot/gpt-5.4-mini"
-    assert cfg_data["routing"]["complex"] == "copilot/gpt-5.4-mini"
     assert cfg_data["routing"]["repair"] == "bailian/qwen3.6-plus"
 
 
@@ -1019,7 +1073,7 @@ def test_dev_model_target_selection_updates_reasoner_without_touching_primary_mo
     assert cfg_data["routing"]["reasoner"] == "copilot/o3"
 
 
-def test_dev_model_target_selection_normalizes_complex_alias_to_reasoner():
+def test_dev_model_target_selection_rejects_unknown_target():
     from cli.dev import _apply_model_target_selection
 
     cfg_data = {
@@ -1027,15 +1081,13 @@ def test_dev_model_target_selection_normalizes_complex_alias_to_reasoner():
         "routing": {},
     }
 
-    result = _apply_model_target_selection(
-        cfg_data,
-        current_model="bailian/qwen3.6-plus",
-        new_model="copilot/gpt-5.4-mini",
-        target="complex",
-    )
-
-    assert result["target"] == "reasoner"
-    assert cfg_data["routing"]["reasoner"] == "copilot/gpt-5.4-mini"
+    with pytest.raises(ValueError, match="未知模型目标"):
+        _apply_model_target_selection(
+            cfg_data,
+            current_model="bailian/qwen3.6-plus",
+            new_model="copilot/gpt-5.4-mini",
+            target="complex",
+        )
 
 
 def test_merge_runtime_routing_override_keeps_supported_tiers_only():
@@ -1063,10 +1115,7 @@ async def _chat_reply_is_persisted_before_post_tick_cleanup():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -1135,10 +1184,7 @@ async def _local_chat_reply_is_persisted_for_default_channel():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -1223,10 +1269,7 @@ async def _autonomous_followup_reply_uses_bound_chat_session():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
-    if not cfg_path.exists():
-        cfg_path = _proj_root() / "lingzhou.json.example"
-    cfg = Config.load(cfg_path)
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -1287,5 +1330,3 @@ async def _autonomous_followup_reply_uses_bound_chat_session():
         finally:
             await loop.task_store.close()
             await loop.provider.close()
-
-

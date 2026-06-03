@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from .assemble_context import _assemble_context as _assemble_context_impl
 from .continue_context import _build_continue_context as _build_continue_context_impl
-from .model_routing import _build_model_routing_section as _build_model_routing_section_impl
+from .model_routing import _build_model_routing_section
+
+_build_model_routing_section_impl = _build_model_routing_section
 
 _log = logging.getLogger("lingzhou.judgment")
 
@@ -154,8 +156,7 @@ class JudgmentContextAssembler:
         impl = globals().get("_build_model_routing_section_impl")
         if impl is None:
             # 兜底恢复：运行时若出现半初始化/热更新漂移，按需重新绑定实现，避免 NameError 自旋。
-            from .model_routing import _build_model_routing_section as impl
-
+            impl = globals().get("_build_model_routing_section")
             globals()["_build_model_routing_section_impl"] = impl
         return impl(
             self,

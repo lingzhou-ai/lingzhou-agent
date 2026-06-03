@@ -11,7 +11,8 @@
 | `core/` | 认知循环（感知/判断/执行/反思）与编排；横切见 `log_fields`、`smoke_tests` | `provider/*`、`memory/*`、`store/*`、`tools/registry` | `cli/*`、渠道适配细节 |
 | `core/config/` | `lingzhou.json` → `Config` | `config_models` | 业务逻辑 |
 | `core/config_models/` | Pydantic 子配置模型 | 仅 stdlib/pydantic | 运行时编排 |
-| `core/persona/` | Soul 工作区文件、`SelfModel`、`PersonaEngine` | `config`、`workspace` | 判断/执行 |
+| `core/persona/` | 人格 ethos、`SelfModel`、身份启动入口 | `config`、`workspace`、`core/soul` | 判断/执行、宪法边界 |
+| `core/soul/` | 灵魂长期取向与 `SOUL.md` 人类可读镜像 | `persona`、`immune` | 人格 ethos 更新、宪法执行 |
 | `core/skill/`、`core/subagent/` | 技能注册、子灵 Runner | `tools`、judgment/execution | 主循环细节 |
 | `core/paths/`、`core/plugin/` | 路径解析、插件加载 | — | 领域逻辑 |
 | `core/contracts/` | 跨层稳定类型契约（探针、执行签名、工具 metadata） | 仅 stdlib / 彼此 | 运行时编排、IO |
@@ -23,7 +24,7 @@
 | `core/loop/cycle/` | 事件驱动（`driver` / `dispatcher` / `chat` / `focus`） | `runtime`、`shared` | Run 业务 |
 | `core/loop/runs/` | Run 路由（`driver`）与刷新（`refresh`） | `cycle`、`execution` | tick 细节 |
 | `core/loop/shared/` | tick 共享 helper（`common` / `logging` / `continue_phase` / …） | `config`、`contracts` | LLM、store 实现 |
-| `core/loop/drive/` | `behavior`、`self_drive` | `store`、WM | 判断/执行 |
+| `core/loop/drive/` | `behavior`、`engine` | `store`、WM | 判断/执行 |
 | `core/judgment` | 决策、路由、编排入口 | 同上 | 直接外部 IO |
 | `core/judgment/boundary` | 输出归一化、解析后流水线 | `core/judgment/output` | LLM 调用 |
 | `core/judgment/decision` | 模型路由、重试、LLM 调用、`rounds` 编排、`executor` mixins | `provider/*`、`output` | 上下文组装 |

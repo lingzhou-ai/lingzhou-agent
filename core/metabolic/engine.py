@@ -2,17 +2,21 @@
 
 公理 A5：正式状态写入必须经过代谢器官。
 
-Phase 1：submit() 直接调用 task_store.set_fact（行为与原有散落写入一致）。
-Phase 2（当前）：
-  1. 免疫器官检查（违宪则拒绝，不写入，但仍记录账本）
-  2. 生命史账本追加记录（append-only）
+当前职责：
+  1. 接收外围器官提交的 StateProposal
+  2. 先经免疫器官检查
+  3. 将允许的提案落地到 TaskStore
+  4. 将通过、拒绝、未知 op、落地失败全部追加到生命史账本
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.immune.policy import check_tool_blocked
+from core.metabolic.state_writer import apply_state_write
 
 if TYPE_CHECKING:
     from core.metabolic.proposal import StateProposal
@@ -22,31 +26,33 @@ _log = logging.getLogger("lingzhou.metabolic")
 
 
 class MetabolicEngine:
-    """代谢引擎：全系统唯一正式状态写入出口。
+    """代谢引擎：全系统唯一正式状态写入出口。"""
 
-    Phase 2：先做免疫检查，通过后落地并追加生命史账本。
-    """
-
-    def __init__(self, task_store: TaskStoreViewProtocol) -> None:
+    def __init__(self, task_store: TaskStoreViewProtocol, semantic_memory: Any | None = None) -> None:
         self._task_store = task_store
+        self._semantic_memory = semantic_memory
 
-    async def submit(self, proposal: StateProposal) -> None:
+    async def submit(self, proposal: StateProposal) -> Any:
         """提交候选状态写入。
 
         流程：
-          1. 免疫器官检查（key 映射为伪工具名 "fact:<key>"）
-          2. 通过 → 落地写入
-          3. 无论通过/拒绝，均追加生命史账本（accepted 标记区分）
+          1. 免疫器官检查（fact key 映射为伪工具名 "fact:<key>"）
+          2. 通过 → 按 proposal.op 落地写入
+          3. 无论通过/拒绝/失败，均追加生命史账本（accepted 标记区分）
         """
-        # ── Phase 2-①：免疫检查 ──────────────────────────────────────
-        # set_fact 写入以 "fact:<key>" 形式过黑名单；soul_change 等高风险 op
+        # fact 写入/删除以 "fact:<key>" 形式过黑名单；soul_change 等高风险 op
         # 日后可在 check_tool_blocked 中新增规则，此处自动生效。
-        pseudo_tool = f"fact:{proposal.key}" if proposal.op == "set_fact" else proposal.op
+        pseudo_tool = f"fact:{proposal.key}" if proposal.op in {"set_fact", "delete_fact"} else proposal.op
         block_reason = check_tool_blocked(pseudo_tool)
 
         accepted = block_reason is None
+        result = None
+        ledger_key = proposal.key
+        ledger_reason = ""
+        write_error: Exception | None = None
 
         if not accepted:
+            ledger_reason = str(block_reason or "immune_blocked")
             _log.warning(
                 "[metabolic] 免疫器官拒绝写入 key=%r op=%r source=%r reason=%s",
                 proposal.key,
@@ -55,39 +61,82 @@ class MetabolicEngine:
                 block_reason,
             )
         else:
-            # ── 落地写入 ──────────────────────────────────────────────
-            if proposal.op == "set_fact":
-                await self._task_store.set_fact(
-                    proposal.key,
-                    proposal.value,
-                    scope=proposal.scope,
+            try:
+                applied = await apply_state_write(
+                    self._task_store,
+                    proposal,
+                    accepted=accepted,
+                    semantic_memory=self._semantic_memory,
                 )
-                _log.debug(
-                    "[metabolic] set_fact key=%r scope=%r source=%r",
-                    proposal.key,
-                    proposal.scope,
-                    proposal.source,
-                )
-            else:
+                result = applied.result
+                ledger_key = applied.ledger_key
+                accepted = applied.accepted
+                ledger_reason = applied.reason
+            except Exception as exc:
+                accepted = False
+                ledger_reason = _write_error_reason(exc)
+                write_error = exc
                 _log.warning(
-                    "[metabolic] 未知 op=%r，跳过（key=%r source=%r）",
-                    proposal.op,
+                    "[metabolic] 落地失败 key=%r op=%r source=%r error=%s",
                     proposal.key,
+                    proposal.op,
                     proposal.source,
+                    exc,
                 )
 
-        # ── Phase 2-②：生命史账本追加（不阻塞主流程，出错仅 warning）──
         try:
-            value_str = str(proposal.value) if proposal.value is not None else ""
+            value_str = _ledger_value(proposal.value)
             await self._task_store.ledger_append(
                 op=proposal.op,
-                key=proposal.key,
+                key=ledger_key,
                 value=value_str,
                 scope=proposal.scope,
                 source=proposal.source,
                 accepted=accepted,
                 run_id=proposal.run_id,
+                reason=ledger_reason,
+                proposal_hash=_proposal_hash(proposal),
+                decision_basis=_decision_basis(proposal),
             )
         except Exception as exc:
             _log.warning("[metabolic] 生命史账本写入失败（不影响主流程）: %s", exc)
+        if write_error is not None:
+            raise write_error
+        return result
 
+
+def _ledger_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _proposal_hash(proposal: StateProposal) -> str:
+    payload = {
+        "op": proposal.op,
+        "key": proposal.key,
+        "value": proposal.value,
+        "scope": proposal.scope,
+        "source": proposal.source,
+        "run_id": proposal.run_id,
+        "extras": proposal.extras,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _decision_basis(proposal: StateProposal) -> str:
+    """提取可公开审计的依据摘要，避免泄露模型内部思维链。"""
+    basis = proposal.extras.get("decision_basis") or proposal.extras.get("basis") or ""
+    text = " ".join(str(basis or "").split())
+    return text[:1000]
+
+
+def _write_error_reason(exc: Exception) -> str:
+    text = f"write_error:{exc.__class__.__name__}:{exc}"
+    return text[:500]

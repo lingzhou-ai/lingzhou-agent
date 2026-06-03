@@ -5,10 +5,10 @@ from typing import Annotated
 
 import typer
 
-from cli.common import DEFAULT_CONFIG_PATH, console
 from cli.auth import auth_app
 from cli.bootstrap import init, is_onboarded, onboard, setup
 from cli.chat import chat
+from cli.common import DEFAULT_CONFIG_PATH, console
 from cli.config import config_app
 from cli.dev import dev_app
 from cli.gateway import gateway_app, gateway_start, run, stop

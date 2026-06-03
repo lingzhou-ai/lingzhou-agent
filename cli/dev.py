@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json as _json
 import shutil
 import subprocess
@@ -11,19 +10,21 @@ from typing import Annotated
 
 import typer
 
+from cli import dev_helpers as _dev_helpers
 from cli.common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg
 from cli.dev_helpers import (
     _apply_model_target_selection,
     _effective_target_model,
-    _merge_runtime_routing_override,
     _normalize_model_target,
     _preferred_model_index,
     _set_db_routing_override,
-    _sync_routing_models_on_primary_switch,
     _sync_db_routing_overrides,
 )
 from cli.diag import doctor, version
 from core.version import __codename__, __version__
+
+_merge_runtime_routing_override = _dev_helpers._merge_runtime_routing_override
+_sync_routing_models_on_primary_switch = _dev_helpers._sync_routing_models_on_primary_switch
 
 dev_app = typer.Typer(
     name="dev",
@@ -284,20 +285,16 @@ def model(
                     default=defaults["api_key_env"],
                 )
                 new_provider_cfg["api_key_env"] = api_key_input
-                # 如果输入的不是 ENV_VAR 格式（直接贴了 key），存 credentials.json
+                # 如果输入的不是 ENV_VAR 格式（直接贴了 key），写入 auth profile。
                 if api_key_input and not _re.match(r'^[A-Z_][A-Z0-9_]*$', api_key_input.strip()):
-                    cred_file = Path.home() / ".lingzhou" / "credentials.json"
-                    cred_file.parent.mkdir(parents=True, exist_ok=True)
-                    creds: dict = {}
-                    if cred_file.exists():
-                        with contextlib.suppress(Exception):
-                            creds = _json.loads(cred_file.read_text(encoding="utf-8"))
+                    from store.auth import AUTH_PROFILES_PATH, set_token_profile
+
                     cred_key = f"{chosen_provider.upper()}_API_KEY"
-                    creds[cred_key] = api_key_input.strip()
-                    cred_file.write_text(_json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
-                    cred_file.chmod(0o600)
+                    profile_id = f"{chosen_provider}:default"
+                    set_token_profile(profile_id=profile_id, provider=chosen_provider, token=api_key_input.strip())
                     new_provider_cfg["api_key_env"] = cred_key
-                    console.print(f"  [dim]key 已安全存入 {cred_file}，配置中使用 {cred_key}[/dim]")
+                    new_provider_cfg["auth_profile_id"] = profile_id
+                    console.print(f"  [dim]key 已安全存入 {AUTH_PROFILES_PATH}，配置中使用 {profile_id}[/dim]")
 
             if "providers" not in cfg_data:
                 cfg_data["providers"] = {}

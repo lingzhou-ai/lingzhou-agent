@@ -285,10 +285,17 @@ def _fmt_shell_capabilities() -> str:
 
 
 def _fmt_percept(percept: Percept) -> str:
-    return (
-        f"预测误差: {percept.prediction_error:.2f}  "
-        f"工作区变更: {'是' if percept.workspace_dirty else '否'}"
-    )
+    lines = [
+        f"预测误差: {percept.prediction_error:.2f}",
+        f"工作区变更: {'是' if percept.workspace_dirty else '否'}",
+    ]
+    if getattr(percept, "multimodal_inputs", None):
+        lines.append(f"多模态输入: {len(percept.multimodal_inputs)} 条")
+        for idx, obs in enumerate(percept.multimodal_inputs[:3], start=1):
+            lines.append(f"  - {idx}. {obs}")
+        if len(percept.multimodal_inputs) > 3:
+            lines.append(f"  - ... 共 {len(percept.multimodal_inputs)} 条")
+    return "\n".join(lines)
 
 
 def _fmt_soul(
@@ -426,5 +433,4 @@ def _fmt_chat_memories(memories: list[dict[str, Any]]) -> str:
     result = _fmt_memories(memories)
     _cache_put(cache_key, result)
     return result
-
 

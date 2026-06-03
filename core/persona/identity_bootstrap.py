@@ -1,8 +1,7 @@
-"""core/persona/soul.py — Soul 层管理器（工作区身份文件初始化、EMA 同步、冷启动注入）。
+"""core/persona/identity_bootstrap.py — 身份启动管理器。
 
-职责（严格限定于 Soul / 身份层）：
+职责（严格限定于身份文件与启动注入）：
   - workspace_dir 下 SOUL.md / IDENTITY.md / BOOTSTRAP.md 等身份文件的首次写入
-  - 每轮 EMA 后将最新 ethos 值同步写回 SOUL.md（人类可读镜像）
   - bootstrap：将所有身份文件注入 WM（启动身份注入机制）
 
 不负责：
@@ -59,10 +58,10 @@ _BOOTSTRAP_FILES = ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.
 _DREAMS_FILE = "DREAMS.md"
 
 
-class SoulManager:
-    """管理 Soul 层文件，并在冷启动时将身份文件注入 WM。
+class IdentityBootstrapManager:
+    """管理身份文件，并在冷启动时将身份材料注入 WM。
 
-    人格层（ethos DB 访问、SOUL.md 镜像）委托给 self._persona (PersonaEngine)。
+    人格层委托给 PersonaEngine；SOUL.md 镜像委托给 SoulEngine。
     """
 
     def __init__(
@@ -72,10 +71,12 @@ class SoulManager:
         wm: WorkingMemory,
     ) -> None:
         from core.persona import PersonaEngine
+        from core.soul import SoulEngine
         self._cfg = cfg
         self._task_store = task_store
         self._wm = wm
         self._persona = PersonaEngine(cfg, task_store)
+        self._soul_engine = SoulEngine(cfg, self._persona)
 
     async def init_files(self) -> None:
         """冷启动：确保 workspace_dir 中有所有必要的 Soul 文件。
@@ -90,20 +91,9 @@ class SoulManager:
 
         seed_workspace_skills(workspace)
 
-        soul_name = await self._persona._soul_name()
+        soul_name = await self._persona.soul_name()
 
-        soul_path = workspace / "SOUL.md"
-        if not soul_path.exists():
-            from core.perception.ethos import EthosValues
-            ethos_raw = await self._persona._ethos_from_db()
-            axioms = await self._persona._axioms_from_db()
-            try:
-                ethos_values = EthosValues.from_dict(ethos_raw) if ethos_raw else EthosValues()
-            except ValueError as exc:
-                _log.warning("[soul] init_files ethos_baseline 解析失败，使用默认值: %s", exc)
-                ethos_values = EthosValues()
-            soul_path.write_text(self._persona._build_content(soul_name, ethos_values, axioms), encoding="utf-8")
-            _log.info("Soul 初始化: 已写入 %s", soul_path)
+        await self._soul_engine.init_md()
 
         for fname, content in _WORKSPACE_FILES:
             fpath = workspace / fname
@@ -125,9 +115,9 @@ class SoulManager:
     async def sync_md(self) -> None:
         """将 facts DB 中最新 EMA ethos 值同步写回 SOUL.md（人类可读镜像）。
 
-        委托给 PersonaEngine.sync_md()。
+        委托给 SoulEngine.sync_md()。
         """
-        await self._persona.sync_md()
+        await self._soul_engine.sync_md()
 
     async def bootstrap(
         self,

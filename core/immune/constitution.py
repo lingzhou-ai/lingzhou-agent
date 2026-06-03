@@ -66,6 +66,53 @@ def get_constitution_hash() -> str | None:
     return _constitution_hash
 
 
+def get_constitution_text() -> str:
+    """返回已缓存的宪法文本；未加载时返回空字符串。"""
+    return _constitution_text or ""
+
+
+def extract_constitution_boundaries(text: str) -> list[str]:
+    """从 CONSTITUTION.md 提取可注入判断上下文的硬边界摘要。
+
+    优先读取 "绝对边界/行动禁区" 小节；若模板变化导致找不到该小节，
+    则回退为提取前几条非标题正文，避免静默降级为空。
+    """
+    section: list[str] = []
+    in_absolute_boundaries = False
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            title = line.strip("# ").strip()
+            if "绝对边界" in title or "行动禁区" in title:
+                in_absolute_boundaries = True
+                continue
+            if in_absolute_boundaries:
+                break
+        if in_absolute_boundaries:
+            cleaned = _clean_boundary_line(line)
+            if cleaned:
+                section.append(cleaned)
+    if section:
+        return section
+
+    fallback: list[str] = []
+    for raw in str(text or "").splitlines():
+        cleaned = _clean_boundary_line(raw.strip())
+        if cleaned:
+            fallback.append(cleaned)
+        if len(fallback) >= 10:
+            break
+    return fallback
+
+
+def _clean_boundary_line(line: str) -> str:
+    if not line or line.startswith(("#", ">", "---")):
+        return ""
+    return line.lstrip("-0123456789.、) ").strip()
+
+
 def verify_constitution_unchanged(path: Path) -> bool:
     """校验磁盘文件与缓存哈希一致（用于定时 probe 校验）。
 

@@ -303,14 +303,26 @@ def load_for_context(memory, task_id: str | None, n_recent: int = 20) -> str:
     return _load_recent_blocks(memory._resolve_task_path(task_id), n_recent)
 
 
-def load_for_chat_context(memory, chat_id: str | None, n_recent: int = 20) -> str:
+def load_for_chat_context(
+    memory,
+    chat_id: str | None,
+    n_recent: int = 20,
+    *,
+    max_chars: int | None = None,
+) -> str:
     """读取 chat 维度的情节连续性，跨 task 保留同一 chat 的完整对话线索。"""
     if not chat_id:
         return ""
     return _load_recent_blocks(memory._chat_path(chat_id), n_recent)
 
 
-def load_for_interlocutor_context(memory, interlocutor_id: str | None, n_recent: int = 20) -> str:
+def load_for_interlocutor_context(
+    memory,
+    interlocutor_id: str | None,
+    n_recent: int = 20,
+    *,
+    max_chars: int | None = None,
+) -> str:
     """读取当前交互对象维度的情节连续性，跨 chat 保留同一对象的互动片段。"""
     if not interlocutor_id:
         return ""

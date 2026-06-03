@@ -124,7 +124,7 @@ assert "loop" in fields
 assert "evolution" in fields
 """,
 
-    "core/skill.py": """
+    "core/skill/__init__.py": """
 assert hasattr(mod, "SkillRegistry"), "SkillRegistry class missing"
 assert hasattr(mod, "Skill"), "Skill class missing"
 sr = mod.SkillRegistry()     # 无 skills_dir → 尝试 seed dir，容许 0 个
@@ -132,7 +132,7 @@ assert hasattr(sr, "get")
 assert hasattr(sr, "match_for_context")
 """,
 
-    "core/evolution.py": """
+    "core/evolution/__init__.py": """
 assert hasattr(mod, "EvolutionEngine"), "EvolutionEngine missing"
 assert hasattr(mod, "EvolutionResult"), "EvolutionResult missing"
 r = mod.EvolutionResult(success=True, target="test_tool")
@@ -144,12 +144,12 @@ score = _score_candidate("# minimal code\ndef f(): pass\n")
 assert isinstance(score, int) and score > 0, f"_score_candidate should return positive int, got {score}"
 """,
 
-    "core/execution.py": """
+    "core/execution/__init__.py": """
 assert hasattr(mod, "ExecutionLayer"), "ExecutionLayer class missing"
 assert callable(mod.ExecutionLayer)
 """,
 
-    "core/subagent.py": """
+    "core/subagent/__init__.py": """
 assert hasattr(mod, "SubagentConfig"), "SubagentConfig missing"
 assert hasattr(mod, "SubagentResult"), "SubagentResult missing"
 assert hasattr(mod, "SubagentRunner"), "SubagentRunner missing"
@@ -165,7 +165,7 @@ assert "test-01" in r.to_wm_content()
 assert "完成" in r.to_wm_content()
 """,
 
-    "core/self_drive.py": """
+    "core/loop/drive/engine.py": """
 assert hasattr(mod, "SelfDriveEngine"), "SelfDriveEngine class missing"
 """,
 
@@ -173,45 +173,59 @@ assert hasattr(mod, "SelfDriveEngine"), "SelfDriveEngine class missing"
 assert hasattr(mod, "SelfModel"), "SelfModel class missing"
 """,
 
-    "core/persona/soul.py": """
-assert hasattr(mod, "SoulManager"), "SoulManager class missing"
+    "core/persona/identity_bootstrap.py": """
+assert hasattr(mod, "IdentityBootstrapManager"), "IdentityBootstrapManager class missing"
 """,
 
-    "core/plugin.py": """
+    "core/soul/engine.py": """
+assert hasattr(mod, "SoulEngine"), "SoulEngine class missing"
+""",
+
+    "core/plugin/__init__.py": """
 assert hasattr(mod, "PluginManager") or hasattr(mod, "PluginLifecycle"), \
     "no plugin manager class found"
 """,
 
-    "core/worker.py": """
+    "core/execution/workers.py": """
 assert hasattr(mod, "WorkerLayer") or hasattr(mod, "Worker") or hasattr(mod, "CognitionWorker"), \
     "no worker class found"
 """,
 
     "core/loop/task/runtime.py": """
-assert hasattr(mod, "TaskRuntime") or hasattr(mod, "ingest_reflection") or True
+assert hasattr(mod, "_ingest_actionable_meta_reflections"), "meta-reflection ingestion missing"
+assert callable(mod._ingest_actionable_meta_reflections)
+assert hasattr(mod, "_consume_task_runtime_hints"), "runtime hint consumer missing"
+assert callable(mod._consume_task_runtime_hints)
 """,
 
-    "core/run_refresh.py": """
-assert hasattr(mod, "refresh_runs") or True
+    "core/loop/runs/refresh.py": """
+assert hasattr(mod, "refresh_running_runs"), "refresh_running_runs function missing"
+assert callable(mod.refresh_running_runs)
 """,
 
-    "core/reference.py": """
-assert hasattr(mod, "Reference") or hasattr(mod, "ReferenceStore") or True
+    "core/reference/__init__.py": """
+assert hasattr(mod, "resolve_references_for_text"), "reference resolver export missing"
+assert callable(mod.resolve_references_for_text)
+assert hasattr(mod, "extract_reference_candidates"), "reference extraction export missing"
+assert callable(mod.extract_reference_candidates)
 """,
 
-    "core/paths.py": """
-assert hasattr(mod, "project_root") or hasattr(mod, "get_project_root") or True
+    "core/paths/__init__.py": """
+assert hasattr(mod, "project_root"), "project_root function missing"
+assert callable(mod.project_root)
+assert hasattr(mod, "data_dir"), "data_dir function missing"
+assert callable(mod.data_dir)
 """,
 
     "core/version.py": """
-assert hasattr(mod, "__version__") or hasattr(mod, "VERSION") or True
+assert hasattr(mod, "__version__"), "__version__ missing"
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════
     # core/loop
     # ═══════════════════════════════════════════════════════════════════════════
 
-    "core/loop/runtime.py": """
+    "core/loop/runtime/__init__.py": """
 assert hasattr(mod, "CognitionLoop"), "CognitionLoop class missing"
 assert hasattr(mod.CognitionLoop, "open")
 """,
@@ -222,39 +236,53 @@ assert hasattr(mod, "_post_tick_memory_impl"), "_post_tick_memory_impl missing"
 """,
 
     "core/loop/cycle/driver.py": """
-assert hasattr(mod, "CognitionDriver") or hasattr(mod, "LoopDriver") or True
+assert hasattr(mod, "_run_cycle_impl"), "_run_cycle_impl missing"
+assert callable(mod._run_cycle_impl)
+assert hasattr(mod, "_wait_for_event_impl"), "_wait_for_event_impl missing"
+assert callable(mod._wait_for_event_impl)
 """,
 
     "core/loop/cycle/chat.py": """
-assert hasattr(mod, "chat_loop") or hasattr(mod, "ChatLoop") or True
+assert hasattr(mod, "_process_pending_chat_turn"), "_process_pending_chat_turn missing"
+assert callable(mod._process_pending_chat_turn)
 """,
 
     "core/loop/runtime/startup.py": """
-assert hasattr(mod, "startup") or hasattr(mod, "build_routing_providers") or True
+assert hasattr(mod, "_build_routing_providers"), "_build_routing_providers missing"
+assert callable(mod._build_routing_providers)
+assert hasattr(mod, "_open_runtime_impl"), "_open_runtime_impl missing"
+assert callable(mod._open_runtime_impl)
 """,
 
     "core/loop/shared/postprocess.py": """
-assert hasattr(mod, "postprocess") or True
+assert hasattr(mod, "_should_track_success_stall_tool"), "_should_track_success_stall_tool missing"
+assert callable(mod._should_track_success_stall_tool)
 """,
 
     "core/loop/shared/continue_phase.py": """
-assert hasattr(mod, "run_continue_phase") or True
+assert hasattr(mod, "_run_continue_phase"), "_run_continue_phase missing"
+assert callable(mod._run_continue_phase)
 """,
 
     "core/loop/shared/logging.py": """
-assert hasattr(mod, "setup_logging") or hasattr(mod, "configure_logging") or True
+assert hasattr(mod, "MemoryContextScrubber"), "MemoryContextScrubber missing"
+assert hasattr(mod, "_format_action_feedback_line"), "_format_action_feedback_line missing"
+assert callable(mod._format_action_feedback_line)
 """,
 
     "core/loop/shared/progress.py": """
-assert hasattr(mod, "ProgressReporter") or True
+assert hasattr(mod, "_action_made_progress"), "_action_made_progress missing"
+assert callable(mod._action_made_progress)
 """,
 
     "core/loop/runtime/reload.py": """
-assert hasattr(mod, "_maybe_hot_reload_provider_impl") or True
+assert hasattr(mod, "_maybe_hot_reload_provider_impl"), "_maybe_hot_reload_provider_impl missing"
+assert callable(mod._maybe_hot_reload_provider_impl)
 """,
 
     "core/loop/task/parallel.py": """
-assert hasattr(mod, "TaskParallelRunner") or True
+assert hasattr(mod, "run_tasks_parallel"), "run_tasks_parallel missing"
+assert callable(mod.run_tasks_parallel)
 """,
 
     "core/loop/shared/common.py": """
@@ -283,7 +311,8 @@ assert hasattr(mod, "ProbeManager")
 """,
 
     "core/probe/runner.py": """
-assert hasattr(mod, "ProbeRunner") or True
+assert hasattr(mod, "ProbeRunner"), "ProbeRunner class missing"
+assert callable(mod.ProbeRunner)
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -298,7 +327,7 @@ assert len(wm._items) >= 1
 assert 0.0 <= wm.pressure <= 1.0
 """,
 
-    "memory/semantic.py": """
+    "store/semantic/__init__.py": """
 import tempfile, pathlib
 assert hasattr(mod, "SemanticMemory")
 assert hasattr(mod, "MemoryNode")
@@ -310,7 +339,7 @@ with tempfile.TemporaryDirectory() as d:
     assert hasattr(sm, "store_reflection")
 """,
 
-    "memory/episodic.py": """
+    "store/episodic/__init__.py": """
 import tempfile, pathlib
 assert hasattr(mod, "EpisodicMemory")
 with tempfile.TemporaryDirectory() as d:
@@ -319,7 +348,7 @@ with tempfile.TemporaryDirectory() as d:
     assert hasattr(em, "list_tasks")
 """,
 
-    "memory/task_store.py": """
+    "store/task/__init__.py": """
 import tempfile, pathlib
 assert hasattr(mod, "TaskStore")
 assert hasattr(mod.TaskStore, "get_active")
@@ -329,7 +358,10 @@ with tempfile.TemporaryDirectory() as d:
 """,
 
     "memory/quality_checker.py": """
-assert hasattr(mod, "QualityChecker") or hasattr(mod, "check_quality") or True
+assert hasattr(mod, "evaluate_retrieval_quality"), "evaluate_retrieval_quality missing"
+assert callable(mod.evaluate_retrieval_quality)
+assert hasattr(mod, "calculate_relevance"), "calculate_relevance missing"
+assert callable(mod.calculate_relevance)
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -344,11 +376,15 @@ assert hasattr(mod, "Provider")
 """,
 
     "provider/openai_compat.py": """
-assert hasattr(mod, "OpenAICompatProvider") or hasattr(mod, "DashScopeProvider") or True
+assert hasattr(mod, "OpenAICompatProvider"), "OpenAICompatProvider class missing"
+assert callable(mod.OpenAICompatProvider)
 """,
 
     "provider/catalog.py": """
-assert hasattr(mod, "get_context_window") or hasattr(mod, "MODEL_CATALOG") or True
+assert hasattr(mod, "lookup_model"), "lookup_model missing"
+assert callable(mod.lookup_model)
+assert hasattr(mod, "resolve_context_window"), "resolve_context_window missing"
+assert callable(mod.resolve_context_window)
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -363,7 +399,11 @@ assert hasattr(mod, "tool"), "@tool decorator missing"
 
     # 其余 tools/*.py 已由 evolve_tool 中的 _tool_manifest_is_present 检查覆盖
     # 这里仅做基础加载验证
-    "tools/file.py": """assert True""",
+    "tools/file.py": """
+assert hasattr(mod, "file_read")
+assert hasattr(mod, "file_write")
+assert hasattr(mod, "file_edit")
+""",
     "tools/shell.py": """
 from tools.shell import check_command_risk
 ok, _ = check_command_risk("echo hello")
@@ -378,17 +418,55 @@ assert risky2, "dd 磁盘操作应触发危险感知"
 assert hasattr(mod, "subagent_run"), "subagent_run function missing"
 assert hasattr(mod, "subagent_absorb"), "subagent_absorb function missing"
 """,
-    "tools/memory.py": """assert True""",
-    "tools/task.py": """assert True""",
-    "tools/web.py": """assert True""",
-    "tools/exec.py": """assert True""",
-    "tools/plan.py": """assert True""",
-    "tools/skill.py": """assert True""",
-    "tools/config.py": """assert True""",
-    "tools/probe.py": """assert True""",
-    "tools/ask.py": """assert True""",
-    "tools/browser.py": """assert True""",
-    "tools/image.py": """assert True""",
+    "tools/memory.py": """
+assert hasattr(mod, "memory_search")
+assert hasattr(mod, "memory_set_fact")
+assert hasattr(mod, "memory_add_semantic")
+""",
+    "tools/task.py": """
+assert hasattr(mod, "task_add")
+assert hasattr(mod, "task_advance")
+assert hasattr(mod, "task_complete")
+assert hasattr(mod, "task_amend")
+""",
+    "tools/web.py": """
+assert hasattr(mod, "web_fetch")
+assert hasattr(mod, "web_search")
+""",
+    "tools/exec.py": """
+assert hasattr(mod, "exec_run")
+assert hasattr(mod, "process_list")
+assert hasattr(mod, "process_poll")
+""",
+    "tools/plan.py": """
+assert hasattr(mod, "task_plan")
+""",
+    "tools/skill.py": """
+assert hasattr(mod, "skill_list")
+assert hasattr(mod, "skill_activate")
+assert hasattr(mod, "skill_evolve")
+""",
+    "tools/config.py": """
+assert hasattr(mod, "config_get")
+assert hasattr(mod, "config_set")
+assert hasattr(mod, "config_list_keys")
+""",
+    "tools/probe.py": """
+assert hasattr(mod, "probe_install")
+assert hasattr(mod, "probe_run")
+assert hasattr(mod, "probe_list")
+""",
+    "tools/ask.py": """
+assert hasattr(mod, "task_ask")
+""",
+    "tools/browser.py": """
+assert hasattr(mod, "browser_navigate")
+assert hasattr(mod, "browser_snapshot")
+assert hasattr(mod, "browser_click")
+""",
+    "tools/image.py": """
+assert hasattr(mod, "image_analyze")
+""",
     "tools/image_gen.py": """
 import asyncio
 from types import SimpleNamespace
@@ -408,16 +486,25 @@ assert empty.error == "EmptyPrompt", f"unexpected empty prompt error: {empty.err
 bad_provider = asyncio.run(mod.image_generate({"prompt": "demo", "provider": "bad"}, SimpleNamespace()))
 assert bad_provider.error == "BadProvider", f"unexpected provider error: {bad_provider.error!r}"
 """,
-    "tools/notify.py": """assert True""",
-    "tools/schedule.py": """assert True""",
-    "tools/tts.py": """assert True""",
+    "tools/notify.py": """
+assert hasattr(mod, "wechat_send")
+""",
+    "tools/schedule.py": """
+assert hasattr(mod, "schedule_add")
+assert hasattr(mod, "schedule_list")
+assert hasattr(mod, "schedule_cancel")
+""",
+    "tools/tts.py": """
+assert hasattr(mod, "tts_speak")
+""",
 
     # ═══════════════════════════════════════════════════════════════════════════
     # channels
     # ═══════════════════════════════════════════════════════════════════════════
 
     "channels/wechat.py": """
-assert hasattr(mod, "WechatChannel") or True
+assert hasattr(mod, "WechatChannel"), "WechatChannel class missing"
+assert callable(mod.WechatChannel)
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -425,6 +512,8 @@ assert hasattr(mod, "WechatChannel") or True
     # ═══════════════════════════════════════════════════════════════════════════
 
     "store/auth.py": """
-assert hasattr(mod, "AuthStore") or hasattr(mod, "resolve_token") or True
+assert hasattr(mod, "resolve_copilot_token"), "resolve_copilot_token missing"
+assert callable(mod.resolve_copilot_token)
+assert hasattr(mod, "TokenResolution"), "TokenResolution missing"
 """,
 }

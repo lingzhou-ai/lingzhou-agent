@@ -8,7 +8,6 @@ from typing import Any
 
 from .common import _REASON_SYSTEM, _SPEAKER_REASON_SYSTEM, normalize_text
 
-
 _LLM_REASON_PAYLOAD_SOFT_LIMIT = 12_000
 _REFERENCE_LLM_THINKING = "off"
 

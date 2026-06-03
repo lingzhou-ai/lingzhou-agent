@@ -4,9 +4,9 @@ import contextlib
 import json
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import delete_fact, submit_fact
 
 from .types import _breaker_fact_key, _global_breaker_fact_key
 
@@ -15,6 +15,20 @@ if TYPE_CHECKING:
     from tools.registry import ToolContext
 
 _log = logging.getLogger("lingzhou.evolution")
+
+
+async def _submit_breaker_fact(ctx: ToolContext, *, key: str, value: str) -> None:
+    await submit_fact(
+        ctx,
+        key=key,
+        value=value,
+        scope="system",
+        source="evolution/breaker",
+    )
+
+
+async def _delete_breaker_fact(ctx: ToolContext, *, key: str) -> None:
+    await delete_fact(ctx, key=key, source="evolution/breaker")
 
 
 async def _load_breaker_fact(engine: EvolutionEngine, ctx: ToolContext, target: str) -> dict[str, Any]:
@@ -38,7 +52,7 @@ async def _is_global_breaker_cooling_down(engine: EvolutionEngine, ctx: ToolCont
     cooldown_until = float(state.get("cooldown_until", 0.0) or 0.0)
     if cooldown_until <= now:
         with contextlib.suppress(Exception):
-            await ctx.task_store.delete_fact(key)
+            await _delete_breaker_fact(ctx, key=key)
         return False, 0
     return True, int(cooldown_until - now)
 
@@ -51,7 +65,7 @@ async def _is_target_breaker_cooling_down(engine: EvolutionEngine, ctx: ToolCont
     streak = int(state.get("failure_streak", 0) or 0)
     if cooldown_until <= now:
         with contextlib.suppress(Exception):
-            await ctx.task_store.delete_fact(key)
+            await _delete_breaker_fact(ctx, key=key)
         return False, 0, streak
     return True, int(cooldown_until - now), streak
 
@@ -67,7 +81,7 @@ async def _update_target_breaker_state(
     key = _breaker_fact_key(target)
     if success:
         with contextlib.suppress(Exception):
-            await ctx.task_store.delete_fact(key)
+            await _delete_breaker_fact(ctx, key=key)
         return
 
     state = await _load_breaker_fact(engine, ctx, key)
@@ -87,21 +101,7 @@ async def _update_target_breaker_state(
         },
         ensure_ascii=False,
     )
-    metabolic = getattr(ctx, "metabolic", None)
-    submit = getattr(metabolic, "submit", None)
-    submit_async = cast("Any | None", submit) if callable(submit) else None
-    if submit_async is not None:
-        await submit_async(
-            StateProposal(
-                op="set_fact",
-                key=key,
-                value=payload,
-                scope="system",
-                source="evolution/breaker",
-            )
-        )
-    else:
-        await ctx.task_store.set_fact(key, payload, scope="system")
+    await _submit_breaker_fact(ctx, key=key, value=payload)
 
     if new_streak >= engine._breaker_escalate_threshold:
         global_key = _global_breaker_fact_key()
@@ -116,18 +116,7 @@ async def _update_target_breaker_state(
             },
             ensure_ascii=False,
         )
-        if submit_async is not None:
-            await submit_async(
-                StateProposal(
-                    op="set_fact",
-                    key=global_key,
-                    value=global_payload,
-                    scope="system",
-                    source="evolution/breaker",
-                )
-            )
-        else:
-            await ctx.task_store.set_fact(global_key, global_payload, scope="system")
+        await _submit_breaker_fact(ctx, key=global_key, value=global_payload)
         _log.warning(
             "[evolution] 全局熔断开启 target=%r streak=%d cooldown=%ds",
             target,

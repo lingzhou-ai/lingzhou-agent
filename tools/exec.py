@@ -82,7 +82,6 @@ _EXEC_MANIFEST = ToolManifest(
         ToolParam("pty", "boolean", "是否使用 PTY（适合交互式程序）", required=False),
         ToolParam("timeout", "number", "超时秒数，默认 30（前台）或 300（后台）", required=False),
         ToolParam("workdir", "string", "工作目录，默认当前目录", required=False),
-        ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认 500", required=False),
         ToolParam("env", "object", "环境变量字典（可选）", required=False),
     ],
     progress_category="mutation",

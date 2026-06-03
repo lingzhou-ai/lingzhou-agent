@@ -18,7 +18,6 @@ _REMOVED_SHIM_PATHS = (
     "core/judgment/executor_helpers.py",
     "core/probe/types.py",
     "core/execution_helpers.py",
-    "core/worker.py",
     "core/loop/task_runtime.py",
     "core/loop/task_parallel.py",
     "core/loop/startup.py",

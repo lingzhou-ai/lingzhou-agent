@@ -36,6 +36,7 @@ def apply_context_budget(
         "daily_continuity_section",
         "episodic_section",
         "skills_section",
+        "wm_proposal_sections",
         "wm_section",
         "tools_section",
     ]

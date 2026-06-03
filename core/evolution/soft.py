@@ -5,7 +5,7 @@ import re
 import traceback
 from typing import TYPE_CHECKING
 
-from core.metabolic import StateProposal
+from core.metabolic import set_soul_fact
 from core.perception.ethos import ETHOS_DIMENSIONS
 from core.skill import _split_frontmatter, ensure_workspace_skill_file, workspace_skill_file
 
@@ -25,10 +25,14 @@ async def evolve_model(engine: EvolutionEngine, new_model: str, reason: str, ctx
     organ_failures = await three_organ_preflight(ctx.task_store)
     if organ_failures:
         block_msg = "升级协议-三器官预检失败：" + "；".join(organ_failures)
-        await ctx.metabolic.submit(StateProposal(
-            op="set_fact", key="soul:upgrade_blocked_reason",
-            value=block_msg, scope="system", source="evolution/upgrade",
-        ))
+        await set_soul_fact(
+            ctx,
+            key="soul:upgrade_blocked_reason",
+            value=block_msg,
+            scope="system",
+            source="evolution/upgrade",
+            decision_basis="evolution preflight failed; recorded upgrade block reason",
+        )
         return EvolutionResult(success=False, target=f"model:{new_model}", reason=block_msg)
 
     constitution_status = verify_constitution_integrity()
@@ -43,18 +47,22 @@ async def evolve_model(engine: EvolutionEngine, new_model: str, reason: str, ctx
         "reason": reason,
         "ts": _time.time(),
     }, ensure_ascii=False)
-    await ctx.metabolic.submit(StateProposal(
-        op="set_fact",
+    await set_soul_fact(
+        ctx,
         key=f"soul:upgrade_event:{int(_time.time())}",
         value=upgrade_record,
         scope="system",
         source="evolution/upgrade",
-    ))
-
-    await ctx.metabolic.submit(StateProposal(
-        op="set_fact", key="soul:proposed_model",
-        value=new_model, scope="system", source="evolution/upgrade",
-    ))
+        decision_basis="upgrade record snapshot for restart continuity",
+    )
+    await set_soul_fact(
+        ctx,
+        key="soul:proposed_model",
+        value=new_model,
+        scope="system",
+        source="evolution/upgrade",
+        decision_basis="model evolve proposal snapshot",
+    )
 
     return EvolutionResult(
         success=True,
@@ -104,9 +112,10 @@ async def evolve_ethos(engine: EvolutionEngine, ctx: ToolContext) -> EvolutionRe
         for r in reflections
     )
 
-    axioms_json, _ = await ctx.task_store.get_fact("soul:hard_axioms")
-    hard_axioms: list[str] = json.loads(axioms_json) if axioms_json else list(engine._cfg.soul.hard_axioms)
-    axioms_source = "DB" if axioms_json else "config fallback"
+    from core.immune import extract_constitution_boundaries, load_constitution
+
+    constitution_text = load_constitution(engine._cfg.constitution_path)
+    hard_boundaries = extract_constitution_boundaries(constitution_text)
 
     messages = [
         Message(role="system", content=(
@@ -117,7 +126,7 @@ async def evolve_ethos(engine: EvolutionEngine, ctx: ToolContext) -> EvolutionRe
         Message(role="user", content=(
             f"当前 ethos_baseline（{baseline_source}）：\n{json.dumps(current_baseline, ensure_ascii=False)}\n\n"
             f"近期 reflection 片段：\n{reflection_text}\n\n"
-            f"hard_axioms（{axioms_source}；这些约束对应的维度不允许降低）：\n{chr(10).join(hard_axioms) if hard_axioms else '（无）'}\n\n"
+            f"CONSTITUTION.md 硬边界（这些约束对应的维度不允许降低）：\n{chr(10).join(hard_boundaries) if hard_boundaries else '（未加载）'}\n\n"
             "请根据近期反思，判断当前价值基线是否需要微调（每个维度调整幅度不超过 ±0.15）。\n"
             "如不需要调整，直接原样返回当前值。\n"
             "只输出 JSON，例如：{\"truth\": 0.72, \"caution\": 0.68, \"continuity\": 0.65, \"curiosity\": 0.58, \"care\": 0.61}"
@@ -148,15 +157,17 @@ async def evolve_ethos(engine: EvolutionEngine, ctx: ToolContext) -> EvolutionRe
             clamped_val = old_val + max_delta * (1 if new_val > old_val else -1)
             clamped_dims.append(f"{dim}: {new_val:.3f}→{clamped_val:.3f}")
             new_val = clamped_val
-        if any(dim in ax.lower() for ax in hard_axioms) and new_val < old_val:
+        if any(dim in boundary.lower() for boundary in hard_boundaries) and new_val < old_val:
             new_val = old_val
         validated[dim] = round(max(0.0, min(1.0, new_val)), 4)
 
-    await ctx.metabolic.submit(StateProposal(
-        op="set_fact", key="soul:ethos_baseline",
+    await set_soul_fact(
+        ctx,
+        key="soul:ethos_baseline",
         value=json.dumps(validated),
         source="evolution/ethos",
-    ))
+        decision_basis="ethos evolution from recent reflections and constitution boundaries",
+    )
     await engine._update_dreams(f"价值观微调：{validated}", ctx=ctx)
     clamp_note = f"夹幅修正: {'; '.join(clamped_dims)}" if clamped_dims else ""
     return EvolutionResult(success=True, target="ethos_baseline", new_code=json.dumps(validated), reason=clamp_note)

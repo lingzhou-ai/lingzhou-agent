@@ -306,7 +306,7 @@ class JudgmentOutput:
             fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
             try:
                 data = json.loads(fixed)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ValueError):
                 return cls(decision="pause", rationale=f"LLM 输出解析失败: {parse_text}")
 
         return cls(
@@ -317,7 +317,7 @@ class JudgmentOutput:
             reflection=cls._coerce_text(data.get("reflection", "")),
             reply_to_user=cls._coerce_text(data.get("reply_to_user", "")),
             next_step=cls._coerce_text(data.get("next_step", "")),
-            model_strategy=dict(data.get("model_strategy") or {}),
+            model_strategy=data.get("model_strategy") if isinstance(data.get("model_strategy"), dict) else {},
             applied_skills=[str(s) for s in (data.get("applied_skills") or []) if s],
             parallel_actions=[
                 item for item in (data.get("parallel_actions") or [])

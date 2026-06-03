@@ -20,26 +20,17 @@ class ExecutorRoutingMixin:
 
     _REASONER_ONLY_PHASES = frozenset({"initial", "continue", "reply", "final"})
 
-    def _routing_aliases(self, tier: str) -> tuple[str, ...]:
-        return {
-            "reader": ("reader", "simple"),
-            "reasoner": ("reasoner", "complex"),
-            "repair": ("repair", "reader", "simple"),
-        }.get(tier, (tier,))
-
     def _resolve_tier_model(self, tier: str) -> tuple[str, str]:
-        for alias in self._routing_aliases(tier):
-            model_ref = self._cfg.routing.get(alias)
-            if model_ref:
-                return alias, model_ref
+        model_ref = self._cfg.routing.get(tier)
+        if model_ref:
+            return tier, model_ref
         return "default", self._cfg.model
 
     def _tier_fallback_models(self, tier: str) -> list[str]:
         out: list[str] = []
-        for key in (tier, *self._routing_aliases(tier)):
-            for m in self._cfg.model_fallbacks.get(key, []):
-                if m and m not in out:
-                    out.append(m)
+        for m in self._cfg.model_fallbacks.get(tier, []):
+            if m and m not in out:
+                out.append(m)
         return out
 
     def _tier_model_candidates(

@@ -16,7 +16,6 @@ def _test_config(
     debug: bool = False,
     workspace_dir: str = "",
     shell_timeout: int = 5,
-    shell_max_output_chars: int = 200,
 ) -> Any:
     return cast(
         "Any",
@@ -32,7 +31,6 @@ def _test_config(
             ),
             thresholds=SimpleNamespace(
                 shell_timeout=shell_timeout,
-                shell_max_output_chars=shell_max_output_chars,
                 durable_failure_threshold=3,
                 durable_failure_ttl_sec=7200,
                 task_duplicate_reuse_score=0.66,
@@ -48,7 +46,6 @@ def _tool_ctx(
     debug: bool = False,
     workspace_dir: str = "",
     shell_timeout: int = 5,
-    shell_max_output_chars: int = 200,
     wm: Any = None,
     task_store: Any = None,
     episodic: Any = None,
@@ -66,7 +63,6 @@ def _tool_ctx(
                 debug=debug,
                 workspace_dir=workspace_dir,
                 shell_timeout=shell_timeout,
-                shell_max_output_chars=shell_max_output_chars,
             ),
         ),
         wm=cast("Any", wm),
@@ -97,5 +93,4 @@ def _judgment_output(**kwargs: Any) -> Any:
     from core.judgment import JudgmentOutput
 
     return cast("Any", JudgmentOutput)(**kwargs)
-
 

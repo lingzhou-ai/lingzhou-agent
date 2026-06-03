@@ -1,6 +1,5 @@
 ---
 name: failure-reflection
-aliases: failure.reflection
 description: "失败反思技能。Use when 已积累失败信号、连续重试无效、或需要区分参数错误、环境缺失、前提不满足与策略错误。"
 compatibility: Designed for Lingzhou failure handling and recovery loops.
 tags: failure, reflection

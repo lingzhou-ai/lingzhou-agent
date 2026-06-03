@@ -1,12 +1,12 @@
 """store/task/base.py — 异步 Store 基类。"""
 from __future__ import annotations
 
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import aiosqlite
     from collections.abc import Callable
+
+    import aiosqlite
 
 
 class BaseAsyncStore:

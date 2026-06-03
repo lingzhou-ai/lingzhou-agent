@@ -10,6 +10,7 @@ import json
 import logging
 from typing import Any
 
+from core.metabolic import add_semantic_memory
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 _log = logging.getLogger("lingzhou.subagent_ops")
@@ -181,6 +182,8 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         return ToolResult(summary="缺少 subagent_id 或 memories_json", skipped=True)
     if ctx.semantic is None:
         return ToolResult(summary="父灵语义记忆未注入，无法吸收子灵结果", error="missing_semantic")
+    if ctx.task_store is None:
+        return ToolResult(summary="父灵任务存储未注入，无法记录吸收账本", error="missing_task_store")
 
     try:
         nodes: list[dict] = json.loads(memories_raw)
@@ -202,7 +205,6 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
     for idx, node_dict in enumerate(nodes, start=1):
         try:
-            from store.semantic import MemoryNode
             if not isinstance(node_dict, dict):
                 invalid += 1
                 continue
@@ -229,9 +231,20 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
             if created_at:
                 node_kwargs["created_at"] = created_at
 
-            # 构造 MemoryNode（跳过缺失必须字段的节点）
-            node = MemoryNode(**node_kwargs)
-            ctx.semantic.upsert(node)
+            await add_semantic_memory(
+                ctx,
+                node_id=str(node_kwargs["id"]),
+                kind=str(node_kwargs["kind"]),
+                title=str(node_kwargs["title"]),
+                body=str(node_kwargs["body"]),
+                activation=float(node_kwargs["activation"]),
+                valence=float(node_kwargs["valence"]),
+                importance=float(node_kwargs["importance"]),
+                tags=list(node_kwargs["tags"]),
+                created_at=str(node_kwargs.get("created_at") or ""),
+                source=str(node_kwargs["source"]),
+                decision_basis=f"absorb semantic memory from subagent:{sub_id}"[:240],
+            )
             absorbed += 1
         except Exception as exc:
             errors.append(str(exc))
@@ -259,4 +272,3 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
         ),
         state_delta={"absorbed_memories": absorbed},
     )
-

@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import add_run, set_soul_fact
 from core.persona.self_model import SelfModel
 from provider import create_provider_with_model
 from provider.models_gen import ensure_models_json
@@ -222,10 +222,14 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
             loop._judgment.self_model.born_at = float(born_json)
     else:
         _born_ts = _time.time()
-        await loop._metabolic.submit(StateProposal(
-            op="set_fact", key="soul:born_at", value=str(_born_ts),
-            scope="system", source="loop/startup/born_at",
-        ))
+        await set_soul_fact(
+            loop,
+            key="soul:born_at",
+            value=str(_born_ts),
+            scope="system",
+            source="loop/startup/born_at",
+            decision_basis="bootstrap initialization born_at marker",
+        )
         loop._judgment.self_model.born_at = _born_ts
         _log.info("[startup] soul:born_at 首次写入: %.0f", _born_ts)
 
@@ -270,10 +274,12 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
     try:
         _existing_pending = await loop._task_store.get_pending_runs(limit=1)
         if not _existing_pending:
-            _bootstrap_run_id = await loop._task_store.add_run(
+            _bootstrap_run_id = await add_run(
+                loop,
                 run_type="judge",
                 status="pending",
                 log_text="[startup] bootstrap pending Run — awaiting first poll",
+                source="loop/runtime/startup/bootstrap",
             )
             _log.info("[startup] 创建 bootstrap pending Run #%d", _bootstrap_run_id)
     except Exception as _exc:

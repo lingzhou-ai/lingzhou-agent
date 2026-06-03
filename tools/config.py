@@ -256,7 +256,9 @@ async def config_set(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         _nested_set(cfg, key, value)
         try:
             from core.config import Config as _Config
-            validated = _Config.model_validate(cfg)
+            from core.config.loader import _strip_config_doc_fields
+
+            validated = _Config.model_validate(_strip_config_doc_fields(cfg))
         except Exception as ve:
             hint = f"\n  字段说明: {field_desc}" if field_desc else ""
             return ToolResult(

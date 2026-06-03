@@ -13,6 +13,8 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.metabolic import delete_fact, mark_task_waiting, resume_task, submit_fact
+
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
     from store.task import Task
@@ -62,6 +64,27 @@ async def _safe_delete_fact(task_store: Any, key: str) -> None:
             return
     # 没有 delete_fact 能力时，退化为写空字符串；读取方会做有效性校验。
     await _safe_set_fact(task_store, key, "", scope="system")
+
+
+async def _submit_focus_fact(loop: Any, key: str, value: str, *, scope: str = "system") -> None:
+    if not await submit_fact(
+        loop,
+        key=key,
+        value=value,
+        scope=scope,
+        source="loop/focus",
+    ):
+        await _safe_set_fact(getattr(loop, "_task_store", None), key, value, scope=scope)
+
+
+async def _delete_focus_fact(loop: Any, key: str) -> None:
+    if not await delete_fact(
+        loop,
+        key=key,
+        scope="system",
+        source="loop/focus",
+    ):
+        await _safe_delete_fact(getattr(loop, "_task_store", None), key)
 
 
 async def _safe_get_task_by_id(task_store: Any, task_id: int) -> Task | None:
@@ -121,6 +144,19 @@ async def _safe_resume_task(
     next_step: str | None,
     result_json: dict[str, Any],
 ) -> None:
+    with contextlib.suppress(Exception):
+        await resume_task(
+            task_store,
+            task_id,
+            source="loop/focus",
+            status=status,
+            current_step=current_step,
+            next_step=next_step,
+            result_json=result_json,
+            decision_basis="focus resume via chat or user signal",
+        )
+        return
+
     resumer = getattr(task_store, "resume_task", None)
     if resumer is None:
         return
@@ -145,6 +181,21 @@ async def _safe_mark_waiting(
     next_step: str | None,
     result_json: dict[str, Any],
 ) -> None:
+    with contextlib.suppress(Exception):
+        await mark_task_waiting(
+            task_store,
+            task_id,
+            wait_kind=wait_kind,
+            wait_key=wait_key,
+            wait_json=wait_json,
+            source="loop/focus",
+            current_step=current_step,
+            next_step=next_step,
+            result_json=result_json,
+            decision_basis="focus wait parking for user/chat signal",
+        )
+        return
+
     marker = getattr(task_store, "mark_waiting", None)
     if marker is None:
         return
@@ -261,26 +312,26 @@ async def claim_focus_task(
     chat_id: str | None = None,
     clear_current: bool = True,
 ) -> None:
-    task_store = getattr(loop, "_task_store", None)
     normalized_chat_id = _normalize_chat_id(chat_id)
     if not normalized_chat_id and task is not None:
         normalized_chat_id = await resolve_task_chat_id(loop, task)
 
-    if task is not None and _task_is_runnable(task):
-        await _safe_set_fact(task_store, _FOCUS_CURRENT_TASK_KEY, str(task.id), scope="system")
+    # waiting 状态的任务仍应保留焦点事实，防止 UI 瞬时显示“无活跃任务”。
+    if task is not None and (_task_is_runnable(task) or str(getattr(task, "status", "") or "") == "waiting"):
+        await _submit_focus_fact(loop, _FOCUS_CURRENT_TASK_KEY, str(task.id), scope="system")
     elif clear_current:
-        await _safe_delete_fact(task_store, _FOCUS_CURRENT_TASK_KEY)
+        await _delete_focus_fact(loop, _FOCUS_CURRENT_TASK_KEY)
 
     if normalized_chat_id:
         if task is not None and str(getattr(task, "status", "") or "") in _OPEN_STATUSES:
-            await _safe_set_fact(
-                task_store,
+            await _submit_focus_fact(
+                loop,
                 f"{_FOCUS_CHAT_PREFIX}{normalized_chat_id}",
                 str(task.id),
                 scope="system",
             )
         else:
-            await _safe_delete_fact(task_store, f"{_FOCUS_CHAT_PREFIX}{normalized_chat_id}")
+            await _delete_focus_fact(loop, f"{_FOCUS_CHAT_PREFIX}{normalized_chat_id}")
 
 
 async def prepare_focus_task(

@@ -18,7 +18,7 @@ dispatcher
        └─ 结晶 / 代谢 / 情绪
 ```
 
-Run 在 `core/execution.py` 作为执行的副产物被写入：
+Run 在 `core/execution/` 作为执行的副产物被写入：
 1. `add_run(status="running", run_type="tool_chain", model_tier=...)`
 2. 工具链执行完毕后 `update_run(status="succeeded"/"failed", output_json=...)`
 
@@ -136,7 +136,7 @@ pending → running → succeeded
 
 | 模块 | 影响 | 优先级 |
 |------|------|--------|
-| `core/execution.py` | `add_run` 新增 `run_type` 参数（已有字段，兼容） | Phase 3a |
+| `core/execution/` | `add_run` 新增 `run_type` 参数（已有字段，兼容） | Phase 3a |
 | `store/task/run.py` | `add_run` 支持 `status="pending"` | Phase 3b |
 | `core/loop/tick.py` | 委托给 RunDriver，tick 成为 RunDriver 的适配器 | Phase 3b |
 | `provider/models.json` | 新增 `run_type_routing` | Phase 3c |

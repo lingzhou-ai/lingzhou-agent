@@ -1,4 +1,4 @@
-"""memory/episodic.py — 情节记忆（EpisodicMemory）。
+"""store.episodic — 情节记忆（EpisodicMemory）。
 
 双层存储（解决 O(n) P0 问题）：
     1. episodic/task-{id}.md / episodic/global.md  — 人类可读叙事（直接截取末尾注入 LLM context）
@@ -6,8 +6,7 @@
      - events 表：替代 O(n) events.jsonl 扫描，O(log n) 索引查询
      - narrative 表 + narrative_fts：支持跨任务叙事全文检索
 
-向后兼容：
-  - 公开接口签名不变，调用方零改动
+数据迁移：
   - 启动时一次性将历史 events.jsonl 导入 DB（幂等）
   - DB 损坏时自动重建（从 .md 文件恢复叙事 FTS5，从 jsonl 恢复 events）
 
@@ -21,12 +20,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 
-from .source import SRC_EXECUTION
-from .source import SRC_HUMAN
-from .source import SRC_INFERENCE
-from .source import SRC_REFLECTION
-from .source import SRC_SYSTEM
-from .source import source_from_role
+from .source import (
+    SRC_EXECUTION,
+    SRC_HUMAN,
+    SRC_INFERENCE,
+    SRC_REFLECTION,
+    SRC_SYSTEM,
+    source_from_role,
+)
 
 
 def _source_from_role(role: str) -> str:
@@ -72,10 +73,14 @@ class EpisodicMemory:
     def _migrate_from_jsonl(self) -> None:
         raise RuntimeError("episodic jsonl migration binding missing")
 
+def _bind_episodic_memory() -> None:
+    """延迟绑定：等待类定义完成后再注入 db/query/registry 的运行时方法。"""
+    from .impl import bind_episodic_memory
 
-from .impl import bind_episodic_memory
+    bind_episodic_memory(EpisodicMemory)
 
-bind_episodic_memory(EpisodicMemory)
+
+_bind_episodic_memory()
 
 
 __all__ = [

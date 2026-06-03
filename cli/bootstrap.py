@@ -277,7 +277,7 @@ def _run_init(
     async def _run() -> bool:
         import datetime as _dt
 
-        from core.persona.soul import SoulManager
+        from core.persona import IdentityBootstrapManager
         from memory.working import WorkingMemory
         from store.task import TaskStore
 
@@ -299,7 +299,7 @@ def _run_init(
                 await store.set_fact("soul:name", cfg.soul.name, scope="soul")
                 await store.set_fact("soul:init_at", _dt.datetime.now(_dt.UTC).isoformat(), scope="soul")
 
-            soul = SoulManager(cfg, store, WorkingMemory())
+            soul = IdentityBootstrapManager(cfg, store, WorkingMemory())
             await soul.init_files()
             await soul.sync_md()
         finally:

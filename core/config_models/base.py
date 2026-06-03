@@ -1,9 +1,7 @@
 """core.config_models.base — provider 与 loop 配置模型。"""
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -51,7 +49,7 @@ class ProviderDefinition(BaseModel):
     )
     oauth_client_id: str = Field(
         default="",
-        description="GitHub OAuth App Client ID（仅显式使用 --method device 时作为兼容回退）",
+        description="GitHub OAuth App Client ID（仅显式使用 --method device 时生效）",
     )
     models: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -72,18 +70,7 @@ class ProviderDefinition(BaseModel):
         key = os.environ.get(self.api_key_env, "").strip()
         if key:
             return key
-        # 2. 回退：~/.lingzhou/credentials.json
-        cred_file = Path("~/.lingzhou/credentials.json").expanduser()
-        if cred_file.exists():
-            try:
-                creds = json.loads(cred_file.read_text(encoding="utf-8"))
-                stored = creds.get(self.api_key_env, "").strip()
-                if stored:
-                    return stored
-            except Exception:
-                pass
-
-        # 3. 回退：~/.lingzhou/auth-profiles.json（需显式配置 auth_profile_id）
+        # 2. 回退：auth-profiles.json（需显式配置 auth_profile_id）
         if self.auth_profile_id:
             try:
                 from store.auth import get_auth_profile
@@ -105,7 +92,7 @@ class ProviderDefinition(BaseModel):
             )
 
         raise OSError(
-            f"未找到 {self.api_key_env!r}（环境变量/credentials/auth-profile 均为空）。\n"
+            f"未找到 {self.api_key_env!r}（环境变量/auth-profile 均为空）。\n"
             f"请执行以下任一操作：\n"
             f"  export {self.api_key_env}=your_token\n"
             f"  lingzhou auth set-token --provider <provider>"
@@ -295,3 +282,11 @@ class LoopConfig(BaseModel):
         ),
     )
 
+
+class LoggingConfig(BaseModel):
+    dir: str = Field(default="~/.lingzhou/logs", description="运行日志目录")
+    daily_enabled: bool = Field(default=True, description="是否写入按日期分割的 lingzhou 日志")
+    startup_enabled: bool = Field(default=True, description="是否写入启动摘要日志")
+    startup_prefix: str = Field(default="console", description="启动/console 日志文件名前缀")
+    console_enabled: bool = Field(default=True, description="是否写入 console 日志")
+    console_file: str = Field(default="console.log", description="console 日志文件名")

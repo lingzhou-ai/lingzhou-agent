@@ -1,4 +1,4 @@
-"""core/subagent.py — 子灵（完整实现）。
+"""core.subagent — 子灵（完整实现）。
 
 子灵是灵舟派生的有界任务执行体，提供四层能力：
   Tier-0（只读原型）: 共享父灵所有记忆，工具访问受限
@@ -54,15 +54,11 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _default_ethos_cfg(soul: Any = None) -> Any:
-    """返回 EthosConfig 默认实例，可选传入 soul 对象以读取 ethos_baseline 字段。"""
-    from core.config_models import EthosBaseline, EthosConfig
-    ec = EthosConfig()
-    if soul is not None:
-        extra_baseline = getattr(soul, "ethos_baseline", None)
-        if isinstance(extra_baseline, dict) and extra_baseline:
-            ec = EthosConfig(baseline=EthosBaseline.model_validate(extra_baseline))
-    return ec
+def _default_ethos_cfg() -> Any:
+    """返回子灵继承逻辑使用的默认 EthosConfig。"""
+    from core.config_models import EthosConfig
+
+    return EthosConfig()
 
 
 def _build_subagent_active_task(sub_id: str, goal: str) -> Any:
@@ -372,7 +368,7 @@ class SubagentRunner:
                 has_next_step=True,
                 perception_trend="neutral",
                 emotion_down_regulate_streak=0,
-                ethos_cfg=getattr(parent_cfg.soul, "ethos", None) or _default_ethos_cfg(parent_cfg.soul),
+                ethos_cfg=getattr(parent_cfg.soul, "ethos", None) or _default_ethos_cfg(),
                 baseline=EthosValues.from_dict(baseline_dict) if baseline_dict else None,
             )
             if baseline_dict:

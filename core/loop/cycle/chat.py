@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import submit_fact
 
 from ..shared.logging import _strip_memory_context
 from .dispatcher import TickJob
@@ -26,16 +26,21 @@ async def _bind_chat_id(
     resolved_chat_id = (chat_id or "").strip()
     if not resolved_chat_id:
         return
-    await loop._metabolic.submit(StateProposal(
-        op="set_fact", key="chat:last_chat_id", value=resolved_chat_id,
-        scope="system", source="loop/chat/bind",
-    ))
+    await submit_fact(
+        loop,
+        key="chat:last_chat_id",
+        value=resolved_chat_id,
+        scope="system",
+        source="loop/chat/bind",
+    )
     if active_task is not None:
-        await loop._metabolic.submit(StateProposal(
-            op="set_fact", key=f"task:{active_task.id}:chat_id",
+        await submit_fact(
+            loop,
+            key=f"task:{active_task.id}:chat_id",
             value=resolved_chat_id,
-            scope="task", source="loop/chat/bind",
-        ))
+            scope="task",
+            source="loop/chat/bind",
+        )
 
 
 async def _resolve_reply_chat_id(

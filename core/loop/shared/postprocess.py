@@ -6,7 +6,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import submit_fact
 from tools.registry import ToolRegistry, ToolResult, tool_has_capability
 
 if TYPE_CHECKING:
@@ -57,13 +57,11 @@ async def _write_success_stall_meta_reflection(
         "tool_name": tool_name,
         "recent_summary": summary,
     }
-    if metabolic is None:
-        from core.metabolic import MetabolicEngine
-        metabolic = MetabolicEngine(task_store)
-    await metabolic.submit(StateProposal(
-        op="set_fact",
+    await submit_fact(
+        metabolic or task_store,
         key=f"task:{task.id}:meta_reflection",
         value=json.dumps(payload, ensure_ascii=False),
-        scope="task", source="loop/postprocess/stall",
-    ))
+        scope="task",
+        source="loop/postprocess/stall",
+    )
     _log.info("[stall-reflection] task=%s tool=%s streak=%d", task.id, tool_name, streak)

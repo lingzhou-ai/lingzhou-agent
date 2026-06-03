@@ -1,6 +1,5 @@
 ---
 name: provider-integration
-aliases: provider.integration, ask-evidence
 description: "工具与 provider 集成技能，也包含用户追问守护（ask-evidence）原则。Use when 工具调用失败、参数名不匹配、文件不存在、或需要先分析错误原因再决定重试策略；也用于用户消息含 URL 时、或需要决定是否先本地取证再调用 task.ask 时。"
 compatibility: Designed for Lingzhou tool calling and provider integration flows.
 tags: provider, tool-call, ask-evidence

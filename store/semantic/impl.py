@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from . import SemanticMemory
-from . import db
-from . import query
+from . import SemanticMemory, db, query
 
 
 def bind_semantic_memory(cls: type[SemanticMemory]) -> None:

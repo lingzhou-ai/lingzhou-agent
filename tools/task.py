@@ -5,7 +5,27 @@ import logging as _logging
 import uuid
 from typing import Any
 
-from store.semantic import MemoryNode
+from core.metabolic import (
+    add_semantic_memory as metabolic_add_semantic_memory,
+)
+from core.metabolic import (
+    amend_task as metabolic_amend_task,
+)
+from core.metabolic import (
+    create_task as metabolic_create_task,
+)
+from core.metabolic import (
+    mark_task_waiting as metabolic_mark_task_waiting,
+)
+from core.metabolic import (
+    resume_task as metabolic_resume_task,
+)
+from core.metabolic import (
+    update_task_data as metabolic_update_task_data,
+)
+from core.metabolic import (
+    update_task_status as metabolic_update_task_status,
+)
 from store.task import build_task_similarity_query
 from tools.registry import (
     CAPS_EXEMPT,
@@ -19,6 +39,12 @@ from tools.registry import (
 )
 
 _log_task_ops = _logging.getLogger("lingzhou.task_ops")
+
+
+def _decision_basis(*parts: Any) -> str:
+    """生成写入生命史账本的短依据摘要。"""
+    text = " | ".join(str(part).strip() for part in parts if str(part or "").strip())
+    return " ".join(text.split())[:240]
 
 
 async def _resolve_active_task(ctx: ToolContext):
@@ -105,7 +131,14 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             metadata=_task_metadata(task),
         )
     next_step = (params.get("next_step") or "").strip() or task.next_step
-    await ctx.task_store.update_status(task.id, "in_progress", next_step)
+    await metabolic_update_task_status(
+        ctx,
+        task.id,
+        status="in_progress",
+        next_step=next_step,
+        source="tools/task.advance",
+        decision_basis=_decision_basis("advance task", task.title, next_step),
+    )
     return ToolResult(
         summary=f"任务 [{task.id}] 已推进至 in_progress: {task.title}",
         evidence=f"task_id={task.id} next_step={next_step}",
@@ -186,9 +219,12 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     similarity_score=round(score, 3),
                 ),
             )
-    task_id = await ctx.task_store.add_task(
-        title,
-        goal,
+    task_id = await metabolic_create_task(
+        ctx,
+        proposal_source="tools/task.add",
+        decision_basis=_decision_basis("create task", title, goal, next_step),
+        title=title,
+        goal=goal,
         priority=priority,
         source=source,
         chain_id=chain_id,
@@ -321,7 +357,14 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     ),
                 )
 
-    await ctx.task_store.update_status(task.id, "done", "completed via agent")
+    await metabolic_update_task_status(
+        ctx,
+        task.id,
+        status="done",
+        next_step="completed via agent",
+        source="tools/task.complete",
+        decision_basis=_decision_basis("complete task", task.title, task.next_step),
+    )
 
     # 自动 dismiss 该任务关联的未消除 failure（任务既然完成，旧失败已不再阻塞）
     task_failures = await ctx.task_store.list_failures_for_task(str(task.id), limit=30)
@@ -335,25 +378,28 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     task_id_str = str(task.id)
     narrative = ctx.episodic.load_for_context(task_id_str, n_recent=5)
     if narrative.strip():
-        node = MemoryNode(
-            id=f"skill-{uuid.uuid4().hex[:12]}",
+        node_id = f"skill-{uuid.uuid4().hex[:12]}"
+        await metabolic_add_semantic_memory(
+            ctx,
+            node_id=node_id,
             kind="learned_skill",
             title=f"完成: task#{task.id} {task.title}",
             body=narrative,
             activation=0.8,
             valence=0.5,
+            source="tools/task.complete",
+            decision_basis=_decision_basis("compile completed task narrative", task.title),
         )
-        ctx.semantic.upsert(node)
         return ToolResult(
             summary=f"任务 [{task.id}] 已完成，叙事已编译进语义记忆",
-            evidence=f"task_id={task.id} skill_node={node.id}",
+            evidence=f"task_id={task.id} skill_node={node_id}",
             resource_key=str(task.id),
-            state_delta={"task_status": "done", "compiled_skill": node.id},
+            state_delta={"task_status": "done", "compiled_skill": node_id},
             metadata=_task_metadata(
                 task,
                 tool_name="task.complete",
-                log_summary=f"task.complete id={task.id} compiled_skill={node.id}",
-                skill_node=node.id,
+                log_summary=f"task.complete id={task.id} compiled_skill={node_id}",
+                skill_node=node_id,
             ),
         )
 
@@ -437,12 +483,15 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     next_step = str(params.get("next_step") or "").strip() if has_next_step else task.next_step
     current_step = str(params.get("current_step") or "").strip() if has_current_step else task.current_step
     model_tier = str(params.get("model_tier") or "").strip() if has_model_tier else task.model_tier
-    await ctx.task_store.update_status(
+    await metabolic_update_task_status(
+        ctx,
         task.id,
-        status,
-        next_step if has_next_step else None,
+        status=status,
+        next_step=next_step if has_next_step else None,
         current_step=current_step if has_current_step else None,
         model_tier=model_tier if has_model_tier else None,
+        source="tools/task.update",
+        decision_basis=_decision_basis("update task", task.title, status, current_step, next_step, model_tier),
     )
     return ToolResult(
         summary=f"任务 [{task.id}] 已更新: status={status}",
@@ -472,7 +521,14 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not task:
         return ToolResult(summary="无活跃任务可标记失败", skipped=True)
     reason = (params.get("reason") or "未知原因").strip()
-    await ctx.task_store.update_status(task.id, "failed", reason)
+    await metabolic_update_task_status(
+        ctx,
+        task.id,
+        status="failed",
+        next_step=reason,
+        source="tools/task.fail",
+        decision_basis=_decision_basis("mark task failed", task.title, reason),
+    )
     # 自动 dismiss 旧 failure，task 本身的 failed 状态就是最终记录
     task_failures = await ctx.task_store.list_failures_for_task(str(task.id), limit=30)
     for f in task_failures:
@@ -524,13 +580,16 @@ async def task_wait(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary=f"不支持的 wait_kind: {wait_kind}", skipped=True)
     current_step = str(params.get("current_step") or "").strip() if "current_step" in params else None
     next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
-    await ctx.task_store.mark_waiting(
+    await metabolic_mark_task_waiting(
+        ctx,
         task.id,
         wait_kind=wait_kind,
         wait_key=wait_key,
         wait_json={"wait_kind": wait_kind, "wait_key": wait_key},
         current_step=current_step,
         next_step=next_step,
+        source="tools/task.wait",
+        decision_basis=_decision_basis("wait for dependency", task.title, wait_kind, wait_key, next_step),
     )
     return ToolResult(
         summary=f"任务 [{task.id}] 已进入 waiting: {wait_kind}{'/' + wait_key if wait_key else ''}",
@@ -565,12 +624,15 @@ async def task_resume(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     status = (params.get("status") or "resumed").strip()
     current_step = str(params.get("current_step") or "").strip() if "current_step" in params else None
     next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
-    await ctx.task_store.resume_task(
+    await metabolic_resume_task(
+        ctx,
         task.id,
         status=status,
         current_step=current_step,
         next_step=next_step,
         result_json={"resumed_via": "task.resume"},
+        source="tools/task.resume",
+        decision_basis=_decision_basis("resume task", task.title, status, current_step, next_step),
     )
     return ToolResult(
         summary=f"任务 [{task.id}] 已恢复: status={status}",
@@ -606,7 +668,13 @@ async def task_steer(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not isinstance(existing, list):
         existing = []
     existing.append(message)
-    await ctx.task_store.update_task_data(task.id, {"inbox_messages": existing})
+    await metabolic_update_task_data(
+        ctx,
+        task.id,
+        {"inbox_messages": existing},
+        source="tools/task.steer",
+        decision_basis=_decision_basis("steer task", task.title, message),
+    )
     return ToolResult(
         summary=f"已向任务 [{task.id}] 注入转向指令（inbox 共 {len(existing)} 条）",
         evidence=f"task_id={task.id} inbox_count={len(existing)}",
@@ -653,12 +721,15 @@ async def task_amend(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if new_title is None and new_goal is None and new_priority is None:
         return ToolResult(summary="至少需要提供 title/goal/priority 之一", skipped=True)
 
-    ok = await ctx.task_store.amend_task(
+    ok = await metabolic_amend_task(
+        ctx,
         task.id,
         title=new_title,
         goal=new_goal,
         priority=new_priority,
         amendment_reason=reason,
+        source="tools/task.amend",
+        decision_basis=_decision_basis("amend task", task.title, reason, new_title, new_goal, new_priority),
     )
     if not ok:
         return ToolResult(summary=f"任务 [{task.id}] 修正失败（任务不存在？）", skipped=True)

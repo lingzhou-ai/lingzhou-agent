@@ -71,6 +71,65 @@ def test_fill_template_raises_when_variable_missing():
         _fill_template("hello {{ missing_field }}", {"other": "value"})
 
 
+def test_context_risk_uncertainty_sections_have_defaults():
+    from core.judgment.context.signals import (
+        _fmt_risk_sections,
+        _fmt_uncertainty_sections,
+    )
+    from core.perception import JudgmentSignals, PerceptionReplaySummary
+
+    risk = _fmt_risk_sections(
+        judgment_signals=JudgmentSignals(require_more_evidence=True, prefer_narrow_scope=True, posture="narrow"),
+        failures=[],
+        durable_failure_snapshot={},
+        perception_replay=None,
+        cognitive_signals=None,
+    )
+    uncertainty = _fmt_uncertainty_sections(
+        judgment_signals=JudgmentSignals(require_more_evidence=True, prefer_narrow_scope=True, posture="narrow"),
+        perception_replay=PerceptionReplaySummary(samples=2, avg_prediction_error=0.4, high_error_streak=0, trend="insufficient_data"),
+        cognitive_signals=None,
+    )
+
+    assert "require_more_evidence=True" in uncertainty
+    assert "姿态层建议收窄决策范围" in risk
+
+
+def test_wm_proposal_sections_extracts_observation_candidates():
+    from core.judgment.context.signals import _fmt_wm_proposal_sections
+
+    wm_items = [
+        {
+            "kind": "self_drive",
+            "content": (
+                "[自驱信号]\n"
+                "type: consolidation\n"
+                "scope: observation\n"
+                "proposal:\n"
+                "- consolidate_memory: 把近期自驱观察结果沉淀。\n"
+                "- inspect_failures: 评估重复失败边界。\n"
+                "open_questions:\n"
+                "- 近期收敛是否足够？\n"
+                "available_directions: create_task | ignore_signal | wait\n"
+            ),
+        },
+        {
+            "kind": "user_message",
+            "content": "这是普通用户输入，不应参与提案解析。",
+        },
+    ]
+
+    text = _fmt_wm_proposal_sections(wm_items)
+
+    assert "scope=observation" in text
+    assert "consolidate_memory" in text
+    assert "inspect_failures" in text
+    assert "open_questions:" in text
+    assert "available_directions:" in text
+    assert "create_task" in text
+    assert "ignore_signal" in text
+
+
 def test_judgment_output_preserves_model_reply_without_mechanical_rewrite():
     """记忆表述由 LLM 结合 context 判断，parser 层不做正则改写。"""
     from core.judgment.boundary import normalize_action_shape
@@ -319,6 +378,7 @@ def test_skill_registry_logs_selected_skills(caplog):
         failure_count=2,
         high_error_streak=1,
         context_text="当前任务需要继续推进，但已经有失败和参数错误。",
+        max_inject=3,
     )
 
     assert skills
@@ -762,14 +822,16 @@ def test_fmt_config_snapshot_exposes_judgment_signal_thresholds():
             "regulation_high_error_streak_guard": 3,
         },
         "soul": {
-            "ethos_prefer_verification_caution_min": 0.72,
-            "ethos_prefer_verification_failure_count": 3,
-            "ethos_prefer_narrow_error_streak": 4,
-            "ethos_avoid_overclaiming_down_regulate_streak": 5,
-            "ethos_failure_adjust_count": 2,
-            "ethos_failure_truth_delta": 0.11,
-            "ethos_high_error_adjust_streak": 4,
-            "ethos_recovering_curiosity_delta": 0.09,
+            "ethos": {
+                "prefer_verification_caution_min": 0.72,
+                "prefer_verification_failure_count": 3,
+                "prefer_narrow_error_streak": 4,
+                "avoid_overclaiming_down_regulate_streak": 5,
+                "failure_adjust_count": 2,
+                "failure_truth_delta": 0.11,
+                "high_error_adjust_streak": 4,
+                "recovering_curiosity_delta": 0.09,
+            },
         },
         "thresholds": {
             "prediction_error_task": 0.8,
@@ -829,6 +891,13 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
             "consolidate_low_pressure_skip_threshold": 0.81,
             "global_md_warn_bytes": 12345,
             "global_md_warn_lines": 67,
+            "daily_recall_days": 3,
+            "daily_recall_max_chars": 640,
+            "daily_recall_semantic_score_threshold": 0.62,
+            "daily_summary_days": 5,
+            "daily_summary_max_chars": 1500,
+            "daily_summary_activation": 0.77,
+            "daily_summary_importance": 0.84,
         },
         "emotion": {
             "reflection_valence_history_weight": 0.7,
@@ -853,13 +922,6 @@ def test_fmt_config_snapshot_exposes_reference_thresholds():
             "fact_context_recent_scan_min": 10,
             "chat_history_turn_limit": 2,
             "chat_history_max_chars": 180,
-            "daily_recall_days": 3,
-            "daily_recall_max_chars": 640,
-            "daily_recall_semantic_score_threshold": 0.62,
-            "daily_summary_days": 5,
-            "daily_summary_max_chars": 1500,
-            "daily_summary_activation": 0.77,
-            "daily_summary_importance": 0.84,
         },
     })
 
@@ -1322,7 +1384,6 @@ def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
     assert tool_tier("web.search", registry) == "reasoner"
     assert tool_tier("image.analyze", registry) == "reasoner"
     assert tool_tier("image.generate", registry) == "reasoner"
-    assert tool_tier("schedule.ack", registry) == "reasoner"
     assert tool_tier("schedule.cancel", registry) == "reasoner"
     assert tool_tier("failure.dismiss", registry) == "reasoner"
     assert tool_tier("task.list", registry) == "reader"
@@ -1336,7 +1397,6 @@ def test_tool_tier_uses_manifest_truth_for_reasoner_tools():
     assert "web.search" in mapping["reasoner"]
     assert "image.analyze" in mapping["reasoner"]
     assert "image.generate" in mapping["reasoner"]
-    assert "schedule.ack" in mapping["reasoner"]
     assert "schedule.cancel" in mapping["reasoner"]
     assert "failure.dismiss" in mapping["reasoner"]
     assert "task.list" in mapping["reader"]
@@ -2254,7 +2314,7 @@ async def test_persist_tick_user_reply_does_not_append_skill_suffix():
         rationale="证据已足够，直接回复用户。",
         reply_to_user="这是最终答复。",
     )
-    action.applied_skills = ["runtime.bootstrap", "task_planning"]
+    action.applied_skills = ["runtime-bootstrap", "task-planning"]
 
     await _persist_tick_user_reply(
         loop,
@@ -3422,6 +3482,83 @@ def test_assemble_context_without_focus_does_not_fallback_to_global_active():
     asyncio.run(_assemble_context_without_focus_does_not_fallback_to_global_active())
 
 
+def test_assemble_context_includes_wm_proposal_sections():
+    asyncio.run(_assemble_context_includes_wm_proposal_sections())
+
+
+async def _assemble_context_includes_wm_proposal_sections():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WMItem, WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            wm = WorkingMemory(capacity=20)
+            wm.add(WMItem(
+                kind="self_drive",
+                priority=0.9,
+                content=(
+                    "[自驱事件]\n"
+                    "type: exploration\n"
+                    "scope: observation\n"
+                    "proposal:\n"
+                    "- create_self_drive_task: 建立一次轻量探索任务。\n"
+                    "open_questions:\n"
+                    "- 是否已有未完成同题任务？\n"
+                    "available_directions: create_self_drive_task | wait\n"
+                ),
+            ))
+
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=wm,
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="请帮我继续探索",
+            )
+
+            assert "### WM 提案与可执行方向（observation to action）" in text
+            assert "create_self_drive_task" in text
+            assert "available_directions:" in text
+        finally:
+            await store.close()
+
+
 async def _assemble_context_includes_recent_daily_continuity():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -3938,5 +4075,3 @@ async def _assemble_context_includes_current_interlocutor_sections():
             assert "我上次说过以后叫我 bat。" in text
         finally:
             await store.close()
-
-

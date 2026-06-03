@@ -7,16 +7,18 @@ from typing import Any
 
 import aiosqlite
 
-from store.task.query import (
-    find_similar_open_tasks as _find_similar_open_tasks,
-    query_open_tasks,
-)
 from store.task.chat import ChatMessageStore, sanitize_chat_content
 from store.task.fact import FactStore, build_fact_upsert
 from store.task.failure import FailureStore
 from store.task.ingress import IngressStore, IngressWriter
 from store.task.ledger import LedgerStore
 from store.task.models import Failure, MetaReflection, Run, Task
+from store.task.query import (
+    find_similar_open_tasks as _find_similar_open_tasks,
+)
+from store.task.query import (
+    query_open_tasks,
+)
 from store.task.reflection import MetaReflectionStore
 from store.task.run import RunStore
 from store.task.schema import (
@@ -26,7 +28,9 @@ from store.task.schema import (
     TASK_SIMILARITY_CONTEXT_SCORE,
     build_task_run_result_patch,
 )
-from store.task.schema import build_task_similarity_query as build_task_similarity_query  # re-export
+from store.task.schema import (
+    build_task_similarity_query as build_task_similarity_query,  # re-export
+)
 from store.task.signal import SignalStore
 from store.task.state import TaskStateStore, build_task_data, build_task_insert
 
@@ -275,8 +279,23 @@ class TaskStore:
         source: str = "",
         accepted: bool = True,
         run_id: int = 0,
+        reason: str = "",
+        proposal_hash: str = "",
+        decision_basis: str = "",
     ) -> None:
-        await self._write_with_retry(self._ledger.append, op, key, value, scope=scope, source=source, accepted=accepted, run_id=run_id)
+        await self._write_with_retry(
+            self._ledger.append,
+            op,
+            key,
+            value,
+            scope=scope,
+            source=source,
+            accepted=accepted,
+            run_id=run_id,
+            reason=reason,
+            proposal_hash=proposal_hash,
+            decision_basis=decision_basis,
+        )
 
     async def ledger_recent(self, limit: int = 50) -> list[dict]:
         """返回最近 N 条生命史记录，供 LLM 感知近期状态变化。"""
@@ -376,9 +395,14 @@ class TaskStore:
         raise RuntimeError("task reset binding missing")
 
 
-from store.task.impl import bind_task_store
+def _bind_task_store() -> None:
+    """延迟绑定：在 TaskStore 定义后，再将实现函数混入类。"""
+    from .impl import bind_task_store
 
-bind_task_store(TaskStore)
+    bind_task_store(TaskStore)
+
+
+_bind_task_store()
 
 
 __all__ = [

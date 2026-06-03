@@ -9,12 +9,14 @@ from typing import Any
 
 from rich.console import Console
 
+from core.immune import extract_constitution_boundaries, load_constitution
 from core.log_fields import tick_scope_fields
 from core.loop.runs.refresh import refresh_running_runs
 from core.loop.task.runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
 )
+from core.metabolic import update_task_data
 from core.perception import (
     EthosValues,
     build_emotion_replay,
@@ -50,6 +52,7 @@ async def _maybe_steer_active_task_from_user_message(
     task_store: Any,
     active_task: Any,
     user_message: str,
+    metabolic: Any | None = None,
 ) -> Any:
     if not _should_steer_active_task_from_user_message(active_task, user_message):
         return active_task
@@ -68,7 +71,8 @@ async def _maybe_steer_active_task_from_user_message(
     is_self_drive = getattr(active_task, "source", None) == "self_drive"
     if is_self_drive:
         update["had_user_inbox"] = True
-    await task_store.update_task_data(active_task.id, update)
+    writer = metabolic if metabolic is not None else task_store
+    await update_task_data(writer, active_task.id, update, source="loop/tick/user_inbox")
     active_task.extras = dict(extras) if isinstance(extras, dict) else {}
     active_task.extras["inbox_messages"] = existing
     if is_self_drive:
@@ -104,6 +108,7 @@ async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: s
         loop._task_store,
         active_task,
         user_message,
+        _loop_metabolic(loop),
     )
     active_task = await _consume_active_task_inbox(loop._task_store, active_task)
     await _bind_chat_id(loop, active_task, chat_id)
@@ -168,7 +173,7 @@ async def _inject_tick_side_signals(loop: Any, running_updates: list[dict[str, A
             (
                 f"[调度触发 #{sig['id']}] {sig['title']}"
                 f"({repeat_desc},已送达本轮上下文;是否响应由你决定。"
-                "delivery 后该 signal 会由 runtime 自动推进/完成,通常无需再调用 schedule.ack)"
+                "delivery 后该 signal 会由 runtime 自动推进/完成)"
             ),
         ]
         if note:
@@ -199,7 +204,11 @@ async def _inject_tick_side_signals(loop: Any, running_updates: list[dict[str, A
         loop._last_heartbeat_at = now
 
 
-async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudgmentPrep:
+async def _prepare_tick_judgment_state(
+    loop: Any,
+    active_task: Any,
+    user_message: str,
+) -> _TickJudgmentPrep:
     cfg = loop._cfg
     next_step_fulfilled: bool | None = None
     if loop._last_next_step:
@@ -207,6 +216,7 @@ async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudg
     percept = await loop._perception.sense(
         loop._wm,
         active_task,
+        user_message=user_message,
         last_next_step=loop._last_next_step,
         last_decision=loop._last_decision,
     )
@@ -214,6 +224,7 @@ async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudg
     loop._episodic.record_event("perception", {
         "prediction_error": round(percept.prediction_error, 4),
         "workspace_dirty": percept.workspace_dirty,
+        "multimodal_inputs": len(getattr(percept, "multimodal_inputs", [])),
         "wm_pressure": round(loop._wm.pressure, 4),
     })
 
@@ -348,8 +359,8 @@ async def _prepare_tick_judgment_state(loop: Any, active_task: Any) -> _TickJudg
         emotion_state=loop._emotion,
         thresholds=cfg.thresholds,
     )
-    axioms_json, _ = await loop._task_store.get_fact("soul:hard_axioms")
-    hard_boundaries: list[str] = json.loads(axioms_json) if axioms_json else []
+    constitution_text = load_constitution(cfg.constitution_path)
+    hard_boundaries = extract_constitution_boundaries(constitution_text)
     return _TickJudgmentPrep(
         percept=percept,
         perception_replay=perception_replay,
@@ -537,7 +548,7 @@ class _TickPerceptionPhase:
             )
             if _dropped:
                 _log.debug("[wm-gate] salience_gate dropped %d low-relevance items", _dropped)
-        prep = await _prepare_tick_judgment_state(loop, active_task)
+        prep = await _prepare_tick_judgment_state(loop, active_task, user_message)
         return prep, active_task
 
 

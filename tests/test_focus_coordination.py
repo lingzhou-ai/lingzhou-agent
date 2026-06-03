@@ -53,6 +53,45 @@ async def _resolve_focus_task_prefers_chat_bound_task_over_unrelated_current_foc
         await store.close()
 
 
+def test_claim_focus_task_records_life_ledger():
+    asyncio.run(_claim_focus_task_records_life_ledger())
+
+
+async def _claim_focus_task_records_life_ledger():
+    from core.loop.cycle.focus import claim_focus_task
+    from core.metabolic import MetabolicEngine
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "focus-ledger.db")
+        await store.open()
+        task_id = await store.add_task(
+            "焦点账本任务",
+            goal="focus changes should be metabolic events",
+            status="in_progress",
+        )
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+
+        loop = SimpleNamespace(_task_store=store, _metabolic=MetabolicEngine(store))
+        await claim_focus_task(loop, task, chat_id="chat:test", clear_current=True)
+
+        current_focus, current_exists = await store.get_fact("focus:current_task_id")
+        chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")
+        assert current_exists is True and current_focus == str(task_id)
+        assert chat_exists is True and chat_focus == str(task_id)
+
+        rows = await store.ledger_recent(limit=5)
+        focus_rows = [row for row in rows if row["source"] == "loop/focus"]
+        assert len(focus_rows) >= 2
+        assert {row["key"] for row in focus_rows} >= {
+            "focus:current_task_id",
+            "focus:chat:chat:test",
+        }
+        assert all(row["op"] == "set_fact" for row in focus_rows)
+        await store.close()
+
+
 def test_resolve_focus_task_with_chat_id_is_fail_closed_by_default():
     asyncio.run(_resolve_focus_task_with_chat_id_is_fail_closed_by_default())
 
@@ -166,7 +205,8 @@ async def _finalize_focus_task_parks_user_facing_pause_into_waiting():
 
         current_focus, current_exists = await store.get_fact("focus:current_task_id")
         chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")
-        assert current_exists is False or current_focus == ""
+        assert current_exists is True
+        assert current_focus == str(task_id)
         assert chat_exists is True
         assert chat_focus == str(task_id)
         await store.close()

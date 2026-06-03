@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,13 +24,31 @@ class Percept:
     workspace_dirty: bool = False       # 工作目录是否有未追踪变更
     workspace_fingerprint: str = ""     # 用于检测变化的哈希
     summary: str = ""                   # 给语义检索用的查询词
+    multimodal_inputs: list[str] = field(default_factory=list)  # 来自用户消息中的图片/语音等多模态标记
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp.isoformat(),
             "prediction_error": round(self.prediction_error, 3),
             "workspace_dirty": self.workspace_dirty,
+            "multimodal_inputs": len(self.multimodal_inputs),
         }
+
+
+_MULTIMODAL_MARKER_PATTERN = re.compile(
+    r"\[(?:图片消息|语音消息)(?:，已保存)?(?::[^]\r\n]*)?\]"
+)
+
+
+def _normalize_marker_text(marker: str) -> str:
+    """统一清理/折叠 marker 文本，避免空白差异影响后续比对。"""
+    cleaned = str(marker).strip().replace("\r", "")
+    return cleaned.replace("\n", "").strip()
+
+
+def _extract_multimodal_observations(text: str) -> list[str]:
+    """提取用户消息中的多模态标记，供感知层使用。"""
+    return [_normalize_marker_text(m.group(0)) for m in _MULTIMODAL_MARKER_PATTERN.finditer(str(text)) if m.group(0).strip()]
 
 
 class PerceptionLayer:
@@ -43,6 +62,7 @@ class PerceptionLayer:
         wm: WorkingMemory,
         active_task: Task | None = None,
         *,
+        user_message: str = "",
         last_next_step: str = "",
         last_decision: str = "wait",
     ) -> Percept:
@@ -59,12 +79,16 @@ class PerceptionLayer:
         self._last_wm_size = len(wm)
 
         summary = active_task.goal if active_task else "当前状态"
+        multimodal_inputs = _extract_multimodal_observations(user_message)
+        if multimodal_inputs:
+            summary = f"{summary}（多模态输入: {len(multimodal_inputs)} 条）"
 
         return Percept(
             prediction_error=prediction_error,
             workspace_dirty=workspace_dirty,
             workspace_fingerprint=fingerprint,
             summary=summary,
+            multimodal_inputs=multimodal_inputs,
         )
 
     def derive_cognitive_signals(

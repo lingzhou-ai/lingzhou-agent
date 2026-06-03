@@ -9,7 +9,7 @@ from core.execution import (
     record_meta_reflection_memory,
     record_run_outcome_memory,
 )
-from core.metabolic import StateProposal
+from core.metabolic import resolve_metabolic, submit_fact, update_run, update_task_result
 from store.task import Run, TaskStore, build_task_run_result_patch
 from tools.registry import ToolResult
 
@@ -85,6 +85,7 @@ async def _finalize_refreshed_run_learning(
     evidence: str,
     episodic: EpisodicMemory | None = None,
     semantic: SemanticMemory | None = None,
+    metabolic: Any | None = None,
 ) -> None:
     if error:
         _log.debug("[run-refresh] record failure for run=%s tool=%s error=%s", run.id, run.tool_name, error)
@@ -136,7 +137,13 @@ async def _finalize_refreshed_run_learning(
     )
     if episodic is None and semantic is None:
         return
-    record_meta_reflection_memory(episodic, semantic, meta)
+    await record_meta_reflection_memory(
+        episodic,
+        semantic,
+        meta,
+        task_store=task_store,
+        metabolic=metabolic,
+    )
 
 
 async def _refresh_run_via_fact_monitor(
@@ -162,22 +169,26 @@ async def _refresh_run_via_fact_monitor(
     output_json = dict(run.output_json)
     output_json["monitor_snapshot"] = payload
     output_json["monitor_key"] = key
-    await task_store.update_run(
+    await update_run(
+        metabolic or task_store,
         run.id,
         status=status,
         output_json=output_json,
         log_text=(progress or str(payload or raw)),
         error_text=(str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")),
         progress=progress,
+        source="loop/runs/refresh/monitor_fact",
+        proposal_run_id=run.id,
+        decision_basis="run_monitor_fact_snapshot",
     )
     if run.task_id and crystal:
-        if metabolic is None:
-            from core.metabolic import MetabolicEngine
-            metabolic = MetabolicEngine(task_store)
-        await metabolic.submit(StateProposal(
-            op="set_fact", key=f"task:{run.task_id}:progress",
-            value=crystal, scope="task", source="run_refresh/monitor",
-        ))
+        await submit_fact(
+            metabolic or task_store,
+            key=f"task:{run.task_id}:progress",
+            value=crystal,
+            scope="task",
+            source="run_refresh/monitor",
+        )
     if status in {"succeeded", "failed", "cancelled"}:
         summary = progress or (str(payload.get("summary") or "") if isinstance(payload, dict) else raw) or f"run {status}"
         error = str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")
@@ -190,7 +201,8 @@ async def _refresh_run_via_fact_monitor(
             (error or "-"),
         )
         if run.task_id:
-            await task_store.update_task_result(
+            await update_task_result(
+                task_store,
                 run.task_id,
                 build_task_run_result_patch(
                     run_id=run.id,
@@ -201,8 +213,9 @@ async def _refresh_run_via_fact_monitor(
                     summary=summary,
                     error=error or None,
                 ),
+                source="loop/runs/refresh/monitor_fact",
             )
-        record_run_outcome_memory(
+        await record_run_outcome_memory(
             episodic,
             semantic,
             memory_cfg=memory_cfg,
@@ -214,6 +227,8 @@ async def _refresh_run_via_fact_monitor(
             progress=progress,
             summary=summary,
             error=error,
+            task_store=task_store,
+            metabolic=metabolic,
         )
         await _finalize_refreshed_run_learning(
             task_store,
@@ -224,6 +239,7 @@ async def _refresh_run_via_fact_monitor(
             evidence=str(payload if isinstance(payload, dict) else raw),
             episodic=episodic,
             semantic=semantic,
+            metabolic=metabolic,
         )
     return {
         "run_id": run.id,
@@ -259,7 +275,8 @@ async def _refresh_run_via_process_monitor(
         crystal_excerpt = ""
         if len(stdout_text) - last_crystal_chars >= _RUN_PROGRESS_CRYSTAL_CHARS:
             crystal_excerpt = stdout_text[last_crystal_chars:][-400:].strip()
-            await task_store.update_run(
+            await update_run(
+                metabolic or task_store,
                 run.id,
                 status="running",
                 output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
@@ -267,15 +284,18 @@ async def _refresh_run_via_process_monitor(
                 session_id=session_id,
                 progress=crystal_excerpt,
                 extras={**run.extras, "last_crystal_chars": len(stdout_text), "run_monitor": monitor},
+                source="loop/runs/refresh/process_progress",
+                proposal_run_id=run.id,
+                decision_basis="run_monitor_progress_update",
             )
             if run.task_id and crystal_excerpt:
-                if metabolic is None:
-                    from core.metabolic import MetabolicEngine
-                    metabolic = MetabolicEngine(task_store)
-                await metabolic.submit(StateProposal(
-                    op="set_fact", key=f"task:{run.task_id}:progress",
-                    value=crystal_excerpt, scope="task", source="run_refresh/progress",
-                ))
+                await submit_fact(
+                    metabolic or task_store,
+                    key=f"task:{run.task_id}:progress",
+                    value=crystal_excerpt,
+                    scope="task",
+                    source="run_refresh/progress",
+                )
         return {
             "run_id": run.id,
             "task_id": run.task_id,
@@ -295,7 +315,8 @@ async def _refresh_run_via_process_monitor(
         "stderr": info.stderr,
         "error": info.error,
     })
-    await task_store.update_run(
+    await update_run(
+        metabolic or task_store,
         run.id,
         status=status,
         output_json=output_json,
@@ -310,9 +331,13 @@ async def _refresh_run_via_process_monitor(
             "background": info.background,
             "run_monitor": monitor,
         },
+        source="loop/runs/refresh/process_finished",
+        proposal_run_id=run.id,
+        decision_basis="run_monitor_process_finished",
     )
     if run.task_id:
-        await task_store.update_task_result(
+        await update_task_result(
+            task_store,
             run.task_id,
             build_task_run_result_patch(
                 run_id=run.id,
@@ -323,8 +348,9 @@ async def _refresh_run_via_process_monitor(
                 summary=output_json.get("stdout", "") or f"process {status}",
                 error=output_json.get("error"),
             ),
+            source="loop/runs/refresh/monitor_process",
         )
-    record_run_outcome_memory(
+    await record_run_outcome_memory(
         episodic,
         semantic,
         memory_cfg=memory_cfg,
@@ -336,6 +362,8 @@ async def _refresh_run_via_process_monitor(
         progress=(info.stdout or info.stderr or info.error or status).strip(),
         summary=output_json.get("stdout", "") or f"process {status}",
         error=str(output_json.get("error") or ""),
+        task_store=task_store,
+        metabolic=metabolic,
     )
     await _finalize_refreshed_run_learning(
         task_store,
@@ -346,6 +374,7 @@ async def _refresh_run_via_process_monitor(
         evidence=((info.stderr or "") + "\n" + (info.error or "")).strip(),
         episodic=episodic,
         semantic=semantic,
+        metabolic=metabolic,
     )
     return {"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": session_id}
 
@@ -365,8 +394,7 @@ async def refresh_running_runs(
         _MANAGER = None
 
     if metabolic is None:
-        from core.metabolic import MetabolicEngine
-        metabolic = MetabolicEngine(task_store)
+        metabolic = resolve_metabolic(task_store)
 
     runs = await task_store.list_runs(status="running", limit=20)
     if runs:

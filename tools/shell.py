@@ -16,8 +16,6 @@ from typing import Any
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 _DEFAULT_TIMEOUT = 30.0
-_DEFAULT_PREVIEW_CHARS = 0  # 0 = 不限制输出长度
-
 _MANIFEST = ToolManifest(
     name="shell.run",
     description=(
@@ -31,7 +29,6 @@ _MANIFEST = ToolManifest(
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),
         ToolParam("workdir", "string", "工作目录，默认项目根目录", required=False),
-        ToolParam("max_output_chars", "number", "兼容参数，当前不再截断输出", required=False),
         ToolParam("sandbox", "boolean", "是否在隔离沙箱中运行（临时目录 + 受限 PATH）；危险命令自动启用", required=False),
     ],
 )
@@ -151,8 +148,6 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         if timeout_raw is None
         else timeout_raw
     )
-
-    # max_output_chars 仅保留兼容参数，当前不再裁剪输出。
 
     # ── 危险感知 ─────────────────────────────────────────────────────────────
     is_risky, risk_reason = _check_risky(command)

@@ -36,7 +36,7 @@ from core.execution.helpers import (
 )
 from core.execution.workers import WorkerLayer
 from core.log_fields import execution_scope_fields
-from core.metabolic import StateProposal
+from core.metabolic import add_run, submit_fact
 from provider.catalog import get_run_type_routing as _get_run_type_routing
 from tools.registry import ToolContext, ToolResult, tool_metadata
 
@@ -59,6 +59,12 @@ __all__ = [
     "record_meta_reflection_memory",
     "record_run_outcome_memory",
 ]
+
+
+def _decision_basis(action: JudgmentOutput, fallback: str = "") -> str:
+    """提炼可公开审计的执行依据，不把完整内部独白写进持久状态。"""
+    basis = " ".join(str(action.rationale or fallback or "").split())
+    return basis[:240]
 
 
 class ExecutionLayer:
@@ -177,7 +183,8 @@ class ExecutionLayer:
                         effective_tier = _mapped
                 except Exception:
                     pass
-            run_id = await ctx.task_store.add_run(
+            run_id = await add_run(
+                ctx,
                 task_id=run_task_id,
                 run_type=run_type,
                 worker_type=worker_type,
@@ -189,6 +196,8 @@ class ExecutionLayer:
                 },
                 tool_name=action.chosen_action_id or "",
                 model_tier=effective_tier,
+                source="execution/layer/_dispatch_act",
+                decision_basis=_decision_basis(action),
             )
             if run_id is not None:
                 _record_run_started(
@@ -358,11 +367,6 @@ class ExecutionLayer:
             )
 
         if ctx.task_store is not None:
-            metabolic = ctx.metabolic
-            if metabolic is None:
-                from core.metabolic import MetabolicEngine
-
-                metabolic = MetabolicEngine(ctx.task_store)
             reason = _classify_durable_failure(result)
             if result.error and reason:
                 raw, found = await ctx.task_store.get_fact(failure_key)
@@ -384,16 +388,20 @@ class ExecutionLayer:
                     "policy_threshold": durable_threshold,
                     "policy_ttl_sec": durable_ttl_sec,
                 }
-                await metabolic.submit(StateProposal(
-                    op="set_fact",
+                await submit_fact(
+                    ctx,
                     key=failure_key,
                     value=json.dumps(payload, ensure_ascii=False),
                     scope="system",
                     source="execution/failure_track",
-                ))
+                    decision_basis=_decision_basis(
+                        action,
+                        f"durable failure tracked for {action.chosen_action_id}",
+                    ),
+                )
             elif not result.error:
-                await metabolic.submit(StateProposal(
-                    op="set_fact",
+                await submit_fact(
+                    ctx,
                     key=failure_key,
                     value=json.dumps({
                         "tool": action.chosen_action_id,
@@ -406,7 +414,11 @@ class ExecutionLayer:
                     }, ensure_ascii=False),
                     scope="system",
                     source="execution/failure_clear",
-                ))
+                    decision_basis=_decision_basis(
+                        action,
+                        f"durable failure cleared for {action.chosen_action_id}",
+                    ),
+                )
 
         await finalize_run(
             cfg=self._cfg,

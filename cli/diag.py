@@ -14,7 +14,6 @@ from cli.common import DEFAULT_CONFIG_PATH, PROJECT_ROOT, console, load_cfg, res
 from store.auth import (
     AUTH_PROFILES_PATH,
     get_auth_profile,
-    load_legacy_credentials,
     resolve_copilot_token,
 )
 
@@ -52,11 +51,6 @@ def _resolve_openai_provider_api_key(provider: object) -> tuple[str | None, str 
     env_token = os.environ.get(api_key_ref, "").strip()
     if env_token:
         return env_token, f"env:{api_key_ref}"
-
-    legacy = load_legacy_credentials()
-    legacy_token = str(legacy.get(api_key_ref, "")).strip()
-    if legacy_token:
-        return legacy_token, f"legacy-credentials:{api_key_ref}"
 
     profile_id = str(getattr(provider, "auth_profile_id", "") or "").strip()
     if profile_id:
@@ -157,11 +151,6 @@ def _check_api_key(cfg: Any) -> list[_CheckResult]:
                     ok=True,
                     message=f"  {_OK} Copilot token: 来自 auth profile store  [dim]{AUTH_PROFILES_PATH}[/dim]",
                 ))
-            else:
-                results.append(_CheckResult(
-                    ok=True,
-                    message=f"  {_OK} Copilot token: 来自 legacy credentials 文件",
-                ))
         else:
             results.append(_CheckResult(
                 ok=False,
@@ -176,9 +165,6 @@ def _check_api_key(cfg: Any) -> list[_CheckResult]:
             elif _resolved_source and _resolved_source.startswith("env:"):
                 env_name = _resolved_source.split(":", 1)[1]
                 msg = f"  {_OK} API key ({env_name}): {_mask_token(_resolved_key)}"
-            elif _resolved_source and _resolved_source.startswith("legacy-credentials:"):
-                env_name = _resolved_source.split(":", 1)[1]
-                msg = f"  {_OK} API key ({env_name}): 来自 credentials 文件"
             elif _resolved_source and _resolved_source.startswith("auth-profile:"):
                 profile_id = _resolved_source.split(":", 1)[1]
                 msg = f"  {_OK} API key ({_api_key_env}): 来自 auth profile  [dim]{profile_id}[/dim]"
@@ -472,4 +458,3 @@ def doctor(
         for i, issue in enumerate(issues, 1):
             console.print(f"  {i}. {issue}")
         raise typer.Exit(1)
-

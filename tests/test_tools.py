@@ -14,6 +14,22 @@ from conftest import (
     _tool_ctx,
 )
 
+
+def _test_soul_cfg() -> Any:
+    from core.config_models import EthosBaseline, EthosConfig
+
+    return SimpleNamespace(
+        ethos=EthosConfig(
+            baseline=EthosBaseline(
+                truth=0.91,
+                caution=0.81,
+                continuity=0.71,
+                curiosity=0.61,
+                care=0.51,
+            )
+        )
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 新增工具测试（file.edit / skill_ops / exec 覆盖）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -171,6 +187,156 @@ async def _task_tools_prefer_ctx_focus_task_over_global_active():
             assert refreshed_global is not None and refreshed_global.status == "in_progress"
         finally:
             await store.close()
+
+
+def test_memory_set_fact_goes_through_metabolic_ledger():
+    asyncio.run(_memory_set_fact_goes_through_metabolic_ledger())
+
+
+async def _memory_set_fact_goes_through_metabolic_ledger():
+    from store.task import TaskStore
+    from tools.memory import memory_get_fact, memory_set_fact
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "memory-tool-metabolic.db")
+        await store.open()
+        try:
+            ctx = _tool_ctx(task_store=store)
+            result = await memory_set_fact(
+                {"key": "life:test:set_fact", "value": {"ok": True}, "scope": "system"},
+                ctx,
+            )
+
+            assert result.skipped is False
+            got = await memory_get_fact({"key": "life:test:set_fact"}, ctx)
+            assert got.skipped is False
+            assert "life:test:set_fact" in got.summary
+
+            recent = await store.ledger_recent(limit=3)
+            assert recent
+            top = recent[0]
+            assert top["op"] == "set_fact"
+            assert top["key"] == "life:test:set_fact"
+            assert top["scope"] == "system"
+            assert top["source"] == "tools/memory.set_fact"
+            assert top["accepted"] is True
+        finally:
+            await store.close()
+
+
+def test_task_plan_goes_through_metabolic_ledger():
+    asyncio.run(_task_plan_goes_through_metabolic_ledger())
+
+
+def test_memory_add_semantic_goes_through_metabolic_ledger():
+    asyncio.run(_memory_add_semantic_goes_through_metabolic_ledger())
+
+
+def test_task_complete_compiles_skill_through_metabolic_ledger():
+    asyncio.run(_task_complete_compiles_skill_through_metabolic_ledger())
+
+
+async def _task_complete_compiles_skill_through_metabolic_ledger():
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.task import task_complete
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "task-complete-semantic.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("compile skill task", goal="compile narrative")
+            semantic = cast("Any", SemanticMemory(root / "semantic"))
+            episodic = cast(
+                "Any",
+                SimpleNamespace(
+                    load_for_context=lambda task_id, n_recent=5: "user did x\nassistant did y"
+                ),
+            )
+            ctx = _tool_ctx(task_store=store, semantic=semantic, episodic=episodic)
+
+            result = await task_complete({"task_id": task_id, "force": True}, ctx)
+
+            assert result.skipped is False
+            skill_id = result.state_delta["compiled_skill"]
+            node = semantic.get(skill_id)
+            assert node is not None
+            assert node.kind == "learned_skill"
+            assert node.source == "tools/task.complete"
+
+            recent = await store.ledger_recent(limit=5)
+            semantic_rows = [row for row in recent if row["op"] == "add_semantic_memory"]
+            assert semantic_rows
+            assert semantic_rows[0]["key"] == f"semantic:{skill_id}"
+            assert semantic_rows[0]["source"] == "tools/task.complete"
+        finally:
+            await store.close()
+
+
+async def _memory_add_semantic_goes_through_metabolic_ledger():
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.memory import memory_add_semantic
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "semantic-tool-metabolic.db")
+        await store.open()
+        try:
+            semantic = cast("Any", SemanticMemory(root / "semantic"))
+            ctx = _tool_ctx(task_store=store, semantic=semantic)
+
+            result = await memory_add_semantic(
+                {"title": "semantic ledger note", "body": "long term memory entry", "kind": "fact"},
+                ctx,
+            )
+
+            node_id = result.evidence.split("node_id=", 1)[1]
+            node = semantic.get(node_id)
+            assert node is not None
+            assert node.title == "semantic ledger note"
+
+            recent = await store.ledger_recent(limit=3)
+            top = recent[0]
+            assert top["op"] == "add_semantic_memory"
+            assert top["key"] == f"semantic:{node_id}"
+            assert top["scope"] == "semantic"
+            assert top["source"] == "tools/memory.add_semantic"
+            assert top["accepted"] is True
+            assert top["decision_basis"].startswith("memory.add_semantic")
+        finally:
+            await store.close()
+
+
+async def _task_plan_goes_through_metabolic_ledger():
+    from store.task import TaskStore
+    from tools.plan import task_plan
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "task-plan-metabolic.db")
+        await store.open()
+        try:
+            task_id = await store.add_task("plan ledger task", goal="record plan writes")
+            ctx = _tool_ctx(task_store=store)
+
+            result = await task_plan(
+                {"task_id": task_id, "plan": [{"step": "read state", "status": "in_progress"}]},
+                ctx,
+            )
+
+            assert result.skipped is False
+            task = await store.get_task_by_id(task_id)
+            assert task.extras["plan"][0]["step"] == "read state"
+            recent = await store.ledger_recent(limit=3)
+            assert recent[0]["op"] == "update_task_data"
+            assert recent[0]["key"] == str(task_id)
+            assert recent[0]["source"] == "tools/task.plan"
+        finally:
+            await store.close()
+
 
 def test_file_edit_single_replace():
     """file.edit 单处替换成功。"""
@@ -469,7 +635,7 @@ def test_tool_registry_discover_skips_hidden_smoke_failed_modules():
         assert registry.get(manifest_name) is not None
 
 
-def test_tool_registry_discover_accepts_legacy_manifest_kwargs():
+def test_tool_registry_discover_rejects_legacy_manifest_kwargs():
     from tools.registry import ToolRegistry
 
     with tempfile.TemporaryDirectory() as d:
@@ -487,11 +653,7 @@ def test_tool_registry_discover_accepts_legacy_manifest_kwargs():
         registry = ToolRegistry()
         registry.discover(root)
 
-        entry = registry.get(manifest_name)
-        assert entry is not None
-        assert entry.manifest.required_caps == ("plan_bootstrap_exempt",)
-        assert entry.manifest.parameters[0].default == "."
-        assert entry.manifest.params[0].dtype == "string"
+        assert registry.get(manifest_name) is None
 
 
 def test_tool_registry_discover_cleans_partial_module_after_import_failure():
@@ -632,13 +794,7 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -708,13 +864,7 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -954,13 +1104,7 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1125,13 +1269,7 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1223,13 +1361,7 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1330,13 +1462,7 @@ async def _subagent_run_history_does_not_expose_parent_runs():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1453,13 +1579,7 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1536,13 +1656,7 @@ async def _subagent_runner_does_not_pollute_parent_store():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.23, baseline_arousal=0.34),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1638,13 +1752,7 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
                 loop=SimpleNamespace(act=True, debug=False, workspace_dir=str(root)),
                 memory=SimpleNamespace(working_capacity=12),
                 emotion=SimpleNamespace(baseline_valence=0.5, baseline_arousal=0.5),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1689,44 +1797,54 @@ def test_subagent_absorb_persists_parent_semantic_node_with_provenance():
 
 async def _subagent_absorb_persists_parent_semantic_node_with_provenance():
     from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.subagent import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        semantic = SemanticMemory(root / "semantic")
-        ctx = _tool_ctx(semantic=semantic)
+        store = TaskStore(root / "subagent-absorb.db")
+        await store.open()
+        try:
+            semantic = SemanticMemory(root / "semantic")
+            ctx = _tool_ctx(task_store=store, semantic=semantic)
 
-        res = await subagent_absorb(
-            {
-                "subagent_id": "sub-a1",
-                "memories_json": json.dumps([
-                    {
-                        "id": "note-1",
-                        "kind": "learned_insight",
-                        "title": "定位异常根因",
-                        "body": "execution 与 semantic 接口未对齐。",
-                        "activation": 0.76,
-                        "valence": 0.61,
-                        "importance": 0.88,
-                        "tags": ["reflection", "execution"],
-                        "created_at": "2026-05-22T10:00:00+00:00",
-                    }
-                ], ensure_ascii=False),
-            },
-            ctx,
-        )
+            res = await subagent_absorb(
+                {
+                    "subagent_id": "sub-a1",
+                    "memories_json": json.dumps([
+                        {
+                            "id": "note-1",
+                            "kind": "learned_insight",
+                            "title": "定位异常根因",
+                            "body": "execution 与 semantic 接口未对齐。",
+                            "activation": 0.76,
+                            "valence": 0.61,
+                            "importance": 0.88,
+                            "tags": ["reflection", "execution"],
+                            "created_at": "2026-05-22T10:00:00+00:00",
+                        }
+                    ], ensure_ascii=False),
+                },
+                ctx,
+            )
 
-        assert res.error is None
-        assert res.metadata["absorbed"] == 1
-        assert res.metadata["requested_total"] == 1
-        node = semantic.get("absorbed-sub-a1-note-1")
-        assert node is not None
-        assert node.title == "定位异常根因"
-        assert node.body == "execution 与 semantic 接口未对齐。"
-        assert node.importance == pytest.approx(0.88)
-        assert node.source == "subagent:sub-a1"
-        assert "reflection" in node.tags
-        assert "subagent:sub-a1" in node.tags
+            assert res.error is None
+            assert res.metadata["absorbed"] == 1
+            assert res.metadata["requested_total"] == 1
+            node = semantic.get("absorbed-sub-a1-note-1")
+            assert node is not None
+            assert node.title == "定位异常根因"
+            assert node.body == "execution 与 semantic 接口未对齐。"
+            assert node.importance == pytest.approx(0.88)
+            assert node.source == "subagent:sub-a1"
+            assert "reflection" in node.tags
+            assert "subagent:sub-a1" in node.tags
+
+            recent = await store.ledger_recent(limit=3)
+            assert recent[0]["op"] == "add_semantic_memory"
+            assert recent[0]["source"] == "subagent:sub-a1"
+        finally:
+            await store.close()
 
 
 def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
@@ -1788,13 +1906,7 @@ async def _subagent_run_isolated_memory_returns_absorbable_memories_without_pare
                 memory=SimpleNamespace(working_capacity=12, max_events=20),
                 memory_dir=root / "memory",
                 emotion=SimpleNamespace(baseline_valence=0.4, baseline_arousal=0.3),
-                soul=SimpleNamespace(ethos_baseline={
-                    "truth": 0.91,
-                    "caution": 0.81,
-                    "continuity": 0.71,
-                    "curiosity": 0.61,
-                    "care": 0.51,
-                }),
+                soul=_test_soul_cfg(),
                 thresholds=SimpleNamespace(
                     durable_failure_threshold=3,
                     durable_failure_ttl_sec=7200,
@@ -1844,39 +1956,45 @@ def test_subagent_absorb_surfaces_truncation_and_invalid_nodes():
 
 async def _subagent_absorb_surfaces_truncation_and_invalid_nodes():
     from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.subagent import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        semantic = SemanticMemory(root / "semantic")
-        ctx = _tool_ctx(semantic=semantic)
+        store = TaskStore(root / "subagent-absorb-truncate.db")
+        await store.open()
+        try:
+            semantic = SemanticMemory(root / "semantic")
+            ctx = _tool_ctx(task_store=store, semantic=semantic)
 
-        nodes = [
-            {"id": "good-1", "title": "A", "body": "alpha"},
-            {"id": "good-2", "title": "B", "body": "beta"},
-            {"id": "bad-3", "title": "", "body": "missing title"},
-            {"id": "good-4", "title": "D", "body": "delta"},
-            {"id": "good-5", "title": "E", "body": "epsilon"},
-            {"id": "good-6", "title": "F", "body": "zeta"},
-        ]
+            nodes = [
+                {"id": "good-1", "title": "A", "body": "alpha"},
+                {"id": "good-2", "title": "B", "body": "beta"},
+                {"id": "bad-3", "title": "", "body": "missing title"},
+                {"id": "good-4", "title": "D", "body": "delta"},
+                {"id": "good-5", "title": "E", "body": "epsilon"},
+                {"id": "good-6", "title": "F", "body": "zeta"},
+            ]
 
-        res = await subagent_absorb(
-            {
-                "subagent_id": "sub-b2",
-                "memories_json": json.dumps(nodes, ensure_ascii=False),
-                "max_absorb": 5,
-            },
-            ctx,
-        )
+            res = await subagent_absorb(
+                {
+                    "subagent_id": "sub-b2",
+                    "memories_json": json.dumps(nodes, ensure_ascii=False),
+                    "max_absorb": 5,
+                },
+                ctx,
+            )
 
-        assert res.error is None
-        assert res.metadata["requested_total"] == 6
-        assert res.metadata["selected_total"] == 5
-        assert res.metadata["truncated"] == 1
-        assert res.metadata["invalid"] == 1
-        assert "另有 1 条因 max_absorb 未吸收" in res.summary
-        assert "1 条缺少标题或正文已跳过" in res.summary
-        assert semantic.get("absorbed-sub-b2-good-6") is None
+            assert res.error is None
+            assert res.metadata["requested_total"] == 6
+            assert res.metadata["selected_total"] == 5
+            assert res.metadata["truncated"] == 1
+            assert res.metadata["invalid"] == 1
+            assert "另有 1 条因 max_absorb 未吸收" in res.summary
+            assert "1 条缺少标题或正文已跳过" in res.summary
+            assert semantic.get("absorbed-sub-b2-good-6") is None
+        finally:
+            await store.close()
 
 
 def test_browser_navigate_failure_uses_stdout_when_stderr_empty(monkeypatch):
@@ -2260,5 +2378,3 @@ async def _file_read_max_chars():
 
         r = await file_read({"path": str(fpath), "max_chars": 20}, ctx)
         assert len(r.summary) == 20
-
-

@@ -409,14 +409,18 @@ def upsert(self, node: MemoryNode) -> None:
             self._db_upsert(node)
         except Exception as exc:
             _log.warning("[semantic] 节点写入 DB 失败，保留 json 作为恢复源: %s", exc)
-        if self._embed_fn is not None:
+
+        # 与“按需向量化”策略一致，避免在检索前无条件预计算 embedding。
+        # 仅在外部显式调用 set_embedding 或节点文件已携带 legacy embedding 时再持久化。
+        legacy_embedding = getattr(node, "embedding", None)
+        if legacy_embedding is not None:
             try:
-                vec = self._embed_fn(node.title + " " + node.body)
+                vec = json.loads(legacy_embedding) if isinstance(legacy_embedding, str) else legacy_embedding
                 blob = _vec_to_blob(vec)
                 self._conn.execute(
                     "INSERT OR REPLACE INTO node_embeddings"
                     " (node_id, modality, model, dim, vector, created_at)"
-                    " VALUES (?, 'text', '', ?, ?, ?)",
+                    " VALUES (?, 'text', 'legacy', ?, ?, ?)",
                     (node.id, len(vec), blob, datetime.now(UTC).isoformat()),
                 )
                 self._conn.commit()

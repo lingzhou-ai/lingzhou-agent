@@ -1,6 +1,5 @@
 ---
 name: task-decomposition
-aliases: task.decomposition
 description: "任务拆解与执行纪律技能。Use when 接到新任务首轮执行时、需要决定是否 task.plan、是否复用相似任务、是否使用 parallel_actions 或 delegate_tasks 时。关键词：新任务、task.plan、parallel_actions、delegate_tasks、next_step 拆解。"
 compatibility: Designed for Lingzhou task runtime.
 tags: task, planning, decomposition, parallel

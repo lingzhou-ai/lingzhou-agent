@@ -8,7 +8,7 @@
 
 设计原则：
 - 技能本身可以被 evolution 进化（本文件理论上可热替换）
-- 标准载体是 workspace/skills/<name>/SKILL.md；保留对 legacy 单文件 *.md 的兼容读取
+- 标准载体是 workspace/skills/<name>/SKILL.md
 - judgment 默认只看到 catalog / 候选 skill 摘要，完整说明需显式 activation
 - 自定义技能匹配仅基于 metadata，不基于整段 instruction 做硬编码触发
 """
@@ -42,22 +42,6 @@ _log = logging.getLogger("core.skill")
 _SEED_SYNC_MANIFEST = ".seed-sync.json"
 
 
-# ---------- alias / migration layer -----------------------------------------
-# 历史 dotted 名 → 规范 hyphen 名的映射表。
-# workspace 里如果还存在旧目录，尽量通过这层透明寻找。
-_SKILL_NAME_ALIASES: dict[str, str] = {
-    "runtime.bootstrap":    "runtime-bootstrap",
-    "failure.reflection":   "failure-reflection",
-    "task.continuity":      "task-continuity",
-    "provider.integration": "provider-integration",
-}
-
-
-def _canonical_skill_name(name: str) -> str:
-    """dotted 历史名 → hyphen 规范名；已是规范名直接返回。"""
-    return _SKILL_NAME_ALIASES.get(name, name)
-
-
 def _seed_skills_dir() -> Path:
     from core.paths import project_root
 
@@ -69,30 +53,12 @@ def workspace_skill_file(workspace_dir: Path, skill_name: str) -> Path:
 
 
 def ensure_workspace_skill_file(workspace_dir: Path, skill_name: str) -> Path:
-    canonical = _canonical_skill_name(skill_name)
-    target = workspace_skill_file(workspace_dir, canonical)
+    target = workspace_skill_file(workspace_dir, skill_name)
     if target.exists():
         return target
 
-    # 兼容：如果 workspace 里还保留着旧 dotted 目录剪影
-    if canonical != skill_name:
-        dotted_target = workspace_skill_file(workspace_dir, skill_name)
-        if dotted_target.exists():
-            return dotted_target
-
-    # 兼容： legacy 单文件（尝试 canonical 和 dotted 两种）
-    for check_name in dict.fromkeys([canonical, skill_name]):
-        legacy = workspace_dir / "skills" / f"{check_name}.md"
-        if legacy.exists():
-            return legacy
-
     seed_dir = _seed_skills_dir()
-    candidates = [
-        seed_dir / canonical / "SKILL.md",
-        seed_dir / skill_name / "SKILL.md",
-        seed_dir / f"{canonical}.md",
-        seed_dir / f"{skill_name}.md",
-    ]
+    candidates = [seed_dir / skill_name / "SKILL.md"]
     source = next((path for path in candidates if path.exists()), None)
     if source is None:
         return target
@@ -103,9 +69,7 @@ def ensure_workspace_skill_file(workspace_dir: Path, skill_name: str) -> Path:
 
 
 def _iter_skill_files(skills_dir: Path) -> list[Path]:
-    files = [md for md in sorted(skills_dir.glob("*.md")) if md.name != "SKILL.md"]
-    files.extend(sorted(skills_dir.glob("*/SKILL.md")))
-    return files
+    return sorted(skills_dir.glob("*/SKILL.md"))
 
 
 def _skill_digest(text: str) -> str:
@@ -204,7 +168,7 @@ class Skill:
     triggers: list[str] = field(default_factory=list)
     state_bias: dict[str, float] = field(default_factory=dict)
     state_rules: list[SkillStateRule] = field(default_factory=list)
-    aliases: list[str] = field(default_factory=list)  # 历史各字
+    aliases: list[str] = field(default_factory=list)  # 显式同义入口，不承载历史命名迁移
     compatibility: str = ""
     license: str = ""
     allowed_tools: list[str] = field(default_factory=list)
@@ -328,10 +292,9 @@ class SkillRegistry:
         for skill in self._skills:
             if skill.name == name:
                 return skill
-        # 2. alias 查找：dotted 历史名 → canonical，或匹配 skill.aliases 列表
-        canonical = _canonical_skill_name(name)
+        # 2. manifest aliases: skill 作者显式声明的同义入口
         for skill in self._skills:
-            if skill.name == canonical or name in (skill.aliases or []):
+            if name in (skill.aliases or []):
                 return skill
         return None
 
@@ -355,7 +318,7 @@ class SkillRegistry:
         """返回本轮应提示给 LLM 的候选技能列表。
 
         last_applied: 上轮 LLM 实际应用的技能名列表，优先保留（LLM 自己的选择驱动下轮 activation）。
-        max_inject: 最多提示多少个候选技能；0 = 不限（向后兼容）。
+        max_inject: 最多提示多少个候选技能；0 = 不注入。
         """
         all_skills = list(self._skills)
         has_active_task = bool(_kwargs.get("has_active_task"))
@@ -390,7 +353,7 @@ class SkillRegistry:
         ordered = [skill for _, _, skill in scored]
 
         if max_inject <= 0:
-            selected = ordered + [skill for skill in all_skills if skill not in ordered]
+            selected = []
         else:
             # ordered 为空即无任何信号命中，返回空列表（不强行注入 last_applied）
             selected = ordered[:max_inject]

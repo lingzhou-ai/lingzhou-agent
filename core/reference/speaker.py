@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from core.metabolic import StateProposal
+from core.metabolic import add_semantic_memory, submit_fact
 
 from .common import chat_handle_tag, default_interlocutor_title, normalize_text, short_text_digest
 from .extraction import extract_identity_cues
@@ -250,10 +250,6 @@ async def remember_speaker(
     if not speaker.node_id:
         return
 
-    from datetime import UTC, datetime
-
-    from store.semantic import MemoryNode
-
     cues = extract_identity_cues(message, chat_id=chat_id, source_hint=source_hint)
     existing = semantic.get(speaker.node_id)
     merged_lines: list[str] = []
@@ -281,93 +277,79 @@ async def remember_speaker(
     for trait in cues.get("source_traits", []):
         tags.add(trait)
 
-    semantic.upsert(
-        MemoryNode(
-            id=speaker.node_id,
-            kind="interlocutor",
-            title=speaker.title or (existing.title if existing is not None else default_interlocutor_title(chat_id)),
-            body="\n".join(merged_lines[-12:]),
-            activation=max(existing.activation if existing is not None else 0.0, max(0.55, speaker.confidence)),
-            importance=max(existing.importance if existing is not None else 0.0, 0.58 if not speaker.provisional else 0.45),
-            valence=existing.valence if existing is not None else 0.5,
-            tags=sorted(tags),
-            source=(existing.source if existing is not None and existing.source else "interlocutor_profile"),
-            created_at=existing.created_at if existing is not None else datetime.now(UTC).isoformat(),
-        )
+    # 画像是跨轮次的人设记忆：优先走代谢提案，保留可回放的生命史轨迹。
+    await add_semantic_memory(
+        metabolic,
+        task_store=task_store,
+        semantic_memory=semantic,
+        node_id=speaker.node_id,
+        kind="interlocutor",
+        title=speaker.title or (existing.title if existing is not None else default_interlocutor_title(chat_id)),
+        body="\n".join(merged_lines[-12:]),
+        activation=max(existing.activation if existing is not None else 0.0, max(0.55, speaker.confidence)),
+        importance=max(existing.importance if existing is not None else 0.0, 0.58 if not speaker.provisional else 0.45),
+        valence=existing.valence if existing is not None else 0.5,
+        tags=sorted(tags),
+        source=(existing.source if existing is not None and existing.source else "interlocutor_profile"),
+        created_at=existing.created_at if existing is not None else "",
+        decision_basis=f"interlocutor_profile_update:{speaker.node_id}",
     )
 
     if task_store is None:
         return
-    if metabolic is None:
-        from core.metabolic import MetabolicEngine
-
-        metabolic = MetabolicEngine(task_store)
+    fact_owner = metabolic or task_store
     if chat_id:
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"chat:{chat_id}:interlocutor_profile_id",
-                value=speaker.node_id,
-                scope="profile",
-                source="reference/speaker",
-            )
-        )
-    if task_id is not None:
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"task:{task_id}:interlocutor_profile_id",
-                value=speaker.node_id,
-                scope="profile",
-                source="reference/speaker",
-            )
-        )
-    await metabolic.submit(
-        StateProposal(
-            op="set_fact",
-            key=f"interlocutor:{speaker.node_id}:display_name",
-            value=speaker.title,
+        await submit_fact(
+            fact_owner,
+            key=f"chat:{chat_id}:interlocutor_profile_id",
+            value=speaker.node_id,
             scope="profile",
             source="reference/speaker",
         )
+    if task_id is not None:
+        await submit_fact(
+            fact_owner,
+            key=f"task:{task_id}:interlocutor_profile_id",
+            value=speaker.node_id,
+            scope="profile",
+            source="reference/speaker",
+        )
+    await submit_fact(
+        fact_owner,
+        key=f"interlocutor:{speaker.node_id}:display_name",
+        value=speaker.title,
+        scope="profile",
+        source="reference/speaker",
     )
     if chat_id:
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"interlocutor:{speaker.node_id}:handle:{short_text_digest(chat_id)}",
-                value=chat_id,
-                scope="profile",
-                source="reference/speaker",
-            )
+        await submit_fact(
+            fact_owner,
+            key=f"interlocutor:{speaker.node_id}:handle:{short_text_digest(chat_id)}",
+            value=chat_id,
+            scope="profile",
+            source="reference/speaker",
         )
     for pref in cues.get("preferences", []):
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"interlocutor:{speaker.node_id}:preference:{short_text_digest(pref)}",
-                value=pref,
-                scope="profile",
-                source="reference/speaker",
-            )
+        await submit_fact(
+            fact_owner,
+            key=f"interlocutor:{speaker.node_id}:preference:{short_text_digest(pref)}",
+            value=pref,
+            scope="profile",
+            source="reference/speaker",
         )
     for explicit in cues.get("explicit", []):
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"interlocutor:{speaker.node_id}:explicit:{short_text_digest(explicit)}",
-                value=explicit,
-                scope="profile",
-                source="reference/speaker",
-            )
+        await submit_fact(
+            fact_owner,
+            key=f"interlocutor:{speaker.node_id}:explicit:{short_text_digest(explicit)}",
+            value=explicit,
+            scope="profile",
+            source="reference/speaker",
         )
     for trait in cues.get("source_traits", []):
-        await metabolic.submit(
-            StateProposal(
-                op="set_fact",
-                key=f"interlocutor:{speaker.node_id}:source_trait:{short_text_digest(trait)}",
-                value=trait,
-                scope="profile",
-                source="reference/speaker",
-            )
+        await submit_fact(
+            fact_owner,
+            key=f"interlocutor:{speaker.node_id}:source_trait:{short_text_digest(trait)}",
+            value=trait,
+            scope="profile",
+            source="reference/speaker",
         )

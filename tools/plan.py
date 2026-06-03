@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from core.metabolic import update_task_data as metabolic_update_task_data
 from tools.registry import (
     CAPS_EXEMPT,
     ToolContext,
@@ -115,8 +116,14 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 skipped=True,
             )
 
-    # 持久化 plan 到任务 extras
-    await ctx.task_store.update_task_data(task.id, {"plan": clean_plan})
+    # 计划是 task extras 的正式状态，必须留下生命史账本，方便后续自省回放。
+    await metabolic_update_task_data(
+        ctx,
+        task.id,
+        {"plan": clean_plan},
+        source="tools/task.plan",
+        decision_basis=f"update task plan for {task.title}: {len(clean_plan)} steps"[:240],
+    )
 
     # 生成摘要
     lines = [f"任务 #{task.id} 计划已更新: {len(clean_plan)} 步 ({done}✅ {in_progress_count}🔄 {pending}⏳)"]

@@ -3,7 +3,7 @@
 数字生命的时间感知层：让灵舟能设置备忘录、定期反思触发器、自动提醒。
 
 信号触发后通过 WM 注入本轮认知上下文，优先级=0.9（高于普通工作记忆）。
-对已送达 WM 的到期信号，runtime 会自动推进/完成 signal；schedule.ack 主要保留给手动管理/兼容旧流程。
+对已送达 WM 的到期信号，runtime 会自动推进/完成 signal。
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ async def schedule_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     description=(
         "列出调度信号。注意：重复信号由 loop 自动触发并在 delivery 后自动推进，status='pending' 表示'活跃计划'而非'待手动处理'。"
         "⚡ 表示当前已到期（需处理），⏰ 表示未来触发（无需处理）。"
-        "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒，已送达的到期信号通常无需再手动 ack。"
+        "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒。"
     ),
     prefer_tier="reader",
     capabilities=(*CAPS_EXEMPT, "completion_info_only"),
@@ -143,28 +143,6 @@ async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         lines.append(f"#{s['id']} [{due_tag}]{repeat} — {s['title']}{note_part}")
     detail = "\n".join(lines)
     return ToolResult(summary=f"共 {len(sigs)} 条信号:\n{detail}", evidence=detail)
-
-
-@tool(ToolManifest(
-    name="schedule.ack",
-    description=(
-        "手动确认一条调度信号已处理完毕。"
-        "一次性信号标记为 done；重复信号自动推进到下次触发时间。"
-        "兼容旧流程保留；对已通过 WM delivery 自动推进/完成的到期信号，通常不需要再调用。"
-    ),
-    prefer_tier="reasoner",
-    progress_category="mutation",
-    capabilities=CAPS_EXEMPT,
-    params=[
-        ToolParam("id", "number", "信号 id（由 schedule.list 查询）", required=True),
-    ],
-))
-async def schedule_ack(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    sig_id = params.get("id")
-    if sig_id is None:
-        return ToolResult(summary="id 不能为空", skipped=True)
-    await ctx.task_store.ack_signal(int(sig_id))
-    return ToolResult(summary=f"已确认信号 #{sig_id} 处理完毕", evidence=f"id={sig_id} acked")
 
 
 @tool(ToolManifest(

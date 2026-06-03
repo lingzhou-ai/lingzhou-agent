@@ -437,7 +437,7 @@ async def _assemble_context(
         wm_pressure=(wm.total_tokens / wm._token_budget) if wm._token_budget > 0 else 0.0,
         failure_threshold=assembler._cfg.thresholds.skill_failure_threshold,
         wm_pressure_threshold=assembler._cfg.thresholds.skill_wm_pressure_threshold,
-        max_inject=3,
+        max_inject=assembler._cfg.thresholds.skill_max_inject,
     )
     assembler._last_selected_skills = list(skills)
     all_skills = skills + [s for s in all_skills if s.name not in {item.name for item in skills}]

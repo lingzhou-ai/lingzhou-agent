@@ -10,6 +10,17 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
+from memory.quality_checker import evaluate_retrieval_quality
+
+from . import (
+    _EPHEMERAL_MEMORY_KINDS,
+    _STABLE_MEMORY_KINDS,
+    _STABLE_MEMORY_SOURCES,
+    MemoryNode,
+    _cosine,
+    effective_activation,
+)
+
 # 主表查询列（不含 embedding）：embedding 是高维感知数据，只在向量比较时按需加载
 _NODE_COLS = "id, kind, title, body, activation, valence, importance, tags, source, created_at"
 
@@ -34,18 +45,8 @@ def _blob_to_vec(raw: bytes | str | list) -> list[float] | None:
             return None
     if isinstance(raw, list):
         return raw
+
     return None
-
-from memory.quality_checker import evaluate_retrieval_quality
-
-from . import (
-    _EPHEMERAL_MEMORY_KINDS,
-    _STABLE_MEMORY_KINDS,
-    _STABLE_MEMORY_SOURCES,
-    MemoryNode,
-    _cosine,
-    effective_activation,
-)
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 
@@ -194,15 +195,14 @@ def retrieve(
                 ]
             # FTS5 命中但被过滤器全部过滤掉 → SQL 层按条件兜底，不全表扫描
             if not nodes:
-                # FTS5 命中但被过滤器全部过滤掉 → 向量预筛 + 条件过滤兜底
                 nodes = self._fallback_candidates(
-                    _load_query_vec(), kind=kind, tag=tag, source=source,
+                    None, kind=kind, tag=tag, source=source,
                     task_id=task_id, id_prefix=id_prefix, path_prefix=path_prefix,
                 )
         else:
             # FTS5 无命中 → 向量预筛 + 条件过滤兜底
             nodes = self._fallback_candidates(
-                _load_query_vec(), kind=kind, tag=tag, source=source,
+                None, kind=kind, tag=tag, source=source,
                 task_id=task_id, id_prefix=id_prefix, path_prefix=path_prefix,
             )
         if not nodes:
@@ -292,25 +292,35 @@ def retrieve_multi_anchor(
             if source:
                 nodes = [n for n in nodes if getattr(n, "source", "") == source]
         else:
-            # FTS5 对所有 anchor 均无命中 → 向量预筛兜底（按各 anchor 余弦取并集）
-            seen_ids: set[str] = set()
+            # FTS5 对所有 anchor 均无命中：先按 activation 兜底，后按需触发向量评分。
+            # 仅在候选节点具备 rankable embedding 时才触发 embed 计算。
+            valid_ids: set[str] = set()
             retrieval_route = "vec_scan"
-            for anchor in valid_anchors:
-                anchor_vec: list[float] | None = None
-                if self._embed_fn is not None:
+            _fb = self._load_filtered(source=source, limit=200)
+            nodes = self._load_by_ids([n.id for n in _fb]) if _fb else []
+
+            use_vector_scoring = self._embed_fn is not None and nodes and any(
+                _node_has_rankable_embedding(n) for n in nodes
+            )
+            if use_vector_scoring:
+                retrieval_route = "vec_scan"
+                for anchor in valid_anchors:
                     with suppress(Exception):
                         anchor_vec = self._embed_fn(anchor)
-                if anchor_vec is not None:
-                    for nid in self._vec_scan_candidates(anchor_vec, source=source, top_n=100):
-                        seen_ids.add(nid)
-            if seen_ids:
-                nodes = self._load_by_ids(list(seen_ids))
-                if source:
-                    nodes = [n for n in nodes if getattr(n, "source", "") == source]
+                        seen_ids = set()
+                        for nid in self._vec_scan_candidates(anchor_vec, source=source, top_n=100):
+                            seen_ids.add(nid)
+                        if seen_ids:
+                            # 与 FTS 命中路径保持接口一致：保留并集结果
+                            # 并允许后续按 source 二次过滤。
+                            valid_ids |= seen_ids
             else:
                 retrieval_route = "filtered_fallback"
-                _fb = self._load_filtered(source=source, limit=200)
-                nodes = self._load_by_ids([n.id for n in _fb]) if _fb else []
+
+            if use_vector_scoring and valid_ids:
+                nodes = self._load_by_ids(list(valid_ids))
+                if source:
+                    nodes = [n for n in nodes if getattr(n, "source", "") == source]
         if not nodes:
             _log.info(
                 "[semantic.multi_anchor] done dt=%.3fs route=%s nodes=0 hits=0",

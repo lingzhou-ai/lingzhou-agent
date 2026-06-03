@@ -77,12 +77,12 @@ def _build_action_result_summary(
 
 
 def _loop_metabolic(loop: Any) -> Any:
-    """获取 loop 的 metabolic 实例；若不存在则创建临时实例（兼容测试 mock）。"""
-    metabolic = getattr(loop, "_metabolic", None)
-    if metabolic is None:
-        from core.metabolic import MetabolicEngine
+    """获取 loop 的代谢器官；测试 mock 缺省时也走统一解析规则。"""
+    from core.metabolic import resolve_metabolic
 
-        metabolic = MetabolicEngine(loop._task_store)
+    metabolic = resolve_metabolic(loop)
+    if metabolic is None:
+        raise RuntimeError("loop 缺少可用的代谢器官或 task_store")
     return metabolic
 
 

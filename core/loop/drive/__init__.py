@@ -1,4 +1,4 @@
-"""core.loop.drive — 行为统计与自驱力（behavior / self_drive）。"""
+"""core.loop.drive — 行为统计与自驱力（behavior / engine）。"""
 
 from __future__ import annotations
 

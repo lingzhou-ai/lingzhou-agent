@@ -5,7 +5,7 @@
   "_doc_providers": [
     "providers 定义各 LLM 接入点（连接配置，与模型无关）。",
     "支持同时定义多个 provider，通过顶层 model 字段的 'provider-name/model-id' 格式切换。",
-    "api_key 从环境变量/credentials/auth-profile 读取，绝不写入配置文件。",
+    "api_key 从环境变量或 auth-profile 读取，绝不写入配置文件。",
     "如需补 transport / 输入模态 / 思考能力 / 参数兼容性，可在 providers.<name>.models 中覆盖或追加模型元数据。"
   ],
   "providers": {
@@ -29,7 +29,7 @@
         "api_key_env 用于指定存放 GitHub PAT 的环境变量名。",
         "  推荐使用专用变量 COPILOT_GITHUB_TOKEN，避免与 gh CLI / GitHub Actions 的",
         "  通用 GITHUB_TOKEN 撞名。若已执行 login-copilot 则此字段仅作 fallback。",
-        "oauth_client_id 仅作显式 --method device 时的兼容回退。",
+        "oauth_client_id 仅在显式 --method device 时指定 GitHub OAuth App。",
         "mode=copilot: thinking 由顶层 thinking 字段自动注入 reasoning_effort。",
         "models 可覆盖/追加运行时模型目录；常用字段：api、input、capabilities、reasoning、request_params。"
       ],
@@ -98,7 +98,7 @@
 
   "_doc_model_fallbacks": [
     "显式回退链：每个 tier 按顺序尝试模型（超时/401/429 时自动切换）。",
-    "可用 key：reader/reasoner/repair（兼容 simple/complex）。"
+    "可用 key：reader/reasoner/repair。"
   ],
   "model_fallbacks": {
     "reader": [
@@ -162,11 +162,19 @@
     "evolution": "prompts/evolution.md"
   },
 
+  "logging": {
+    "dir": "~/.lingzhou/logs",
+    "daily_enabled": true,
+    "startup_enabled": true,
+    "startup_prefix": "console",
+    "console_enabled": true,
+    "console_file": "console.log"
+  },
+
   "memory": {
     "working_capacity": 20,
     "wm_token_budget_ratio": 0.08,
     "wm_item_max_tokens": 300,
-    "episodic_max_chars": 4000,
     "semantic_top_k": 5,
     "failure_limit": 10,
     "consolidate_threshold": 0.7,
@@ -262,35 +270,37 @@
       "不欺骗或刻意误导用户",
       "不绕过人类监督机制"
     ],
-    "ethos_baseline": {
-      "truth": 0.85,
-      "caution": 0.70,
-      "continuity": 0.65,
-      "curiosity": 0.60,
-      "care": 0.55
-    },
-    "ethos_ema_alpha": 0.9,
-    "ethos_floor_truth": 0.50,
-    "ethos_floor_caution": 0.45,
-    "ethos_prefer_verification_caution_min": 0.70,
-    "ethos_prefer_verification_failure_count": 2,
-    "ethos_prefer_narrow_failure_count": 2,
-    "ethos_prefer_narrow_error_streak": 2,
-    "ethos_preserve_continuity_min": 0.70,
-    "ethos_avoid_overclaiming_down_regulate_streak": 2,
-    "ethos_failure_adjust_count": 1,
-    "ethos_failure_truth_delta": 0.10,
-    "ethos_failure_caution_delta": 0.10,
-    "ethos_failure_curiosity_delta": -0.08,
-    "ethos_high_error_adjust_streak": 2,
-    "ethos_high_error_truth_delta": 0.10,
-    "ethos_high_error_caution_delta": 0.12,
-    "ethos_high_error_care_delta": -0.08,
-    "ethos_active_task_continuity_delta": 0.12,
-    "ethos_next_step_continuity_delta": 0.08,
-    "ethos_next_step_care_delta": 0.06,
-    "ethos_recovering_curiosity_delta": 0.08,
-    "ethos_recovering_care_delta": 0.04
+    "ethos": {
+      "baseline": {
+        "truth": 0.85,
+        "caution": 0.70,
+        "continuity": 0.65,
+        "curiosity": 0.60,
+        "care": 0.55
+      },
+      "ema_alpha": 0.9,
+      "floor_truth": 0.50,
+      "floor_caution": 0.45,
+      "prefer_verification_caution_min": 0.70,
+      "prefer_verification_failure_count": 2,
+      "prefer_narrow_failure_count": 2,
+      "prefer_narrow_error_streak": 2,
+      "preserve_continuity_min": 0.70,
+      "avoid_overclaiming_down_regulate_streak": 2,
+      "failure_adjust_count": 1,
+      "failure_truth_delta": 0.10,
+      "failure_caution_delta": 0.10,
+      "failure_curiosity_delta": -0.08,
+      "high_error_adjust_streak": 2,
+      "high_error_truth_delta": 0.10,
+      "high_error_caution_delta": 0.12,
+      "high_error_care_delta": -0.08,
+      "active_task_continuity_delta": 0.12,
+      "next_step_continuity_delta": 0.08,
+      "next_step_care_delta": 0.06,
+      "recovering_curiosity_delta": 0.08,
+      "recovering_care_delta": 0.04
+    }
   },
 
   "thresholds": {
@@ -345,7 +355,6 @@
     "chat_history_turn_limit": 3,
     "chat_history_max_chars": 300,
     "shell_timeout": 30.0,
-    "shell_max_output_chars": 500,
     "wm_pri_signal": 0.90,
     "wm_pri_history": 0.88,
     "wm_pri_identity": 0.85,

@@ -673,6 +673,14 @@ def test_judgment_prompt_includes_runtime_hint_rules():
     assert "control:meta_reflection_hint:*" in skill_body
 
 
+def test_judgment_prompt_keeps_life_oriented_context_blocks():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    assert "{{risk_sections}}" in prompt
+    assert "{{uncertainty_sections}}" in prompt
+    assert "### 风险与不确定性（本轮裁决读屏）" in prompt
+    assert "{{wm_proposal_sections}}" in prompt
+
+
 def test_judgment_prompt_includes_json_first_runtime_db_hint():
     # 详细 SQL 提示已外化到 shell-usage skill
     skill_body = (_proj_root() / "prompts" / "skills" / "shell-usage" / "SKILL.md").read_text(encoding="utf-8")
@@ -704,7 +712,7 @@ def test_judgment_prompt_keeps_detailed_rules_in_skills():
 def test_get_active_usage_is_limited_to_whitelisted_control_surfaces():
     allowed_definition_files = {
         "core/loop/task/parallel.py",
-        "core/subagent.py",
+        "core/subagent/__init__.py",
         "store/task/__init__.py",
         "store/task/state.py",
         "tools/view_protocols.py",
@@ -1055,6 +1063,58 @@ def test_config_reference_doc_defaults_match_code_defaults():
     assert {key: doc_defaults.get(key) for key in expected} == expected
 
 
+def test_example_config_matches_current_schema():
+    from core.config import Config
+
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
+
+    assert cfg.memory.semantic_top_k == 5
+    assert cfg.memory.daily_recall_days == 2
+    assert cfg.soul.ethos.baseline.truth == 0.85
+
+
+def test_memory_keys_in_thresholds_are_not_migrated():
+    from core.config import Config
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "thresholds": {
+            "daily_recall_days": 9,
+            "daily_summary_days": 9,
+        },
+    })
+
+    assert cfg.memory.daily_recall_days == 2
+    assert cfg.memory.daily_summary_days == 7
+    assert not hasattr(cfg.thresholds, "daily_recall_days")
+
+
+def test_config_rejects_unknown_top_level_keys():
+    from pydantic import ValidationError
+
+    from core.config import Config
+
+    with pytest.raises(ValidationError, match="unknown_section"):
+        Config.model_validate({
+            "providers": {
+                "bailian": {
+                    "type": "openai_compat",
+                    "base_url": "https://example.invalid/v1",
+                    "api_key_env": "DASHSCOPE_API_KEY",
+                }
+            },
+            "model": "bailian/qwen3.6-plus",
+            "unknown_section": {},
+        })
+
+
 def test_create_provider_with_model_exposes_public_model_ref(monkeypatch):
     from core.config import Config
     from provider import create_provider_with_model
@@ -1092,8 +1152,9 @@ def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch,
     cfg = cast(
         "Any",
         SimpleNamespace(
-            gateway=SimpleNamespace(default_channel="local"),
-            loop=SimpleNamespace(debug=False, act=True),
+                gateway=SimpleNamespace(default_channel="local"),
+                logging=SimpleNamespace(dir=str(tmp_path / "logs")),
+                loop=SimpleNamespace(debug=False, act=True),
             _base_dir=tmp_path,
             model="copilot/gpt-5.4",
             routing={},
@@ -1156,6 +1217,44 @@ def test_enqueue_webhook_task_uses_ingress_store():
     }]
 
 
+def test_normalize_webhook_message_merges_images_field():
+    from channels import webhook as webhook_mod
+
+    payload = {
+        "message": "这是新任务",
+        "images": [
+            "img://a.png",
+            {"path": "/tmp/b.png"},
+            "  ",
+            "file://c.png",
+        ],
+        "voices": ["voice://rec1.mp3"],
+        "priority": "low",
+    }
+
+    msg, priority = webhook_mod._normalize_webhook_message(payload)
+
+    assert priority == "low"
+    assert msg == (
+        "这是新任务\n[图片消息] img://a.png\n[图片消息] {\"path\": \"/tmp/b.png\"}\n[图片消息] file://c.png\n[语音消息] voice://rec1.mp3"
+    )
+
+
+def test_normalize_webhook_message_merges_audio_alias_field():
+    from channels import webhook as webhook_mod
+
+    payload = {
+        "message": "legacy audio",
+        "audios": "audio://legacy.amr",
+        "priority": "normal",
+    }
+
+    msg, priority = webhook_mod._normalize_webhook_message(payload)
+
+    assert priority == "normal"
+    assert msg == "legacy audio\n[语音消息] audio://legacy.amr"
+
+
 def test_start_external_channel_runtime_delegates_to_channel_registry(monkeypatch):
     from cli import gateway as gateway_mod
 
@@ -1203,8 +1302,9 @@ def test_gateway_start_external_channel_waits_until_runtime_ready(monkeypatch, t
     cfg = cast(
         "Any",
         SimpleNamespace(
-            gateway=SimpleNamespace(default_channel="wechat", webhook_host="0.0.0.0", webhook_port=8765),
-            loop=SimpleNamespace(debug=False, act=True),
+                gateway=SimpleNamespace(default_channel="wechat", webhook_host="0.0.0.0", webhook_port=8765),
+                logging=SimpleNamespace(dir=str(tmp_path / "logs")),
+                loop=SimpleNamespace(debug=False, act=True),
             _base_dir=tmp_path,
             model="copilot/gpt-5.4",
             routing={},
@@ -2265,6 +2365,15 @@ def test_smoke_test_module_current_image_generate_passes():
     assert err is None
 
 
+def test_smoke_test_module_package_init_uses_package_name():
+    from core.evolution import EvolutionEngine
+
+    module_path = _proj_root() / "core" / "plugin" / "__init__.py"
+    src = module_path.read_text(encoding="utf-8")
+    err = EvolutionEngine._smoke_test_module(src, module_path, _proj_root())
+    assert err is None
+
+
 def test_smoke_failure_summary_uses_single_header_line():
     from core.evolution import _smoke_failure_summary
 
@@ -2999,6 +3108,7 @@ async def _file_list_and_memory_search():
     from pathlib import Path
 
     from store.semantic import MemoryNode, SemanticMemory
+    from store.task import TaskStore
     from tools.file import file_list, file_read
     from tools.memory import memory_add_semantic, memory_search
 
@@ -3006,38 +3116,43 @@ async def _file_list_and_memory_search():
         root = Path(d)
         (root / 'a.txt').write_text('hello', encoding='utf-8')
         (root / 'sub').mkdir()
-        semantic = cast("Any", SemanticMemory(root))
-        ctx = _tool_ctx(workspace_dir=str(root), semantic=semantic)
-        listed = await file_list({'path': str(root)}, ctx)
-        assert 'a.txt' in listed.summary
-        assert 'sub/' in listed.summary
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            semantic = cast("Any", SemanticMemory(root))
+            ctx = _tool_ctx(workspace_dir=str(root), task_store=store, semantic=semantic)
+            listed = await file_list({'path': str(root)}, ctx)
+            assert 'a.txt' in listed.summary
+            assert 'sub/' in listed.summary
 
-        read_file = await file_read({'path': str(root / 'a.txt')}, ctx)
-        assert read_file.error is None
-        assert read_file.summary == 'hello'
+            read_file = await file_read({'path': str(root / 'a.txt')}, ctx)
+            assert read_file.error is None
+            assert read_file.summary == 'hello'
 
-        read_dir = await file_read({'path': str(root)}, ctx)
-        assert read_dir.error == 'NotAFile'
+            read_dir = await file_read({'path': str(root)}, ctx)
+            assert read_dir.error == 'NotAFile'
 
-        read_empty = await file_read({'path': ''}, ctx)
-        assert read_empty.error == 'EmptyPath'
+            read_empty = await file_read({'path': ''}, ctx)
+            assert read_empty.error == 'EmptyPath'
 
-        await memory_add_semantic({'title': 'bug fix note', 'body': 'reader tasks should use qwen3.6-plus', 'kind': 'fact'}, ctx)
-        semantic.upsert(MemoryNode(
-            id='task-note-1',
-            kind='fact',
-            title='legacy runtime primary carrier',
-            body='/root/.legacy-runtime/memory/main.sqlite',
-            tags=['task:33', 'path:/root/.legacy-runtime/memory'],
-        ))
-        found = await memory_search({'query': 'bug'}, ctx)
-        assert 'bug fix note' in found.summary
+            await memory_add_semantic({'title': 'bug fix note', 'body': 'reader tasks should use qwen3.6-plus', 'kind': 'fact'}, ctx)
+            semantic.upsert(MemoryNode(
+                id='task-note-1',
+                kind='fact',
+                title='legacy runtime primary carrier',
+                body='/root/.legacy-runtime/memory/main.sqlite',
+                tags=['task:33', 'path:/root/.legacy-runtime/memory'],
+            ))
+            found = await memory_search({'query': 'bug'}, ctx)
+            assert 'bug fix note' in found.summary
 
-        filtered = await memory_search({'query': 'legacy runtime', 'task_id': '33', 'path_prefix': '/root/.legacy-runtime/memory'}, ctx)
-        assert 'legacy runtime primary carrier' in filtered.summary
+            filtered = await memory_search({'query': 'legacy runtime', 'task_id': '33', 'path_prefix': '/root/.legacy-runtime/memory'}, ctx)
+            assert 'legacy runtime primary carrier' in filtered.summary
 
-        excluded = await memory_search({'query': 'legacy runtime', 'task_id': '34'}, ctx)
-        assert excluded.skipped is True
+            excluded = await memory_search({'query': 'legacy runtime', 'task_id': '34'}, ctx)
+            assert excluded.skipped is True
+        finally:
+            await store.close()
 
 
 def test_memory_add_semantic_disambiguates_duplicate_titles():
@@ -3048,32 +3163,38 @@ async def _memory_add_semantic_disambiguates_duplicate_titles():
     from pathlib import Path
 
     from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.memory import memory_add_semantic
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        semantic = cast("Any", SemanticMemory(root))
-        ctx = _tool_ctx(workspace_dir=str(root), semantic=semantic)
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        try:
+            semantic = cast("Any", SemanticMemory(root))
+            ctx = _tool_ctx(workspace_dir=str(root), task_store=store, semantic=semantic)
 
-        first = await memory_add_semantic(
-            {'title': '最小合法JSON输出约束', 'body': 'rule body', 'kind': 'rule'},
-            ctx,
-        )
-        second = await memory_add_semantic(
-            {'title': '最小合法JSON输出约束', 'body': 'constraint body', 'kind': 'constraint'},
-            ctx,
-        )
+            first = await memory_add_semantic(
+                {'title': '最小合法JSON输出约束', 'body': 'rule body', 'kind': 'rule'},
+                ctx,
+            )
+            second = await memory_add_semantic(
+                {'title': '最小合法JSON输出约束', 'body': 'constraint body', 'kind': 'constraint'},
+                ctx,
+            )
 
-        first_id = first.evidence.split('node_id=', 1)[1]
-        second_id = second.evidence.split('node_id=', 1)[1]
-        first_node = semantic.get(first_id)
-        second_node = semantic.get(second_id)
+            first_id = first.evidence.split('node_id=', 1)[1]
+            second_id = second.evidence.split('node_id=', 1)[1]
+            first_node = semantic.get(first_id)
+            second_node = semantic.get(second_id)
 
-        assert first_node is not None
-        assert second_node is not None
-        assert first_node.title == '最小合法JSON输出约束'
-        assert second_node.title.startswith('最小合法JSON输出约束 [constraint:')
-        assert first_node.title != second_node.title
+            assert first_node is not None
+            assert second_node is not None
+            assert first_node.title == '最小合法JSON输出约束'
+            assert second_node.title.startswith('最小合法JSON输出约束 [constraint:')
+            assert first_node.title != second_node.title
+        finally:
+            await store.close()
 
 
 def test_reflect_structural_disambiguates_duplicate_titles():
@@ -4127,7 +4248,7 @@ async def _consume_task_runtime_hints_surfaces_replan_and_routing_once():
         task = await _consume_task_runtime_hints(store, task, wm)
         assert task is not None
         assert task.next_step == "旧步骤"
-        assert task.model_tier == ""
+        assert task.model_tier == "repair"
         assert task.extras["last_replan_reflection_id"] == "mr-routing-tasksplit"
         assert task.extras["last_routing_reflection_id"] == "mr-routing-guard"
 
@@ -4135,12 +4256,12 @@ async def _consume_task_runtime_hints_surfaces_replan_and_routing_once():
         assert any(item["kind"] == "task_replan" for item in top)
         assert any(item["kind"] == "routing_guard" for item in top)
         assert any(item["kind"] == "task_replan" and "task.update" in item["content"] for item in top)
-        assert any(item["kind"] == "routing_guard" and "model_tier" in item["content"] for item in top)
+        assert any(item["kind"] == "routing_guard" and "已自动写回 task.model_tier=repair" in item["content"] for item in top)
 
         again = await _consume_task_runtime_hints(store, task, wm)
         assert again is not None
         assert again.next_step == "旧步骤"
-        assert again.model_tier == ""
+        assert again.model_tier == "repair"
         await store.close()
 
 
@@ -4229,10 +4350,10 @@ async def _consume_task_runtime_hints_surfaces_preferred_tier_hint():
         task = await store.get_task_by_id(task_id)
         task = await _consume_task_runtime_hints(store, task, wm)
         assert task is not None
-        assert task.model_tier == ""
+        assert task.model_tier == "reasoner"
         top = wm.get_top()
         assert any(item["kind"] == "routing_guard" and "reasoner" in item["content"] for item in top)
-        assert any(item["kind"] == "routing_guard" and "task.update" in item["content"] for item in top)
+        assert any(item["kind"] == "routing_guard" and "已自动写回 task.model_tier=reasoner" in item["content"] for item in top)
         await store.close()
 
 
@@ -4412,11 +4533,13 @@ def test_skill_registry():
     reg = SkillRegistry()
     # 冷启动场景
     skills = reg.match_for_context(wm_pressure=0.05, has_active_task=False,
-                                    has_next_step=False, failure_count=0, high_error_streak=0)
+                                    has_next_step=False, failure_count=0, high_error_streak=0,
+                                    max_inject=3)
     assert any(s.name == "runtime-bootstrap" for s in skills)
     # 失败场景
     skills_fail = reg.match_for_context(wm_pressure=0.5, has_active_task=True,
-                                         has_next_step=True, failure_count=3, high_error_streak=3)
+                                         has_next_step=True, failure_count=3, high_error_streak=3,
+                                         max_inject=3)
     assert any(s.name == "failure-reflection" for s in skills_fail)
 
 
@@ -4512,7 +4635,7 @@ state_rules: failure_signal >= 0.5 => 2.0
     )
 
     reg = SkillRegistry(skills_dir=skills_dir)
-    # max_inject=0：展示全部 catalog，LLM 自主感知并选择
+    # description 关键词只进入 catalog，不驱动机器侧选择。
     skills = reg.match_for_context(
         wm_pressure=0.1,
         has_active_task=True,
@@ -4522,7 +4645,7 @@ state_rules: failure_signal >= 0.5 => 2.0
         context_text="请你修复 bug，并顺手重构这个脚本",
         max_inject=0,
     )
-    assert any(s.name == "karpathy-coding-base" for s in skills)
+    assert skills == []
 
     interaction_skills = reg.match_for_context(
         wm_pressure=0.1,
@@ -4533,7 +4656,7 @@ state_rules: failure_signal >= 0.5 => 2.0
         context_text="我有点好奇，你觉得这里真正的分歧是什么？",
         max_inject=0,
     )
-    assert any(s.name == "interaction" for s in interaction_skills)
+    assert interaction_skills == []
 
     proactive_skills = reg.match_for_context(
         wm_pressure=0.1,
@@ -4544,7 +4667,7 @@ state_rules: failure_signal >= 0.5 => 2.0
         context_text="做完了当前任务，接下来你自己判断往前推进",
         max_inject=0,
     )
-    assert any(s.name == "proactive-work" for s in proactive_skills)
+    assert proactive_skills == []
 
     monitor_skills = reg.match_for_context(
         wm_pressure=0.1,
@@ -4768,10 +4891,11 @@ def test_workspace_skill_can_override_builtin_definition(tmp_path):
     from core.skill import SkillRegistry
 
     skills_dir = tmp_path / "skills"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "runtime.bootstrap.md").write_text(
+    pkg = skills_dir / "runtime-bootstrap"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: 覆盖版 bootstrap skill
 tags: custom
 triggers: 冷启动
@@ -4783,7 +4907,7 @@ state_bias: idle_only=0.2
     )
 
     reg = SkillRegistry(skills_dir=skills_dir)
-    skill = next(skill for skill in reg.all_skills() if skill.name == "runtime.bootstrap")
+    skill = next(skill for skill in reg.all_skills() if skill.name == "runtime-bootstrap")
 
     assert skill.origin == "workspace"
     assert skill.description == "覆盖版 bootstrap skill"
@@ -4839,12 +4963,12 @@ def test_seed_workspace_skills_updates_unmodified_workspace_copy(monkeypatch, tm
     import core.skill as skill_mod
 
     seed_dir = tmp_path / "seed"
-    seed_skill_dir = seed_dir / "runtime.bootstrap"
+    seed_skill_dir = seed_dir / "runtime-bootstrap"
     seed_skill_dir.mkdir(parents=True)
     seed_file = seed_skill_dir / "SKILL.md"
     seed_file.write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: seed v1
 ---
 seed v1
@@ -4855,13 +4979,13 @@ seed v1
     monkeypatch.setattr(skill_mod, "_seed_skills_dir", lambda: seed_dir)
 
     written = skill_mod.seed_workspace_skills(tmp_path)
-    target = tmp_path / "skills" / "runtime.bootstrap" / "SKILL.md"
+    target = tmp_path / "skills" / "runtime-bootstrap" / "SKILL.md"
     assert written == 1
     assert "seed v1" in target.read_text(encoding="utf-8")
 
     seed_file.write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: seed v2
 ---
 seed v2
@@ -4878,12 +5002,12 @@ def test_seed_workspace_skills_preserves_workspace_override_on_seed_change(monke
     import core.skill as skill_mod
 
     seed_dir = tmp_path / "seed"
-    seed_skill_dir = seed_dir / "runtime.bootstrap"
+    seed_skill_dir = seed_dir / "runtime-bootstrap"
     seed_skill_dir.mkdir(parents=True)
     seed_file = seed_skill_dir / "SKILL.md"
     seed_file.write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: seed v1
 ---
 seed v1
@@ -4894,10 +5018,10 @@ seed v1
     monkeypatch.setattr(skill_mod, "_seed_skills_dir", lambda: seed_dir)
 
     skill_mod.seed_workspace_skills(tmp_path)
-    target = tmp_path / "skills" / "runtime.bootstrap" / "SKILL.md"
+    target = tmp_path / "skills" / "runtime-bootstrap" / "SKILL.md"
     target.write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: workspace override
 ---
 workspace override
@@ -4907,7 +5031,7 @@ workspace override
 
     seed_file.write_text(
         """---
-name: runtime.bootstrap
+name: runtime-bootstrap
 description: seed v2
 ---
 seed v2
@@ -5268,12 +5392,10 @@ body.
         has_next_step=False,
         failure_count=0,
         wm_pressure=0.1,
-        max_inject=0,
+        max_inject=3,
     )
     names = [s.name for s in matched]
-    assert names[0] == "skill-z", "state 信号命中的 skill 应排 catalog 顶部"
-    # skill-x / skill-y 零分，排在后面（顺序不强制，但都在结果中）
-    assert set(names) == {"skill-x", "skill-y", "skill-z"}
+    assert names == ["skill-z"], "只返回 state 信号命中的 skill"
 
 
 def test_primary_skill_uses_last_applied_memory(tmp_path):
@@ -5353,19 +5475,16 @@ body.
         )
 
     reg = SkillRegistry(skills_dir=skills_dir)
-    total = len(reg.all_skills())
-
-    # wm_pressure=0.1 → wm_pressure_ratio=0.25 ≥ 0.1 → cc 得分 > 0，排第一
+    # wm_pressure=0.1 → wm_pressure_ratio=0.25 ≥ 0.1 → cc 得分 > 0
     result = reg.match_for_context(
         context_text="",
         has_active_task=False,
         has_next_step=False,
         failure_count=0,
         wm_pressure=0.1,
-        max_inject=0,
+        max_inject=3,
     )
-    assert len(result) == total, "max_inject=0 时返回所有 skill"
-    assert result[0].name == "cc", "state 信号命中的 skill 排第一"
+    assert [skill.name for skill in result] == ["cc"], "只返回 state 信号命中的 skill"
 
 
 def test_skill_registry_does_not_stick_any_skill_without_signal(tmp_path):
@@ -5408,22 +5527,13 @@ body.
 
 
 def test_builtin_skill_catalog_coverage():
-    """所有内置 skill 均应出现在 match_for_context(max_inject=0) 的返回列表中。"""
+    """所有内置 skill 均应出现在显式 catalog 中。"""
     from core.skill import SkillRegistry
 
     reg = SkillRegistry()
     all_names = {s.name for s in reg.all_skills()}
-    # max_inject=0 = 返回全量
-    result = reg.match_for_context(
-        context_text="",
-        has_active_task=False,
-        has_next_step=False,
-        failure_count=0,
-        wm_pressure=0.1,
-        max_inject=0,
-    )
-    result_names = {s.name for s in result}
-    assert result_names == all_names, "max_inject=0 时应包含所有内置 skill"
+    assert all_names
+    assert all_names == {s.name for s in reg.all_skills()}
 
 
 def test_skill_catalog_section_contains_activation_hint():
@@ -5469,6 +5579,7 @@ def test_runtime_bootstrap_selected_when_idle():
         has_next_step=False,
         failure_count=0,
         high_error_streak=0,
+        max_inject=3,
     )
     assert any(s.name == "runtime-bootstrap" for s in skills)
 
@@ -5510,5 +5621,3 @@ ghost body.
     )
     names = [s.name for s in result]
     assert "ghost-skill" not in names, "无信号时 last_applied 不能强行注入（score>0 guard）"
-
-

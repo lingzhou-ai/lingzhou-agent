@@ -1,9 +1,9 @@
 """core.config_models.advanced — emotion/evolution/soul/thresholds/gateway 配置模型。"""
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class EmotionConfig(BaseModel):
@@ -135,8 +135,7 @@ class EthosBaseline(BaseModel):
 class EthosConfig(BaseModel):
     """每 tick derive_ethos_state 使用的全部 Ethos 调整参数。
 
-    以 soul.ethos 嵌套在 SoulConfig 中。旧格式的扁平 ethos_* 字段由
-    SoulConfig._migrate_flat_ethos 自动升级，无需手动修改 lingzhou.json。
+    以 soul.ethos 嵌套在 SoulConfig 中，配置文件必须显式使用这一结构。
     """
     baseline: EthosBaseline = Field(
         default_factory=EthosBaseline,
@@ -185,24 +184,6 @@ class SoulConfig(BaseModel):
     )
     ethos: EthosConfig = Field(default_factory=EthosConfig)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_flat_ethos(cls, data: Any) -> Any:
-        """向后兼容：将旧格式的扁平 ethos_* 字段升级到 ethos: EthosConfig。"""
-        if not isinstance(data, dict):
-            return data
-        flat = {k: v for k, v in data.items() if k.startswith("ethos_")}
-        if not flat:
-            return data
-        merged = {k: v for k, v in data.items() if not k.startswith("ethos_")}
-        ethos: dict = dict(merged.pop("ethos", {}))
-        if "ethos_baseline" in flat:
-            ethos.setdefault("baseline", flat.pop("ethos_baseline"))
-        for k, v in flat.items():
-            ethos.setdefault(k[6:], v)   # strip "ethos_" prefix
-        merged["ethos"] = ethos
-        return merged
-
 
 class ThresholdsConfig(BaseModel):
     """内部感知驱动任务的触发阈值。
@@ -225,7 +206,7 @@ class ThresholdsConfig(BaseModel):
     )
     skill_failure_threshold: int = Field(
         default=3, ge=1,
-        description="连续评分函数的失败次数基准点；达到此值时 failure.reflection 技能得分达到峰值"
+        description="连续评分函数的失败次数基准点；达到此值时 failure-reflection 技能得分达到峰值"
     )
     skill_wm_pressure_threshold: float = Field(
         default=0.4, ge=0.0, le=1.0,
@@ -239,10 +220,6 @@ class ThresholdsConfig(BaseModel):
     shell_timeout: float = Field(
         default=30.0, gt=0,
         description="shell.run 默认超时（秒）；工具调用时可被 params.timeout 覆盖"
-    )
-    shell_max_output_chars: int = Field(
-        default=500, ge=0,
-        description="shell.run 默认输出预览字符数；工具调用时可被 params.max_output_chars 覆盖"
     )
     ask_evidence_budget: int = Field(
         default=2, ge=1,
@@ -440,5 +417,3 @@ class GatewayConfig(BaseModel):
         default=8765, ge=1, le=65535,
         description="webhook channel 监听端口",
     )
-
-

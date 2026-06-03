@@ -77,7 +77,13 @@ class ProcessManager:
 
     @classmethod
     def _state_root(cls) -> Path:
-        root = Path(os.environ.get("LINGZHOU_PROCESS_STATE_DIR") or (Path.home() / ".lingzhou/state/processes"))
+        env_root = os.environ.get("LINGZHOU_PROCESS_STATE_DIR")
+        if env_root:
+            root = Path(env_root).expanduser()
+        else:
+            from core.paths import data_dir
+
+            root = data_dir() / "state" / "processes"
         root.mkdir(parents=True, exist_ok=True)
         return root
 

@@ -5,14 +5,14 @@
 """
 from __future__ import annotations
 
-
-
-from .base import BaseAsyncStore
 from typing import TYPE_CHECKING
 
+from .base import BaseAsyncStore
+
 if TYPE_CHECKING:
-    import aiosqlite
     from collections.abc import Callable
+
+    import aiosqlite
 
 
 class LedgerStore(BaseAsyncStore):
@@ -34,16 +34,33 @@ class LedgerStore(BaseAsyncStore):
         source: str = "",
         accepted: bool = True,
         run_id: int = 0,
+        reason: str = "",
+        proposal_hash: str = "",
+        decision_basis: str = "",
     ) -> None:
         """追加一条生命史记录。
 
         accepted=False 表示该提案被免疫器官拒绝，仍记录以备审计。
         run_id=0 表示未关联具体 Run（非执行路径产生的提案）。
+        reason 记录拒绝/失败原因，proposal_hash 用于跨轮回放和去重。
+        decision_basis 是面向审计的简短判断依据，不记录内部思维链。
         """
         await self._db.execute(
-            "INSERT INTO life_ledger (op, key, value, scope, source, accepted, run_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (op, key, str(value) if value is not None else "", scope, source, int(accepted), run_id),
+            "INSERT INTO life_ledger "
+            "(op, key, value, scope, source, accepted, run_id, reason, proposal_hash, decision_basis) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                op,
+                key,
+                str(value) if value is not None else "",
+                scope,
+                source,
+                int(accepted),
+                run_id,
+                reason,
+                proposal_hash,
+                decision_basis,
+            ),
         )
         await self._db.commit()
 
@@ -53,7 +70,7 @@ class LedgerStore(BaseAsyncStore):
         供 LLM 感知近期状态变化，返回 list[dict] 便于序列化注入上下文。
         """
         async with self._db.execute(
-            "SELECT id, ts, op, key, value, scope, source, accepted, run_id "
+            "SELECT id, ts, op, key, value, scope, source, accepted, run_id, reason, proposal_hash, decision_basis "
             "FROM life_ledger ORDER BY id DESC LIMIT ?",
             (limit,),
         ) as cur:
@@ -69,6 +86,9 @@ class LedgerStore(BaseAsyncStore):
                 "source": row[6],
                 "accepted": bool(row[7]),
                 "run_id": row[8],
+                "reason": row[9],
+                "proposal_hash": row[10],
+                "decision_basis": row[11],
             }
             for row in rows
         ]
@@ -76,7 +96,7 @@ class LedgerStore(BaseAsyncStore):
     async def since(self, after_id: int, limit: int = 100) -> list[dict]:
         """读取 id > after_id 的记录（增量拉取，供 LLM 决策时对比前后变化）。"""
         async with self._db.execute(
-            "SELECT id, ts, op, key, value, scope, source, accepted, run_id "
+            "SELECT id, ts, op, key, value, scope, source, accepted, run_id, reason, proposal_hash, decision_basis "
             "FROM life_ledger WHERE id > ? ORDER BY id ASC LIMIT ?",
             (after_id, limit),
         ) as cur:
@@ -92,6 +112,9 @@ class LedgerStore(BaseAsyncStore):
                 "source": row[6],
                 "accepted": bool(row[7]),
                 "run_id": row[8],
+                "reason": row[9],
+                "proposal_hash": row[10],
+                "decision_basis": row[11],
             }
             for row in rows
         ]

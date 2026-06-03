@@ -1,4 +1,4 @@
-"""memory/semantic.py — 语义记忆（SemanticMemory）。
+"""store.semantic — 语义记忆（SemanticMemory）。
 
 双层存储设计：
   1. nodes/{id}.json  — 运行期语义节点源数据（首先写入，可重建）
@@ -19,11 +19,11 @@ import threading
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Callable
+    from pathlib import Path
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 
@@ -238,8 +238,13 @@ class SemanticMemory:
         raise RuntimeError("semantic index validation binding missing")
 
 
-from .impl import bind_semantic_memory
+def _bind_semantic_memory() -> None:
+    """延迟绑定：在模块构建完成后再把 db/query impl 注入到 SemanticMemory。"""
+    from .impl import bind_semantic_memory
 
-bind_semantic_memory(SemanticMemory)
+    bind_semantic_memory(SemanticMemory)
+
+
+_bind_semantic_memory()
 
 __all__ = ["MemoryNode", "SemanticMemory", "effective_activation"]

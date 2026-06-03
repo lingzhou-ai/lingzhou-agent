@@ -55,18 +55,23 @@ async def migrate_legacy_schema(db: aiosqlite.Connection) -> None:
         pass
 
     old_failures: list[dict[str, Any]] = []
-    try:
-        async with db.execute(
-            "SELECT id, kind, summary, context, task_id, created_at FROM failures"
-        ) as cur:
-            async for r in cur:
-                old_failures.append({
-                    "id": r[0], "kind": r[1], "summary": r[2] or "",
-                    "context": r[3] or "", "task_id": r[4] or "",
-                    "created_at": r[5] or "",
-                })
-    except Exception:
-        pass
+    async with db.execute(
+        "SELECT COUNT(*) FROM pragma_table_info('failures') WHERE name='data'"
+    ) as cur_f:
+        row_f = await cur_f.fetchone()
+        if not (row_f and row_f[0] > 0):
+            try:
+                async with db.execute(
+                    "SELECT id, kind, summary, context, task_id, created_at FROM failures"
+                ) as cur:
+                    async for r in cur:
+                        old_failures.append({
+                            "id": r[0], "kind": r[1], "summary": r[2] or "",
+                            "context": r[3] or "", "task_id": r[4] or "",
+                            "created_at": r[5] or "",
+                        })
+            except Exception:
+                pass
 
     await db.executescript("""
         DROP TABLE IF EXISTS tasks;
@@ -146,18 +151,32 @@ async def migrate_interlocutor_facts(db: aiosqlite.Connection) -> None:
     logger.info("[task_store] 已迁移 %d 条旧 person_profile facts 到 interlocutor", len(migrations))
 
 
-async def migrate_ledger_run_id(db: aiosqlite.Connection) -> None:
-    """为旧 life_ledger 表补加 run_id 列。"""
-    async with db.execute(
-        "SELECT COUNT(*) FROM pragma_table_info('life_ledger') WHERE name='run_id'"
-    ) as cur:
-        row = await cur.fetchone()
-        if not row or not row[0]:
-            await db.execute(
-                "ALTER TABLE life_ledger ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0"
-            )
-            await db.commit()
+async def migrate_ledger_audit_columns(db: aiosqlite.Connection) -> None:
+    """为旧 life_ledger 表补加审计字段。"""
+    for name, ddl in (
+        ("run_id", "ALTER TABLE life_ledger ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0"),
+        ("reason", "ALTER TABLE life_ledger ADD COLUMN reason TEXT NOT NULL DEFAULT ''"),
+        (
+            "proposal_hash",
+            "ALTER TABLE life_ledger ADD COLUMN proposal_hash TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "decision_basis",
+            "ALTER TABLE life_ledger ADD COLUMN decision_basis TEXT NOT NULL DEFAULT ''",
+        ),
+    ):
+        async with db.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('life_ledger') WHERE name=?",
+            (name,),
+        ) as cur:
+            row = await cur.fetchone()
+            if not row or not row[0]:
+                await db.execute(ddl)
+                await db.commit()
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_life_ledger_run_id ON life_ledger(run_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_life_ledger_proposal_hash ON life_ledger(proposal_hash)"
     )
     await db.commit()

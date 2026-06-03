@@ -251,13 +251,13 @@ def test_scoped_task_store_does_not_leak_unknown_methods():
     from core.loop.task.parallel import _ScopedTaskStore
 
     class _InnerStore:
-        async def delete_fact(self, key):
-            raise AssertionError(f"delete_fact 不应透传: {key}")
+        async def vacuum_database(self):
+            raise AssertionError("vacuum_database 不应透传")
 
     scoped = _ScopedTaskStore(_InnerStore(), cast("Any", SimpleNamespace(id=5, goal="pin")))
 
     with pytest.raises(AttributeError):
-        _ = scoped.delete_fact  # type: ignore[attr-defined]
+        _ = scoped.vacuum_database  # type: ignore[attr-defined]
 
 
 # ── 2. _run_one_task ctx 隔离测试 ─────────────────────────────────────────────
@@ -662,4 +662,3 @@ async def _dispatch_parallel_merges_results():
 
     # kind 正确
     assert result.kind == "execute_result"
-

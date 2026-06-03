@@ -86,6 +86,15 @@ class TaskStoreViewProtocol(Protocol):
         result_json: dict[str, Any] | None = None,
     ) -> None: ...
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None: ...
+    async def amend_task(
+        self,
+        task_id: int,
+        *,
+        title: str | None = None,
+        goal: str | None = None,
+        priority: str | None = None,
+        amendment_reason: str = "",
+    ) -> bool: ...
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None: ...
 
     # ── runs ────────────────────────────────────────────────────────────
@@ -168,6 +177,9 @@ class TaskStoreViewProtocol(Protocol):
         source: str = "",
         accepted: bool = True,
         run_id: int = 0,
+        reason: str = "",
+        proposal_hash: str = "",
+        decision_basis: str = "",
     ) -> None: ...
     async def ledger_recent(self, limit: int = 50) -> list[dict[str, Any]]: ...
     async def ledger_since(self, after_id: int, limit: int = 100) -> list[dict[str, Any]]: ...

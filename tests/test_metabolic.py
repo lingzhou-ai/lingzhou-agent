@@ -6,9 +6,68 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MetabolicEngine
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+def test_state_writer_create_task_returns_task_ledger_key():
+    asyncio.run(_state_writer_create_task_returns_task_ledger_key())
+
+
+async def _state_writer_create_task_returns_task_ledger_key():
+    from core.metabolic.proposal import StateProposal
+    from core.metabolic.state_writer import apply_state_write
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "state-writer.db")
+        await store.open()
+        try:
+            result = await apply_state_write(
+                store,
+                StateProposal(
+                    op="create_task",
+                    key="task:new",
+                    value={"title": "落地器创建任务", "goal": "验证 ledger key"},
+                    source="test/state_writer",
+                ),
+                accepted=True,
+            )
+
+            assert result.result == 1
+            assert result.ledger_key == "task:1"
+            assert result.accepted is True
+            task = await store.get_task_by_id(1)
+            assert task is not None
+            assert task.title == "落地器创建任务"
+        finally:
+            await store.close()
+
+
+def test_state_writer_unknown_op_returns_rejected_result():
+    asyncio.run(_state_writer_unknown_op_returns_rejected_result())
+
+
+async def _state_writer_unknown_op_returns_rejected_result():
+    from core.metabolic.proposal import StateProposal
+    from core.metabolic.state_writer import apply_state_write
+
+    class _EmptyStore:
+        pass
+
+    result = await apply_state_write(
+        _EmptyStore(),  # type: ignore[arg-type]
+        StateProposal(op="unknown_op", key="demo", value="", source="test/state_writer"),
+        accepted=True,
+    )
+
+    assert result.result is None
+    assert result.ledger_key == "demo"
+    assert result.accepted is False
+    assert result.reason == "unknown_op"
 
 
 def test_metabolic_submit_set_fact_writes_to_store_and_ledger():
@@ -43,6 +102,8 @@ async def _metabolic_submit_set_fact_writes_to_store_and_ledger():
             last = rows[0]
             assert last["key"] == "test:key"
             assert last["accepted"] is True
+            assert last["reason"] == ""
+            assert len(last["proposal_hash"]) == 64
         finally:
             await store.close()
 
@@ -80,6 +141,8 @@ async def _metabolic_submit_blocked_key_skips_write_but_records_ledger():
             assert rows, "账本应有记录（即使被拒绝）"
             last = rows[0]
             assert last["accepted"] is False, "账本应记录 accepted=False"
+            assert last["reason"], "免疫拒绝应记录原因"
+            assert len(last["proposal_hash"]) == 64
         finally:
             await store.close()
 
@@ -98,16 +161,334 @@ async def _metabolic_submit_unknown_op_does_not_crash():
         await store.open()
         try:
             engine = MetabolicEngine(store)
-            # 未知 op，免疫放行但落地跳过（仍记账本）
             proposal = StateProposal(
-                op="create_task",
-                key="task-1",
+                op="unknown_op",
+                key="unknown",
                 value={"title": "test"},
                 scope="system",
                 source="test",
             )
-            # 不崩溃即通过
             await engine.submit(proposal)
+
+            rows = await store.ledger_recent(limit=5)
+            assert rows
+            assert rows[0]["op"] == "unknown_op"
+            assert rows[0]["key"] == "unknown"
+            assert rows[0]["accepted"] is False
+            assert rows[0]["reason"] == "unknown_op"
+            assert len(rows[0]["proposal_hash"]) == 64
+        finally:
+            await store.close()
+
+
+def test_soul_change_lifecycle_writes_soul_fact_and_ledger():
+    asyncio.run(_soul_change_lifecycle_writes_soul_fact_and_ledger())
+
+
+async def _soul_change_lifecycle_writes_soul_fact_and_ledger() -> None:
+    from core.metabolic import set_soul_fact
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            ok = await set_soul_fact(
+                store,
+                key="soul:test_metric",
+                value='{"a": 1}',
+                scope="system",
+                source="test/soul_change",
+                decision_basis="unit test",
+            )
+            assert ok is True
+
+            raw, found = await store.get_fact("soul:test_metric")
+            assert found
+            assert raw == '{"a": 1}'
+
+            rows = await store.ledger_recent(limit=5)
+            assert rows
+            last = rows[0]
+            assert last["op"] == "soul_change"
+            assert last["key"] == "soul:test_metric"
+            assert last["accepted"] is True
+            assert last["source"] == "test/soul_change"
+        finally:
+            await store.close()
+
+
+def test_soul_change_rejects_non_soul_key():
+    asyncio.run(_soul_change_rejects_non_soul_key())
+
+
+async def _soul_change_rejects_non_soul_key() -> None:
+    from core.metabolic import set_soul_fact
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            with pytest.raises(ValueError):
+                await set_soul_fact(
+                    store,
+                    key="metric:test",
+                    value="bad",
+                    source="test/soul_change",
+                )
+        finally:
+            await store.close()
+
+
+def test_run_lifecycle_add_run_through_metabolic():
+    asyncio.run(_run_lifecycle_add_run_through_metabolic())
+
+
+async def _run_lifecycle_add_run_through_metabolic() -> None:
+    from core.metabolic import add_run
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            run_id = await add_run(
+                store,
+                task_id=3,
+                run_type="judge",
+                worker_type="reader-worker",
+                status="running",
+                input_json={"decision": "act"},
+                tool_name="demo.tool",
+                source="test/run_lifecycle/add",
+                decision_basis="unit_test",
+            )
+            assert run_id > 0
+
+            run = await store.get_run_by_id(run_id)
+            assert run is not None
+            assert run.task_id == 3
+            assert run.run_type == "judge"
+            assert run.worker_type == "reader-worker"
+            assert run.status == "running"
+
+            rows = await store.ledger_recent(limit=5)
+            assert rows
+            assert rows[0]["op"] == "add_run"
+            assert rows[0]["key"].startswith("run:")
+            assert rows[0]["key"].endswith(str(run_id))
+            assert rows[0]["source"] == "test/run_lifecycle/add"
+            assert rows[0]["accepted"] is True
+        finally:
+            await store.close()
+
+
+def test_run_lifecycle_update_run_through_metabolic():
+    asyncio.run(_run_lifecycle_update_run_through_metabolic())
+
+
+async def _run_lifecycle_update_run_through_metabolic() -> None:
+    from core.metabolic import add_run, update_run
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            run_id = await add_run(
+                store,
+                task_id=7,
+                run_type="tool_chain",
+                worker_type="tool-chain-worker",
+                status="running",
+                source="test/run_lifecycle/update_before",
+            )
+            await update_run(
+                store,
+                run_id,
+                status="succeeded",
+                output_json={"ok": True},
+                log_text="done",
+                progress="100%",
+                source="test/run_lifecycle/update",
+                proposal_run_id=run_id,
+                decision_basis="unit_test",
+            )
+
+            run = await store.get_run_by_id(run_id)
+            assert run is not None
+            assert run.status == "succeeded"
+            assert run.output_json == {"ok": True}
+            assert run.log_text == "done"
+            assert run.progress == "100%"
+            assert run.completed_at
+
+            rows = await store.ledger_recent(limit=5)
+            assert len(rows) >= 2
+            assert any(row["op"] == "update_run" and row["key"] == f"run:{run_id}" for row in rows)
+            assert any(row["op"] == "update_run" and row["source"] == "test/run_lifecycle/update" for row in rows)
+            assert rows[0]["accepted"] is True
+        finally:
+            await store.close()
+
+
+def test_metabolic_submit_failed_write_records_ledger_and_reraises():
+    asyncio.run(_metabolic_submit_failed_write_records_ledger_and_reraises())
+
+
+async def _metabolic_submit_failed_write_records_ledger_and_reraises():
+    from core.metabolic import MetabolicEngine
+    from core.metabolic.proposal import StateProposal
+
+    class _FailingStore:
+        def __init__(self) -> None:
+            self.ledger_rows: list[dict[str, Any]] = []
+
+        async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
+            raise RuntimeError(f"write failed task={task_id}")
+
+        async def ledger_append(
+            self,
+            op: str,
+            key: str,
+            value: str,
+            *,
+            scope: str = "task",
+            source: str = "",
+            accepted: bool = True,
+            run_id: int = 0,
+            reason: str = "",
+            proposal_hash: str = "",
+            decision_basis: str = "",
+        ) -> None:
+            self.ledger_rows.append(
+                {
+                    "op": op,
+                    "key": key,
+                    "value": value,
+                    "scope": scope,
+                    "source": source,
+                    "accepted": accepted,
+                    "run_id": run_id,
+                    "reason": reason,
+                    "proposal_hash": proposal_hash,
+                    "decision_basis": decision_basis,
+                }
+            )
+
+    store = _FailingStore()
+    engine = MetabolicEngine(store)  # type: ignore[arg-type]
+    proposal = StateProposal(
+        op="update_task_data",
+        key="7",
+        value={"inbox_messages": ["hi"]},
+        scope="task",
+        source="test/failure",
+        run_id=42,
+    )
+
+    try:
+        await engine.submit(proposal)
+    except RuntimeError as exc:
+        assert "write failed task=7" in str(exc)
+    else:
+        raise AssertionError("底层写入失败必须重新抛出")
+
+    assert store.ledger_rows == [
+        {
+            "op": "update_task_data",
+            "key": "7",
+            "value": '{"inbox_messages": ["hi"]}',
+            "scope": "task",
+            "source": "test/failure",
+            "accepted": False,
+            "run_id": 42,
+            "reason": "write_error:RuntimeError:write failed task=7",
+            "proposal_hash": store.ledger_rows[0]["proposal_hash"],
+            "decision_basis": "",
+        }
+    ]
+    assert len(store.ledger_rows[0]["proposal_hash"]) == 64
+
+
+def test_metabolic_submit_delete_fact_removes_store_value_and_records_ledger():
+    asyncio.run(_metabolic_submit_delete_fact_removes_store_value_and_records_ledger())
+
+
+async def _metabolic_submit_delete_fact_removes_store_value_and_records_ledger():
+    from core.metabolic import MetabolicEngine
+    from core.metabolic.proposal import StateProposal
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            await store.set_fact("focus:current_task_id", "7", scope="system")
+            engine = MetabolicEngine(store)
+            await engine.submit(StateProposal(
+                op="delete_fact",
+                key="focus:current_task_id",
+                value="",
+                scope="system",
+                source="test/delete",
+            ))
+
+            _, found = await store.get_fact("focus:current_task_id")
+            assert not found
+            rows = await store.ledger_recent(limit=5)
+            assert rows
+            top = rows[0]
+            assert top["op"] == "delete_fact"
+            assert top["key"] == "focus:current_task_id"
+            assert top["source"] == "test/delete"
+            assert top["accepted"] is True
+        finally:
+            await store.close()
+
+
+def test_evolution_breaker_fact_goes_through_metabolic_ledger():
+    asyncio.run(_evolution_breaker_fact_goes_through_metabolic_ledger())
+
+
+async def _evolution_breaker_fact_goes_through_metabolic_ledger():
+    from types import SimpleNamespace
+
+    from core.evolution.breaker import _update_target_breaker_state
+    from core.metabolic import MetabolicEngine
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            engine = SimpleNamespace(
+                _breaker_fail_threshold=1,
+                _breaker_escalate_threshold=9,
+                _breaker_cooldown_seconds=60,
+                _breaker_global_cooldown_seconds=600,
+            )
+            ctx = SimpleNamespace(task_store=store, metabolic=MetabolicEngine(store))
+
+            await _update_target_breaker_state(
+                engine,
+                ctx,
+                target="demo.tool",
+                success=False,
+                reason="regression",
+            )
+
+            raw, found = await store.get_fact("evolution:breaker:demo.tool")
+            assert found
+            assert "regression" in raw
+            rows = await store.ledger_recent(limit=3)
+            assert rows
+            top = rows[0]
+            assert top["op"] == "set_fact"
+            assert top["key"] == "evolution:breaker:demo.tool"
+            assert top["source"] == "evolution/breaker"
+            assert top["accepted"] is True
         finally:
             await store.close()
 
@@ -401,12 +782,12 @@ def test_state_proposal_has_run_id_field():
     assert p2.run_id == 42
 
 
-def test_ledger_append_stores_run_id():
-    """LedgerStore.append 写入 run_id，recent() 可读回。"""
-    asyncio.run(_ledger_append_stores_run_id())
+def test_ledger_append_stores_audit_fields():
+    """LedgerStore.append 写入审计字段，recent() 可读回。"""
+    asyncio.run(_ledger_append_stores_audit_fields())
 
 
-async def _ledger_append_stores_run_id():
+async def _ledger_append_stores_audit_fields():
     import tempfile
     from pathlib import Path
 
@@ -418,12 +799,21 @@ async def _ledger_append_stores_run_id():
         try:
             await store.ledger_append(
                 "set_fact", "run_id_test_key", "run_id_test_val",
-                scope="task", source="pytest", accepted=True, run_id=99,
+                scope="task",
+                source="pytest",
+                accepted=True,
+                run_id=99,
+                reason="pytest-reason",
+                proposal_hash="abc123",
+                decision_basis="observed user request and task state",
             )
             rows = await store.ledger_recent(limit=5)
             assert rows, "账本应有记录"
             last = rows[0]
             assert last.get("run_id") == 99, f"run_id 应为 99，实际 {last.get('run_id')!r}"
+            assert last.get("reason") == "pytest-reason"
+            assert last.get("proposal_hash") == "abc123"
+            assert last.get("decision_basis") == "observed user request and task state"
         finally:
             await store.close()
 
@@ -453,22 +843,26 @@ async def _metabolic_engine_propagates_run_id_to_ledger():
                 scope="task",
                 source="pytest",
                 run_id=77,
+                extras={"decision_basis": "run output changed this durable fact"},
             )
             await engine.submit(proposal)
             rows = await store.ledger_recent(limit=5)
             assert rows, "账本应有记录"
             last = rows[0]
             assert last.get("run_id") == 77, f"run_id 应为 77，实际 {last.get('run_id')!r}"
+            assert last.get("reason") == ""
+            assert len(last.get("proposal_hash") or "") == 64
+            assert last.get("decision_basis") == "run output changed this durable fact"
         finally:
             await store.close()
 
 
-def test_life_ledger_migration_adds_run_id_column():
-    """旧 DB（无 run_id 列）在 open() 后应自动迁移增加该列。"""
-    asyncio.run(_life_ledger_migration_adds_run_id_column())
+def test_life_ledger_migration_adds_audit_columns():
+    """旧 DB（无审计列）在 open() 后应自动迁移增加这些列。"""
+    asyncio.run(_life_ledger_migration_adds_audit_columns())
 
 
-async def _life_ledger_migration_adds_run_id_column():
+async def _life_ledger_migration_adds_audit_columns():
     import tempfile
     from pathlib import Path
 
@@ -478,7 +872,7 @@ async def _life_ledger_migration_adds_run_id_column():
 
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "old.db"
-        # 手工建一张没有 run_id 列的 life_ledger 表，模拟旧 DB
+        # 手工建一张没有审计列的 life_ledger 表，模拟旧 DB
         async with aiosqlite.connect(str(db_path)) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS life_ledger (
@@ -494,7 +888,7 @@ async def _life_ledger_migration_adds_run_id_column():
             """)
             await db.commit()
 
-        # 正常 open() 应触发 _migrate_ledger_run_id
+        # 正常 open() 应触发审计列迁移
         store = TaskStore(db_path)
         await store.open()
         try:
@@ -502,9 +896,15 @@ async def _life_ledger_migration_adds_run_id_column():
             await store.ledger_append(
                 "set_fact", "migration_key", "migration_val",
                 run_id=55,
+                reason="migration-reason",
+                proposal_hash="hash55",
+                decision_basis="migration basis",
             )
             rows = await store.ledger_recent(limit=5)
             assert rows and rows[0].get("run_id") == 55, \
                 f"迁移后 run_id 应可读，实际 {rows[0] if rows else '[]'!r}"
+            assert rows[0].get("reason") == "migration-reason"
+            assert rows[0].get("proposal_hash") == "hash55"
+            assert rows[0].get("decision_basis") == "migration basis"
         finally:
             await store.close()

@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from core.metabolic import MetabolicEngine, StateProposal
+from core.metabolic import add_semantic_memory, submit_fact
 from memory.consolidation import (
     build_consolidation_plan,
     build_daily_summary_node,
@@ -21,31 +21,41 @@ from ..cycle.focus import resolve_focus_task
 _log = logging.getLogger("lingzhou.loop")
 
 
+def _describe_elapsed_seconds(seconds: float) -> str:
+    """把时间差转成人类可读中文粗略区间，供自驱状态观察。"""
+    secs = int(max(0, seconds))
+    if secs < 60:
+        return f"{secs} 秒前"
+    if secs < 3600:
+        return f"{secs // 60} 分钟前"
+    if secs < 86400:
+        return f"{secs // 3600} 小时前"
+    return f"{secs // 86400} 天前"
+
+
 async def emit_self_drive_signal(loop: Any) -> None:
-    """自驱力引擎：空闲或探索卡住时注入自主探索信号到 WM。"""
-    # 只有 global:* 链才负责全局空转探索；chat/task 链有专职工作，不触发自驱
+    """将自驱意图转为可观察、可裁决的工作记忆事件。"""
+    # 只有 global:* 链负责全局空转探索；chat/task 链有专职执行，不触发自驱事件。
     chain_key = getattr(loop, "_current_chain_key", "")
     if chain_key and not chain_key.startswith("global:"):
         return
 
-    # 跨链共享冷却（120s）：防止多个 global:* 链并发注入重复自驱 WM 信号
+    # 跨链共享冷却（120s）：防止多个 global:* 链重复注入同类自驱事件。
     now_mono = time.monotonic()
     if now_mono - loop._self_drive._last_injected_at < 120.0:
         return
 
-    # 检查是否有真的活跃任务（非 waiting 状态）
+    # 先判定当前是否已有真实工作，避免把忙碌状态误判为空闲并重复发信号。
     has_real_work = (
         loop._last_decision == "act"
         and loop._last_action_tool
         and not loop._last_action_tool.startswith("task.update")
     )
-    # 补充检查：LLM 可能连续做 wait 决策等待子代理完成，此时 last_decision != "act"
-    # 但 task store 里确实有活跃任务或运行中的 run，不应视为空闲
+    # 补充检查：可能处于 wait/观察期，但 task_store 或 run 仍有进行中的状态。
     if not has_real_work:
         active = await resolve_focus_task(loop)
         if active is not None:
-            # source=self_drive 任务若 next_step 指向空转/监听，不视为真实工作，
-            # 以防该任务一直挂着 in_progress 却不做事，导致自驱信号被永久压制。
+            # 自驱任务如果长期仅更新 next_step 但无实质变化，不应等同于真实推进工作。
             is_stalled_sd = (
                 getattr(active, "source", None) == "self_drive"
                 and loop._last_action_tool
@@ -57,7 +67,7 @@ async def emit_self_drive_signal(loop: Any) -> None:
             running_runs = await loop._task_store.list_runs(status="running", limit=1)
             has_real_work = bool(running_runs)
 
-    # 检查是否探索卡住（streak 超过窗口大小 + 2，使用公开属性）
+    # 探索是否出现停滞（重复行为超过策略窗口）会提高自驱触发概率。
     stuck_gate = loop._cfg.loop.behavior_streak_threshold + 2
     explore_stuck = (
         loop._behavior.list_streak_count >= stuck_gate
@@ -74,7 +84,7 @@ async def emit_self_drive_signal(loop: Any) -> None:
     if not signal.should_explore:
         return
 
-    # 感知上下文：未完成 self_drive 任务数 + 上次完成时间，注入 WM 供 LLM 感知决策
+    # 为 LLM 提供可裁决上下文：待处理自驱任务数 + 最近一次自驱完成时长。
     runnable = await loop._task_store.list_runnable_tasks(limit=20)
     pending_sd = [task for task in runnable if getattr(task, "source", None) == "self_drive"]
     recent_done = await loop._task_store.list_tasks(status="done", limit=10)
@@ -84,15 +94,7 @@ async def emit_self_drive_signal(loop: Any) -> None:
             continue
         try:
             ts = datetime.fromisoformat(item.created_at.replace("Z", "+00:00")).timestamp()
-            secs = int(time.time() - ts)
-            if secs < 60:
-                last_done_ago = f"{secs} 秒前"
-            elif secs < 3600:
-                last_done_ago = f"{secs // 60} 分钟前"
-            elif secs < 86400:
-                last_done_ago = f"{secs // 3600} 小时前"
-            else:
-                last_done_ago = f"{secs // 86400} 天前"
+            last_done_ago = _describe_elapsed_seconds(time.time() - ts)
         except Exception:
             pass
         break
@@ -102,29 +104,47 @@ async def emit_self_drive_signal(loop: Any) -> None:
     )
     if signal.drive_type == "consolidate":
         drive_content = (
-            f"[自驱信号·整合] 空闲 {loop._behavior.wait_streak} 轮，"
-            f"自驱力 C={signal.curiosity_score:.2f}，模式=内聚整合。\n"
-            f"触发原因: {signal.rationale}\n"
-            f"待运行 self_drive 任务: {len(pending_sd)} 个；上次 self_drive 完成: {last_done_ago}\n"
-            "本次请优先整合与巩固已有知识，而非开辟新方向：\n"
-            "· 回顾最近几次任务的结论，写入语义记忆或情节记忆\n"
-            "· 检查并更新 SOUL.md / DREAMS.md 的认知偏差\n"
-            "· 检视近期失败，提取可复用的错误模式\n"
-            "若认为当前状态仍需探索，可忽略此整合信号。"
+            "[自驱事件]\n"
+            "type: consolidation\n"
+            "scope: observation\n"
+            f"idle_ticks: {loop._behavior.wait_streak}\n"
+            f"curiosity_score: {signal.curiosity_score:.2f}\n"
+            f"signal_rationale: {signal.rationale}\n"
+            f"pending_self_drive_tasks: {len(pending_sd)}\n"
+            f"last_self_drive_done: {last_done_ago}\n"
+            "observed_need: recent traces may benefit from consolidation before new exploration.\n"
+            "proposal:\n"
+            "- consolidate_memory: 把近期自驱观察结果沉淀为可复用经验。\n"
+            "- inspect_failures: 评估重复失败是否是可提炼的连续性边界。\n"
+            "open_questions:\n"
+            "- 哪些近期任务结论已经稳定，值得写入长期记忆？\n"
+            "- 哪些失败或重复模式需要被提炼成可复用经验？\n"
+            "- SOUL.md / DREAMS.md 是否出现与实际行为不一致的认知偏差？\n"
+            "available_directions: consolidate_memory | inspect_failures | update_identity_reflection | ignore_signal"
         )
     else:
         drive_content = (
-            f"[自驱信号] 空闲 {loop._behavior.wait_streak} 轮，"
-            f"自驱力 C={signal.curiosity_score:.2f}。\n"
-            f"触发原因: {signal.rationale}\n"
-            f"建议方向: {signal.suggested_domain or 'self_evolution'}\n"
-            f"待运行 self_drive 任务: {len(pending_sd)} 个；上次 self_drive 完成: {last_done_ago}\n"
-            f"候选任务: {task_template['title']}\n"
-            f"目标: {task_template['goal']}\n"
-            f"下一步建议: {task_template.get('next_step', '(未提供)')}\n"
-            "若认可这次自驱触发，可调用 task.add 创建任务；"
-            "建议显式设置 source=self_drive，以便后续去重与追踪。\n"
-            "本轮探索请优先读全相关文件（不加 limit），感知完整后再决定存储哪些结论。"
+            "[自驱事件]\n"
+            "type: exploration\n"
+            "scope: observation\n"
+            f"idle_ticks: {loop._behavior.wait_streak}\n"
+            f"curiosity_score: {signal.curiosity_score:.2f}\n"
+            f"signal_rationale: {signal.rationale}\n"
+            f"candidate_domain: {signal.suggested_domain or 'self_evolution'}\n"
+            f"pending_self_drive_tasks: {len(pending_sd)}\n"
+            f"last_self_drive_done: {last_done_ago}\n"
+            f"candidate_task_title: {task_template['title']}\n"
+            f"candidate_task_goal: {task_template['goal']}\n"
+            f"candidate_next_step: {task_template.get('next_step', '(未提供)')}\n"
+            "proposal:\n"
+            "- create_task: 为候选方向建立一次轻量探索任务。\n"
+            "- observe_more: 先补证据再决策。\n"
+            "- consolidate_first: 先完成 consolidation，再重评。\n"
+            "open_questions:\n"
+            "- 这个候选方向是否真的能改善当前生命连续性或能力边界？\n"
+            "- 是否已有未完成 self_drive 任务覆盖同一问题？\n"
+            "- 当前证据是否足够创建任务，还是应先观察、等待或忽略？\n"
+            "available_directions: create_self_drive_task | gather_evidence | consolidate_first | ignore_signal"
         )
     loop._wm.add(WMItem(
         kind="self_drive",
@@ -132,10 +152,8 @@ async def emit_self_drive_signal(loop: Any) -> None:
         priority=loop._cfg.thresholds.wm_pri_signal,
     ))
 
-    # 更新共享冷却时间戳，阻止其他 global 链在 120s 内重复注入
+    # 更新共享冷却时间戳，避免 global 链重复注入同类事件。
     loop._self_drive._last_injected_at = time.monotonic()
-    # 自驱探索：强制下一 tick 使用 high thinking 以保障推理深度
-    loop._pending_thinking_override = "high"
 
     _log.info(
         "[self_drive] 注入 WM 信号 C=%.2f domain=%s idle=%d rationale=%s",
@@ -173,14 +191,21 @@ async def emit_curiosity_signal(loop: Any, ethos_state: Any) -> None:
         len(pending_curiosity),
     )
 
-    # 无待处理的好奇心任务时，向 WM 注入信号，让 LLM 感知到好奇心触发并决定是否创建任务
+    # 无待处理的好奇心任务时，向 WM 注入事件，让 LLM 感知触发原因并自行裁决
     if not pending_curiosity:
         loop._wm.add(WMItem(
             kind="curiosity",
             content=(
-                f"[好奇心] 已空闲 {loop._idle_cycles} 轮，好奇心 {curiosity:.2f} "
-                f"> 阈值 {cfg.thresholds.curiosity_idle_task}。"
-                "建议发起自主探索任务（task.add source=curiosity）或深化当前认知。"
+                "[好奇心事件]\n"
+                f"idle_cycles: {loop._idle_cycles}\n"
+                f"curiosity: {curiosity:.2f}\n"
+                f"threshold: {cfg.thresholds.curiosity_idle_task}\n"
+                f"pending_curiosity_tasks: {len(pending_curiosity)}\n"
+                "observation: curiosity is above threshold while no curiosity task is pending.\n"
+                "open_questions:\n"
+                "- 当前是否存在值得主动探索或深化的未解问题？\n"
+                "- 是否应保持安静，等待外部输入或更多证据？\n"
+                "available_directions: create_curiosity_task | deepen_current_cognition | wait"
             ),
             priority=0.7,
         ))
@@ -204,20 +229,30 @@ async def consolidate(loop: Any, active_task: Any) -> None:
         loop._episodic.record(role="consolidation", content=plan.episodic_summary, task_id=task_id)
 
     for fact in plan.facts:
-        metabolic = getattr(loop, "_metabolic", None)
-        if metabolic is None:
-            metabolic = MetabolicEngine(loop._task_store)
-        await metabolic.submit(StateProposal(
-            op="set_fact",
+        await submit_fact(
+            loop,
             key=fact.key,
             value=fact.value,
             scope=fact.scope,
             source="loop/consolidation",
-        ))
+        )
 
     for node in plan.semantic_nodes:
         merged = merge_promoted_node(loop._semantic.get(node.id), node, memory_cfg=loop._cfg.memory)
-        loop._semantic.upsert(merged)
+        await add_semantic_memory(
+            loop,
+            node_id=merged.id,
+            kind=merged.kind,
+            title=merged.title,
+            body=merged.body,
+            activation=merged.activation,
+            valence=merged.valence,
+            importance=getattr(merged, "importance", 0.0),
+            tags=merged.tags or [],
+            created_at=merged.created_at,
+            source="loop/consolidation",
+            decision_basis=f"consolidation_plan_node:{node.id}",
+        )
 
     today_stamp = datetime.now(UTC).strftime("%Y-%m-%d")
     week_key = current_week_key()
@@ -236,14 +271,27 @@ async def consolidate(loop: Any, active_task: Any) -> None:
             existing=loop._semantic.get(f"daily-summary-{week_key}"),
         )
         if daily_summary_node is not None:
-            loop._semantic.upsert(daily_summary_node)
-        await (getattr(loop, "_metabolic", None) or MetabolicEngine(loop._task_store)).submit(StateProposal(
-            op="set_fact",
+            await add_semantic_memory(
+                loop,
+                node_id=daily_summary_node.id,
+                kind=daily_summary_node.kind,
+                title=daily_summary_node.title,
+                body=daily_summary_node.body,
+                activation=daily_summary_node.activation,
+                valence=daily_summary_node.valence,
+                importance=daily_summary_node.importance,
+                tags=daily_summary_node.tags or [],
+                created_at=daily_summary_node.created_at,
+                source="loop/daily_summary",
+                decision_basis="consolidation_daily_summary",
+            )
+        await submit_fact(
+            loop,
             key=daily_summary_marker,
             value="1",
             scope="system",
             source="loop/daily_summary",
-        ))
+        )
 
     # 保留身份锚点(bootstrap_identity)和自我感知信号(self_awareness)
     # self_awareness 包含行为循环检测等信号，清除后 LLM 会失去对空转的感知

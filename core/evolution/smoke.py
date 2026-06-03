@@ -5,11 +5,13 @@ import json
 import subprocess
 import sys
 import textwrap
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from core.metabolic import StateProposal
+from core.metabolic import delete_fact, submit_fact
+from core.paths import generated_dir
 
 from .types import (
     EvolutionResult,
@@ -53,7 +55,10 @@ def smoke_test_module(
 
     snippet = SMOKE_TESTS.get(rel_path, FALLBACK_SNIPPET)
 
-    real_module_name = rel_path.removesuffix(".py").replace("/", ".")
+    if rel_path.endswith("/__init__.py"):
+        real_module_name = rel_path.removesuffix("/__init__.py").replace("/", ".")
+    else:
+        real_module_name = rel_path.removesuffix(".py").replace("/", ".")
     pkg_parts = real_module_name.rsplit(".", 1)
     parent_pkg = pkg_parts[0] if len(pkg_parts) > 1 else ""
 
@@ -80,7 +85,7 @@ def smoke_test_module(
     except Exception:
         _view_protocols_file = str((root / "tools" / "view_protocols.py").resolve())
 
-    staging_path = module_path.parent / f"_smoke_staging_{module_path.name}"
+    staging_path = generated_dir() / f"_smoke_staging_{module_path.stem}_{uuid.uuid4().hex}{module_path.suffix}"
     try:
         staging_path.write_text(staged_source, encoding="utf-8")
 
@@ -233,14 +238,12 @@ async def write_pending_verification_fact(
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "baseline": baseline,
     }
-    await ctx.metabolic.submit(
-        StateProposal(
-            op="set_fact",
-            key=_verification_fact_key(target),
-            value=json.dumps(payload, ensure_ascii=False),
-            scope="system",
-            source="evolution/verify_setup",
-        )
+    await submit_fact(
+        ctx,
+        key=_verification_fact_key(target),
+        value=json.dumps(payload, ensure_ascii=False),
+        scope="system",
+        source="evolution/verify_setup",
     )
 
 
@@ -253,11 +256,11 @@ async def process_pending_verifications(engine: EvolutionEngine, ctx: ToolContex
         try:
             payload = json.loads(raw)
         except Exception:
-            await ctx.task_store.delete_fact(key)
+            await delete_fact(ctx, key=key, source="evolution/verify")
             continue
         target = str(payload.get("target") or "")
         if not target:
-            await ctx.task_store.delete_fact(key)
+            await delete_fact(ctx, key=key, source="evolution/verify")
             continue
         since = _parse_ts(str(payload.get("created_at") or ""))
         observed = await gather_target_validation_metrics(engine, ctx, target=target, since=since)
@@ -276,7 +279,7 @@ async def process_pending_verifications(engine: EvolutionEngine, ctx: ToolContex
                 success=True,
                 reason=f"verification observed={observed}",
             )
-            await ctx.task_store.delete_fact(key)
+            await delete_fact(ctx, key=key, source="evolution/verify")
             results.append(EvolutionResult(success=True, target=f"verify:{target}", reason=f"observed={observed}"))
             continue
 
@@ -299,7 +302,7 @@ async def process_pending_verifications(engine: EvolutionEngine, ctx: ToolContex
             success=False,
             reason=f"verification regressed observed={observed}",
         )
-        await ctx.task_store.delete_fact(key)
+        await delete_fact(ctx, key=key, source="evolution/verify")
         results.append(
             EvolutionResult(
                 success=rolled_back,

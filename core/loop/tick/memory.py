@@ -6,15 +6,13 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
-from core.metabolic import StateProposal
+from core.metabolic import add_semantic_memory, submit_fact
 from memory.working import WMItem
-from store.semantic import MemoryNode
 
 from ..cycle.chat import _resolve_reply_chat_id
 from ..shared.common import _SEM_TAG_TASK_CHARS, _infer_valence_from_text
 from ..shared.logging import _strip_memory_context
 from ..shared.progress import action_key_param
-from .types import _loop_metabolic
 
 
 async def _crystallize_task_done_to_semantic(loop: Any, active_task: Any) -> None:
@@ -30,19 +28,19 @@ async def _crystallize_task_done_to_semantic(loop: Any, active_task: Any) -> Non
         return
     narrative = loop._episodic.load_for_context(str(refreshed.id))
     if narrative.strip():
-        loop._semantic.upsert(MemoryNode(
-            id=f"task_summary_{refreshed.id}",
+        await add_semantic_memory(
+            loop,
+            node_id=f"task_summary_{refreshed.id}",
             kind="task_summary",
             title=f"[{refreshed.status}] task#{refreshed.id} {refreshed.title}",
             body=narrative,
             activation=0.9 if refreshed.status == "done" else 0.7,
             valence=loop._emotion.valence,
             tags=["task_summary", refreshed.status, f"task_{refreshed.id}"],
-        ))
-    await _loop_metabolic(loop).submit(StateProposal(
-        op="set_fact", key=marker, value="1",
-        scope="system", source="loop/tick/run_done",
-    ))
+            source="loop/tick/run_done",
+            decision_basis="task_done_crystallization",
+        )
+    await submit_fact(loop, key=marker, value="1", scope="system", source="loop/tick/run_done")
 
 
 async def _crystallize_reflection_to_semantic(
@@ -57,15 +55,18 @@ async def _crystallize_reflection_to_semantic(
         return
     node_id = f"insight_{hashlib.md5(clean_reflection.encode()).hexdigest()[:10]}"
     insight_suffix = f" [{node_id.split('_', 1)[-1][:6]}]"
-    loop._semantic.upsert(MemoryNode(
-        id=node_id,
+    await add_semantic_memory(
+        loop,
+        node_id=node_id,
         kind="learned_insight",
         title=f"{clean_reflection}{insight_suffix}",
         body=clean_reflection,
         activation=0.9,
         valence=loop._emotion.valence,
         tags=["reflection", active_task.title[:_SEM_TAG_TASK_CHARS] if active_task else "free"],
-    ))
+        source="loop/tick/reflection",
+        decision_basis="reflection_crystallization",
+    )
     ref_valence = _infer_valence_from_text(clean_reflection, loop._emotion.valence, loop._cfg.emotion)
     delta = ref_valence - loop._emotion.valence
     if abs(delta) > 0.01:
@@ -78,10 +79,13 @@ async def _crystallize_reflection_to_semantic(
     turns_key = f"task:{active_task.id}:reflection_turns"
     turns_val, _ = await loop._task_store.get_fact(turns_key)
     turns = int(turns_val or "0") + 1
-    await _loop_metabolic(loop).submit(StateProposal(
-        op="set_fact", key=turns_key, value=str(turns),
-        scope="system", source="loop/tick/reflection_turns",
-    ))
+    await submit_fact(
+        loop,
+        key=turns_key,
+        value=str(turns),
+        scope="system",
+        source="loop/tick/reflection_turns",
+    )
     crystallize_every = loop._cfg.memory.chat_crystallize_every
     if turns % crystallize_every == 0:
         ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -90,20 +94,36 @@ async def _crystallize_reflection_to_semantic(
         if existing:
             existing.body = existing.body + f"\n- {clean_reflection}"
             existing.activation = min(1.0, existing.activation + 0.05)
-            loop._semantic.upsert(existing)
+            await add_semantic_memory(
+                loop,
+                node_id=evt_id,
+                kind="event",
+                title=f"[{ts_label}] task#{active_task.id} {active_task.title}",
+                body=existing.body,
+                activation=existing.activation,
+                valence=existing.valence,
+                importance=getattr(existing, "importance", 0.0) or 0.5,
+                tags=list(getattr(existing, "tags", [])),
+                created_at=str(getattr(existing, "created_at", "")),
+                source="loop/tick/reflection_event",
+                decision_basis="reflection_event_append",
+            )
         else:
             tags = ["event", ts_label]
             if resolved_chat_id:
                 tags.append(f"chat:{resolved_chat_id}")
-            loop._semantic.upsert(MemoryNode(
-                id=evt_id,
+            await add_semantic_memory(
+                loop,
+                node_id=evt_id,
                 kind="event",
                 title=f"[{ts_label}] task#{active_task.id} {active_task.title}",
                 body=clean_reflection,
                 activation=0.85,
                 valence=loop._emotion.valence,
                 tags=tags,
-            ))
+                source="loop/tick/reflection_event",
+                decision_basis="reflection_event_new",
+            )
 
 
 async def _crystallize_chat_to_semantic(
@@ -120,15 +140,13 @@ async def _crystallize_chat_to_semantic(
     turns_key = f"chat:{resolved_chat_id}:turns"
     turns_val, _ = await loop._task_store.get_fact(turns_key)
     turns = int(turns_val or "0") + 1
-    await _loop_metabolic(loop).submit(StateProposal(
-        op="set_fact", key=turns_key, value=str(turns),
-        scope="system", source="loop/tick/chat_turns",
-    ))
+    await submit_fact(loop, key=turns_key, value=str(turns), scope="system", source="loop/tick/chat_turns")
     crystallize_every = loop._cfg.memory.chat_crystallize_every
     if turns % crystallize_every != 0:
         return
     ts_label = datetime.now(UTC).strftime("%Y-%m-%d")
     summary_id = f"chat-summary-{hashlib.md5(resolved_chat_id.encode('utf-8')).hexdigest()[:12]}-{ts_label}"
+    digest = hashlib.md5(resolved_chat_id.encode("utf-8")).hexdigest()[:6]
     summary_parts: list[str] = []
     user_text = str(user_message or "").strip()
     reply_text = _strip_memory_context(action.reply_to_user or "").strip()
@@ -146,17 +164,30 @@ async def _crystallize_chat_to_semantic(
     if existing is not None:
         if summary_entry:
             existing.body = existing.body + f"\n- {summary_entry}"
-        existing.activation = min(1.0, existing.activation + 0.05)
-        existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
-        loop._semantic.upsert(existing)
+            existing.activation = min(1.0, existing.activation + 0.05)
+            existing.importance = max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5)
+            await add_semantic_memory(
+                loop,
+                node_id=summary_id,
+                kind="chat_summary",
+                title=f"[{ts_label}] chat[{digest}] {active_task.title if active_task is not None else resolved_chat_id}",
+                body=existing.body,
+                activation=existing.activation,
+                valence=loop._emotion.valence,
+                importance=max(float(getattr(existing, "importance", 0.0) or 0.0), 0.5),
+                tags=list(getattr(existing, "tags", [])),
+                created_at=str(getattr(existing, "created_at", "")),
+                source="loop/tick/chat_summary",
+                decision_basis="chat_summary_append",
+            )
     else:
-        digest = hashlib.md5(resolved_chat_id.encode("utf-8")).hexdigest()[:6]
         title_seed = active_task.title if active_task is not None else resolved_chat_id
         tags = ["chat_summary", ts_label, f"chat:{resolved_chat_id}"]
         if active_task is not None:
             tags.append(f"task:{active_task.id}")
-        loop._semantic.upsert(MemoryNode(
-            id=summary_id,
+        await add_semantic_memory(
+            loop,
+            node_id=summary_id,
             kind="chat_summary",
             title=f"[{ts_label}] chat[{digest}] {title_seed}",
             body=summary_entry or "对话结晶",
@@ -165,7 +196,8 @@ async def _crystallize_chat_to_semantic(
             importance=0.5,
             tags=tags,
             source="chat_summary",
-        ))
+            decision_basis="chat_summary_new",
+        )
 
 
 async def _post_tick_memory(

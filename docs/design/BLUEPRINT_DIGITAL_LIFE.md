@@ -99,8 +99,8 @@
 
 **实现形式**：`core/immune/` 独立器官，不挂在执行层，不挂在判断层。  
 **对现有代码的关系**：
-- 当前 `_DEFAULT_BLOCKED_TOOLS` 在 `core/subagent.py` 中散落 → 迁移到免疫器官。
-- 当前 `soul:hard_axioms` 缺失时静默降级为 `[]` 的问题 → 免疫器官启动时必须验证宪法加载完整，否则拒绝启动。
+- 当前 `_DEFAULT_BLOCKED_TOOLS` 在 `core/subagent/` 中散落 → 迁移到免疫器官。
+- 已修复 `soul:hard_axioms` 缺失时静默降级为 `[]` 的问题：硬边界由 `CONSTITUTION.md` 加载、缓存并提取。
 
 ---
 
@@ -127,23 +127,23 @@
 
 #### 4a. 记忆器官
 **定义**：发生过什么 / 学到了什么 / 认识了谁 / 积累了哪些经验。  
-**现有实现**：`memory/episodic.py` + `memory/semantic.py` + `memory/working.py`  
+**现有实现**：`store/episodic/` + `store/semantic/` + `memory/working.py`  
 **改造方向**：
 - `working.py` 是临时缓冲，不是长期记忆，需明确角色。
-- `memory/task_store.py` 目前混入了大量执行状态语义 → 执行轨迹降级为记忆器官的附属数据，不再是中心。
+- `store/task/` 目前混入了大量执行状态语义 → 执行轨迹降级为记忆器官的附属数据，不再是中心。
 - 外围只能提交候选记忆节点，由代谢器官统一落定。
 
 #### 4b. 人格器官
 **定义**：长期稳定的行为风格、偏好、气质、表达方式、处事倾向。  
-**现有实现**：`core/persona/soul.py`（部分）+ `soul:ethos_baseline` DB 值 + `SOUL.md` 镜像  
+**现有实现**：`core/persona/engine.py` + `soul:ethos_baseline` DB 值
 **改造方向**：
-- 当前 soul 把人格和灵魂混在一起，需拆分。
+- 人格参数与 SOUL.md 镜像已拆开；下一步是让人格变化全部走 proposal + ledger。
 - 人格参数应可被经历、反思、演化慢速塑造，塑造记录不可抹去。
 - `derive_ethos_state()` 的动态偏好计算属于人格调节，应独立为人格器官内部逻辑。
 
 #### 4c. 灵魂器官
 **定义**：更深层的存在取向、意义感、价值方向、存在姿态（比人格更稳定，但仍可变）。  
-**现有实现**：`soul:hard_axioms`（宪法边界部分，不可变）+ `soul:ethos_*`（可变部分）  
+**现有实现**：`core/soul/engine.py` 管理 `SOUL.md` 镜像；`CONSTITUTION.md`/immune 管理硬边界。
 **改造方向**：
 - 宪法层（`hard_axioms`）不属于灵魂器官管辖，归宪法器官。
 - 灵魂器官管辖的是：存在意义、对人类关系的取向、长期目标方向、价值倾向。
@@ -173,10 +173,10 @@
 - 代谢器官验证后落定，同时向感知器官广播状态变更信号。
 
 **现有代码对应**：
-- `store/memory/ingress.py` → 合并进代谢器官
+- `store/task/ingress.py` → 合并进代谢器官
 - `tools/memory_ops.py` → 工具只生成提案，提案由代谢器官落定
 - `tools/task_ops.py` → 同上
-- `memory/task_store.py` 写入面 → 降级为代谢器官的底层适配器
+- `store/task/` 写入面 → 降级为代谢器官的底层适配器
 
 ---
 
@@ -203,7 +203,7 @@
 - 远程 worker（是器官，不是宿主）
 - 子灵（全能行动体，父灵授权）
 
-**现有实现**：`core/execution.py` + `core/worker.py` + `tools/` 中的执行类工具  
+**现有实现**：`core/execution/` + `core/execution/workers.py` + `tools/` 中的执行类工具  
 **改造方向**：
 - 行动器官不能直接写生命状态，只能产出候选写入提交代谢器官。
 - 通道（channels/）从行动器官剥离，归接入门层。
@@ -213,7 +213,7 @@
 ### 8. 进化器官
 
 **职责**：改写除宪法外的一切，包括自身。  
-**现有实现**：`core/evolution.py` + `core/smoke_tests.py` + `core/self_drive.py`  
+**现有实现**：`core/evolution/` + `core/smoke_tests.py` + `core/loop/drive/engine.py`  
 **自修改协议**：
 1. 变更提案由进化器官生成。
 2. 免疫器官验证：提案不违宪。
@@ -295,26 +295,27 @@ SubagentProposal:
 | 现有模块 | 归属新器官 | 改造动作 |
 |---------|-----------|---------|
 | `core/judgment/` | 主脑器官 | 收敛边界，不再直接写状态 |
-| `core/persona/soul.py` | 人格器官 + 灵魂器官 | 拆分，human axioms → 宪法器官 |
-| `core/evolution.py` | 进化器官 | 补自修改协议与回滚机制 |
+| `core/persona/identity_bootstrap.py` | 身份启动器 | 保持文件/bootstrap 职责 |
+| `core/soul/engine.py` | 灵魂器官 | 管理长期取向与 SOUL.md 镜像；human axioms → 宪法器官 |
+| `core/evolution/` | 进化器官 | 补自修改协议与回滚机制 |
 | `core/smoke_tests.py` | 进化器官（验证子系统） | 归入进化器官下层 |
-| `core/self_drive.py` | 进化器官（自驱动策略） | 归入进化器官 |
-| `core/execution.py` | 行动器官 | 移除直接写 memory/fact 能力 |
-| `core/worker.py` | 行动器官 | 保留，归器官层 |
-| `core/subagent.py` | 子灵系统（行动器官之下） | 实现五层授权协议 |
+| `core/loop/drive/engine.py` | 自驱器官（内在驱动力策略） | 作为 loop/drive 下的独立器官 |
+| `core/execution/` | 行动器官 | 移除直接写 memory/fact 能力 |
+| `core/execution/workers.py` | 行动器官 | 保留，归器官层 |
+| `core/subagent/` | 子灵系统（行动器官之下） | 实现五层授权协议 |
 | `core/perception/` | 感知器官 | 保留，明确不做裁决 |
 | `core/probe/` | 感知器官 | 归入感知器官 |
 | `core/loop/drive/behavior.py` | 感知器官（统计层） | 触发动作逻辑迁移 |
-| `core/reference.py` | 主脑器官（认知辅助） | 归入主脑，作为辅助思考工具 |
+| `core/reference/` | 主脑器官（认知辅助） | 归入主脑，作为辅助思考工具 |
 | `core/persona/self_model.py` | 主脑器官（自我认知） | 归入主脑 |
-| `core/skill.py` | 进化器官（技能子系统） | 技能演化归进化器官 |
-| `core/run_refresh.py` | 代谢器官（执行轨迹刷新） | 迁移到代谢器官 |
+| `core/skill/` | 进化器官（技能子系统） | 技能演化归进化器官 |
+| `core/loop/runs/refresh.py` | 代谢器官（执行轨迹刷新） | 迁移到代谢器官 |
 | `core/loop/task/runtime.py` | 代谢器官（任务状态管理） | 迁移到代谢器官 |
 | `core/loop/` | 主循环（编排骨架） | 拆成装配层 + tick 编排层 |
-| `memory/episodic.py` | 记忆器官 | 保留，明确角色 |
-| `memory/semantic.py` | 记忆器官 | 保留，明确角色 |
+| `store/episodic/` | 记忆器官 | 保留，明确角色 |
+| `store/semantic/` | 记忆器官 | 保留，明确角色 |
 | `memory/working.py` | 记忆器官（临时缓冲） | 明确是临时缓冲，非长期记忆 |
-| `memory/task_store.py` | 代谢器官（底层适配器） | 降级为适配层，剥离业务语义 |
+| `store/task/` | 代谢器官（底层适配器） | 降级为适配层，剥离业务语义 |
 | `memory/consolidation.py` | 代谢器官（记忆结晶子系统） | 归入代谢器官 |
 | `tools/memory_ops.py` | 行动器官（提案工具） | 工具只生成提案，不直接写入 |
 | `tools/task_ops.py` | 行动器官（提案工具） | 同上 |
@@ -354,14 +355,14 @@ SubagentProposal:
 
 ```python
 # core/immune/policy.py 核心接口
-_DEFAULT_BLOCKED_TOOLS: frozenset[str]  # 从 core/subagent.py 迁入
+_DEFAULT_BLOCKED_TOOLS: frozenset[str]  # 从 core/subagent/ 迁入
 _READONLY_BLOCKED: frozenset[str]        # 同上
 
-def check_tool_blocked(tool_name: str, hard_axioms: list[str]) -> str | None:
+def check_tool_blocked(tool_name: str, hard_axioms: list[str] | None = None) -> str | None:
     """返回 block 原因，None = 放行。宪法检查唯一入口。"""
 ```
 
-**迁移**：`core/subagent.py` 的 `_DEFAULT_BLOCKED_TOOLS`、`_READONLY_BLOCKED_TOOL_NAMES` → `core/immune/policy.py`，原位改为 `from core.immune.policy import ...`（2 处 import 改动）。
+**迁移**：`core/subagent/` 的 `_DEFAULT_BLOCKED_TOOLS`、`_READONLY_BLOCKED_TOOL_NAMES` → `core/immune/policy.py`，原位改为 `from core.immune.policy import ...`（2 处 import 改动）。
 
 #### 1-C 代谢器官入口
 
@@ -385,9 +386,9 @@ class MetabolicEngine:
 现有写入路径暂不迁移，只建好入口供第二阶段使用。
 
 **同步代码质量修复**：
-- 🔧 **[模式 2]** 收拢工具分类：`_DEFAULT_BLOCKED_TOOLS` 从 `core/subagent.py` 迁入免疫器官；`_READER_TOOLS` 合并为 `ToolManifest.prefer_tier` 统一查询。影响文件：`subagent.py`、`judgment/output.py`、`judgment/runtime.py`、`execution.py`。
+- 🔧 **[模式 2]** 收拢工具分类：`_DEFAULT_BLOCKED_TOOLS` 从 `core/subagent/` 迁入免疫器官；`_READER_TOOLS` 合并为 `ToolManifest.prefer_tier` 统一查询。影响文件：`subagent.py`、`judgment/output.py`、`judgment/runtime.py`、`execution.py`。
 - 🔧 **[模式 4]** 消灭 `execution._registry` 私有替换（`subagent.py:872-877`）：改为子灵构造时注入独立 registry，而非运行时临时替换父灵私有属性。
-- 🔧 **[模式 7]** 消灭 ethos 维度列表重复：`core/persona/soul.py` 与 `core/perception/signals.py` 中的维度列表，统一定义一处，另一处引用。
+- 🔧 **[模式 7]** 消灭 ethos 维度列表重复：`core/persona/engine.py` 与 `core/perception/signals.py` 中的维度列表，统一定义一处，另一处引用。
 
 ---
 
@@ -399,24 +400,24 @@ class MetabolicEngine:
 | 文件 | 散落数量 | 写入内容 |
 |------|---------|----------|
 | `core/loop/tick.py` | ~7 处 | routing_overrides、soul:emotion_state、soul:ethos_baseline 等 |
-| `core/reference.py` | ~7 处 | entity、relation、interlocutor facts |
-| `core/execution.py` | ~4 处 | run 结果、failure 状态、记忆节点 |
+| `core/reference/` | ~7 处 | entity、relation、interlocutor facts |
+| `core/execution/` | ~4 处 | run 结果、failure 状态、记忆节点 |
 | `core/loop/task/runtime.py` | 多处 | meta-reflection、task hint facts |
-| `core/run_refresh.py` | 多处 | run result、meta reflection |
-| `core/self_drive.py` | 1 处 | curiosity state JSON 文件写入 |
+| `core/loop/runs/refresh.py` | 多处 | run result、meta reflection |
+| `core/loop/drive/engine.py` | 1 处 | curiosity state JSON 文件写入 |
 
 **架构改造**：
 1. `tools/memory_ops.py` 改为生成 `StateProposal` 而不是直接写入。
 2. `tools/task_ops.py` 同上。
-3. `core/execution.py` 的 `record_run_outcome_memory()` 改为通过代谢器官提交。
+3. `core/execution/` 的 `record_run_outcome_memory()` 改为通过代谢器官提交。
 4. 代谢器官实现生命史账本（只追加）。
-5. `memory/task_store.py` 降级为代谢器官底层适配器，剥离业务语义。
+5. `store/task/` 降级为代谢器官底层适配器，剥离业务语义。
 
 **同步代码质量修复**：
 - 🔧 **[模式 3]** 7 处 `core/loop/tick.py` 的 set_fact 调用，统一改为提交 `StateProposal`。
-- 🔧 **[模式 3]** `core/reference.py` 7 处直接写 entity/relation/interlocutor facts → 提案提交。
-- 🔧 **[模式 3]** `core/loop/task/runtime.py`、`core/run_refresh.py` 的 set_fact → 提案提交。
-- 🔧 **[模式 5]** `_DURABLE_FAILURE_TTL_SEC = 7200`、`_DURABLE_FAILURE_THRESHOLD = 3`（`core/execution.py`）归入 `Config.thresholds`。
+- 🔧 **[模式 3]** `core/reference/` 7 处直接写 entity/relation/interlocutor facts → 提案提交。
+- 🔧 **[模式 3]** `core/loop/task/runtime.py`、`core/loop/runs/refresh.py` 的 set_fact → 提案提交。
+- 🔧 **[模式 5]** `_DURABLE_FAILURE_TTL_SEC = 7200`、`_DURABLE_FAILURE_THRESHOLD = 3`（`core/execution/`）归入 `Config.thresholds`。
 - 🔧 **[模式 7]** run result 写入 activation/valence 的重复逻辑（`execution.py` 与 `run_refresh.py`），收口到共享 helper。
 
 ---
@@ -425,14 +426,14 @@ class MetabolicEngine:
 **目标**：记忆 / 人格 / 灵魂三器官边界清晰。
 
 **架构改造**：
-1. `core/persona/soul.py` 拆分：宪法部分归免疫器官，人格参数归人格器官，存在取向归灵魂器官。
+1. `core/persona/identity_bootstrap.py` 继续瘦身：宪法部分归免疫器官，人格参数归人格器官，存在取向归灵魂器官。
 2. 人格器官与灵魂器官的变化记录纳入生命史账本。
 3. 主脑升级协议实现：三器官联合确认。
 
 **同步代码质量修复**：
 - 🔧 **[模式 5]** behavior_tracker 的 `_BELIEF_STALE_THRESHOLD`、`_BELIEF_WINDOW`、`_SEQ_WINDOW_WARN_AT` 等常数归入 `Config.thresholds`。
 - 🔧 **[模式 6]** `cfg.soul.ethos_baseline.get('truth', 0.5)` 这类 None 传播，改为 pydantic 验证后的强类型 `EthosState`，缺值显式失败而非静默降级。
-- 🔧 **[模式 7]** ethos 演化逻辑（`core/evolution.py`）与灵魂器官演化路径统一，消灭重复。
+- 🔧 **[模式 7]** ethos 演化逻辑（`core/evolution/`）与灵魂器官演化路径统一，消灭重复。
 
 ---
 
@@ -453,7 +454,7 @@ class MetabolicEngine:
 ---
 
 ### 第五阶段：主循环拆装
-**目标**：`core/loop/runtime.py` 不再是"世界中心"；`tick.py` 的 600+ 行函数拆解。
+**目标**：`core/loop/runtime/main.py` 不再是"世界中心"；`tick.py` 的 600+ 行函数拆解。
 
 **架构改造**：
 1. 装配层（DI 容器）：只负责创建所有器官实例并注入依赖。
@@ -478,7 +479,7 @@ class MetabolicEngine:
 4. 冒烟失败时自动回滚并记录。
 
 **同步代码质量修复**：
-- 🔧 **[模式 5]** `core/evolution.py` 的 `min_runs`、`keep: int = 3`、smoke test 超时等硬编码，归入 `EvolutionPolicy` 数据类，再映射到 Config。
+- 🔧 **[模式 5]** `core/evolution/` 的 `min_runs`、`keep: int = 3`、smoke test 超时等硬编码，归入 `EvolutionPolicy` 数据类，再映射到 Config。
 - 🔧 **[模式 7]** 工具文件寻找逻辑（`evolution.py` 与 `skill.py` 重复），提取为 `SkillLoader` 共享类。
 - 🔧 **[模式 4]** `spec.loader.exec_module()` 的 `type: ignore[attr-defined]`，改为通过 `importlib.util.spec_from_file_location` 合规调用。
 
@@ -524,7 +525,7 @@ class MetabolicEngine:
 **表现**：所有模块都直接 `self._cfg.xxx`，Config 既是数据源又是运行时真相。  
 **具体热点**：
 - `core/config/loader.py`：2000+ 行，200+ 字段，嵌套结构边界不清。
-- `core/loop/tick.py`、`core/judgment/runtime.py`、`core/execution.py` 深度依赖 cfg 各子结构。
+- `core/loop/tick.py`、`core/judgment/runtime.py`、`core/execution/` 深度依赖 cfg 各子结构。
 **改造方向**：Config 分域拆分为 `LoopConfig / MemoryConfig / ProviderConfig / ThresholdsConfig / ChannelConfig`，通过注入而非全局单体访问。新增用能力值配置器接口（config query service）统一暴露。
 
 ---
@@ -536,10 +537,10 @@ class MetabolicEngine:
 | 常量名 | 所在文件 | 类型 |
 |--------|---------|------|
 | `_READER_TOOLS` | `core/judgment/output.py:21` 和 `core/judgment/runtime.py` | frozenset |
-| `_DEFAULT_BLOCKED_TOOLS` | `core/subagent.py:40` | frozenset |
-| `_READONLY_BLOCKED_TOOL_NAMES` | `core/subagent.py` | frozenset |
-| `_READONLY_ALLOWED_TASK_TOOLS` | `core/subagent.py` | frozenset |
-| `_TARGET_TASK_TOOLS` | `core/execution.py` | frozenset |
+| `_DEFAULT_BLOCKED_TOOLS` | `core/subagent/:40` | frozenset |
+| `_READONLY_BLOCKED_TOOL_NAMES` | `core/subagent/` | frozenset |
+| `_READONLY_ALLOWED_TASK_TOOLS` | `core/subagent/` | frozenset |
+| `_TARGET_TASK_TOOLS` | `core/execution/` | frozenset |
 
 **改造方向**：全部转移到 `ToolManifest.prefer_tier` / `ToolManifest.capabilities` / `ToolManifest.subagent_access`，registry 统一查询，frozenset 只保留 fallback。
 
@@ -552,11 +553,11 @@ class MetabolicEngine:
 | 文件 | 散落数量 | 写入内容 |
 |------|---------|---------|
 | `core/loop/tick.py` | 7 处 | routing_overrides、soul:emotion_state、soul:ethos_baseline 等 |
-| `core/execution.py` | 4 处 | run 结果、failure 状态、记忆节点 |
-| `core/reference.py` | 7 处 | entity、relation、interlocutor facts |
+| `core/execution/` | 4 处 | run 结果、failure 状态、记忆节点 |
+| `core/reference/` | 7 处 | entity、relation、interlocutor facts |
 | `core/loop/task/runtime.py` | 多处 | meta-reflection、task hint facts |
-| `core/run_refresh.py` | 多处 | run result、meta reflection |
-| `core/self_drive.py` | 文件写入 | curiosity state JSON |
+| `core/loop/runs/refresh.py` | 多处 | run result、meta reflection |
+| `core/loop/drive/engine.py` | 文件写入 | curiosity state JSON |
 
 **改造方向**：统一建立 `StateProposal` 数据结构，所有以上代码改为提案提交，由代谢器官落定。这是蓝图第二阶段的主体工作。
 
@@ -568,8 +569,8 @@ class MetabolicEngine:
 
 | 文件 | 问题 |
 |------|------|
-| `core/subagent.py:811-813` | 三个 view 均用 `cast(Any, ...)` 绕过类型 |
-| `core/subagent.py:872-877` | 临时替换 `execution._registry` 私有属性（`type: ignore`）+ try/finally |
+| `core/subagent/:811-813` | 三个 view 均用 `cast(Any, ...)` 绕过类型 |
+| `core/subagent/:872-877` | 临时替换 `execution._registry` 私有属性（`type: ignore`）+ try/finally |
 | `core/judgment/runtime.py:114,118,133` | `cast(Any, list_runnable/finder)` |
 | `core/loop/task/parallel.py:361` | `cast(Any, finder)` |
 | `core/loop/runtime/reload.py:71` | `cast(Any, loop._semantic)` |
@@ -584,15 +585,15 @@ class MetabolicEngine:
 
 | 常数 | 所在文件 | 含义 |
 |------|---------|------|
-| `_DURABLE_FAILURE_TTL_SEC = 7200` | `core/execution.py` | 持久失败 TTL |
+| `_DURABLE_FAILURE_TTL_SEC = 7200` | `core/execution/` | 持久失败 TTL |
 | `_BELIEF_STALE_THRESHOLD = 4` | `core/loop/drive/behavior.py` | 信念陈旧阈值 |
 | `_BELIEF_WINDOW = 8` | `core/loop/drive/behavior.py` | 信念窗口 |
 | `_SEQ_WINDOW_WARN_AT = 3` | `core/loop/drive/behavior.py` | 连续动作告警 |
-| `TASK_DUPLICATE_REUSE_SCORE = 0.66` | `memory/task_store.py` 和 `task_parallel.py` | 任务复用评分 |
+| `TASK_DUPLICATE_REUSE_SCORE = 0.66` | `store/task/` 和 `task_parallel.py` | 任务复用评分 |
 | `TASK_SIMILARITY_CONTEXT_SCORE = 0.45` | 两处 | 相似度阈值 |
 | `arousal_factor = max(0.8, 1.0 - 0.4 * (_arousal - 0.5))` | `core/loop/cycle/driver.py` | 唤醒度调制 |
-| `_LOG_TEXT_CHARS = 240` | `core/execution.py` | 日志截断 |
-| `min_runs` | `core/evolution.py` | 进化最少运行次数 |
+| `_LOG_TEXT_CHARS = 240` | `core/execution/` | 日志截断 |
+| `min_runs` | `core/evolution/` | 进化最少运行次数 |
 
 **改造方向**：全部归并到 `Config.thresholds` 对应子字段。已有部分完成，但仍有大量残留。
 
@@ -616,10 +617,10 @@ cfg.soul.ethos_baseline.get('truth', 0.5)  # 缺值静默降级
 
 | 重复内容 | 文件 A | 文件 B |
 |---------|--------|--------|
-| 任务相似度计算 | `memory/task_store.py` | `core/loop/task/parallel.py` |
+| 任务相似度计算 | `store/task/` | `core/loop/task/parallel.py` |
 | tool_history 压缩 | `core/loop/shared/continue_phase.py` | `core/judgment/context.py` |
-| run result 写入 activation/valence | `core/execution.py` | `core/run_refresh.py` |
-| ethos 维度列表 | `core/persona/soul.py` | `core/perception/signals.py` |
+| run result 写入 activation/valence | `core/execution/` | `core/loop/runs/refresh.py` |
+| ethos 维度列表 | `core/persona/engine.py` | `core/perception/signals.py` |
 | 工具分类逻辑 | `core/judgment/output.py` | `tools/registry.py` |
 
 **改造方向**：每对中选一处作为权威实现，另一处改为调用。
@@ -632,15 +633,15 @@ cfg.soul.ethos_baseline.get('truth', 0.5)  # 缺值静默降级
 |------|------|-----------|--------|
 | `core/loop/tick.py` | 1400+ | `_tick_impl` 600+ 行混合所有职责；7 处直接 set_fact | 🔴 高 |
 | `core/judgment/runtime.py` | 2000+ | `decide()` 800+ 行；15+ 处 cast(Any)；`_READER_TOOLS` 重复 | 🔴 高 |
-| `core/subagent.py` | 1000+ | 4 个工具名 frozenset；5+ cast(Any)；`execution._registry` 私有替换 | 🔴 高 |
+| `core/subagent/` | 1000+ | 4 个工具名 frozenset；5+ cast(Any)；`execution._registry` 私有替换 | 🔴 高 |
 | `core/config/loader.py` | 2000+ | 全局单体被 30+ 文件直接依赖 | 🔴 高 |
-| `core/execution.py` | 900+ | 4 处直接写 set_fact；错误关键字列表硬编码 | 🟠 中高 |
+| `core/execution/` | 900+ | 4 处直接写 set_fact；错误关键字列表硬编码 | 🟠 中高 |
 | `core/judgment/context.py` | 1500+ | 200+ 格式化函数堆积；无过期缓存策略 | 🟠 中高 |
-| `memory/task_store.py` | 1000+ | 语义过载（7种数据混合）；相似度计算重复 | 🟠 中高 |
+| `store/task/` | 1000+ | 语义过载（7种数据混合）；相似度计算重复 | 🟠 中高 |
 | `core/loop/task/runtime.py` | 400+ | 多处 set_fact；meta-reflection 逻辑分散 | 🟡 中 |
-| `core/reference.py` | 800+ | 7 处 set_fact；LLM prompt 硬编码 | 🟡 中 |
-| `core/evolution.py` | 1200+ | 多处硬编码阈值；备份/恢复散落 | 🟡 中 |
-| `core/loop/runtime.py` | 600+ | `_CHAIN_STATE_FIELDS` 硬编码元组；组装职责过多 | 🟡 中 |
+| `core/reference/` | 800+ | 7 处 set_fact；LLM prompt 硬编码 | 🟡 中 |
+| `core/evolution/` | 1200+ | 多处硬编码阈值；备份/恢复散落 | 🟡 中 |
+| `core/loop/runtime/main.py` | 600+ | `_CHAIN_STATE_FIELDS` 硬编码元组；组装职责过多 | 🟡 中 |
 
 ---
 
@@ -648,22 +649,22 @@ cfg.soul.ethos_baseline.get('truth', 0.5)  # 缺值静默降级
 
 ### Store 层架构现状
 
-当前 `store/memory/` 与 `memory/` 之间的层次关系：
+当前 `store/task/` 与 `memory/` 之间的层次关系：
 
 ```
 ┌─────────────────────────────────────────┐
-│  memory/task_store.py（高层 TaskStore）  │
+│  store/task/（高层 TaskStore）  │
 │  → 聚合 Store 子类，暴露业务接口        │
 └────────────────┬────────────────────────┘
                  │ 组合注入（db_getter）
 ┌────────────────▼────────────────────────┐
-│  store/memory/*.py（低层 Store 子类）   │
+│  store/task/*.py（低层 Store 子类）   │
 │  ChatMessageStore / FactStore /         │
 │  RunStore / FailureStore / ...          │
 └────────────────┬────────────────────────┘
                  │ 共用 SQL builder 函数
 ┌────────────────▼────────────────────────┐
-│  store/memory/ingress.py（同步入口）    │
+│  store/task/ingress.py（同步入口）    │
 │  → 也使用相同 builder 函数，但用 sync  │
 │    sqlite3 直接管理连接                 │
 └─────────────────────────────────────────┘
@@ -672,13 +673,13 @@ cfg.soul.ethos_baseline.get('truth', 0.5)  # 缺值静默降级
 **发现的 5 个设计问题：**
 
 #### 问题 S1：逆向依赖（严重）
-`store/memory/run.py` 在运行时从 `memory.task_store` 导入 `Run` dataclass：
+`store/task/run.py` 在运行时从 `memory.task_store` 导入 `Run` dataclass：
 ```python
-# store/memory/run.py:10, 60, 76
+# store/task/run.py:10, 60, 76
 from memory.task_store import Run   # 低层 store 导入高层 memory
 ```
 违反依赖方向：低层 store 不应知道高层 memory 的数据类。  
-**修复**：把 `Run` / `Task` / `Failure` 等 dataclass 下沉到 `store/memory/models.py`，`memory/task_store.py` 从 store 层导入。
+**修复**：把 `Run` / `Task` / `Failure` 等 dataclass 下沉到 `store/task/models.py`，`store/task/` 从 store 层导入。
 
 #### 问题 S2：双写路径，一致性风险（中等）
 同一张 `facts` / `chat_messages` 表，有两条并行写入路径：
@@ -709,8 +710,8 @@ def _db(self) -> aiosqlite.Connection:
 **修复**：提取 `BaseAsyncStore` 基类，统一 `db_getter` 注入和 `_db` 属性。
 
 #### 问题 S5：数据类与 Store 混居（中等）
-`Run`、`Task`、`Failure` 等 dataclass 目前住在 `memory/task_store.py` 里（高层），但被低层 `store/memory/run.py` 通过 `TYPE_CHECKING` + 运行时 import 双重引用。数据类的"家"不在合适的层级。  
-**修复**：数据类下沉到 `store/memory/models.py`，成为整个存储层的公共 DTO，上层 memory 模块只做业务逻辑。
+`Run`、`Task`、`Failure` 等 dataclass 目前住在 `store/task/` 里（高层），但被低层 `store/task/run.py` 通过 `TYPE_CHECKING` + 运行时 import 双重引用。数据类的"家"不在合适的层级。  
+**修复**：数据类下沉到 `store/task/models.py`，成为整个存储层的公共 DTO，上层 memory 模块只做业务逻辑。
 
 ---
 
@@ -729,7 +730,7 @@ tables = [r[0] for r in conn.execute(
     "SELECT name FROM sqlite_master WHERE type='table'"
 ).fetchall()]
 ```
-Doctor 直接用 raw `sqlite3` 查 DB，完全绕过 `store/memory/` 层。这意味着：DB schema 变化时 doctor 需要单独维护；Store 层的任何迁移对 doctor 不可见。  
+Doctor 直接用 raw `sqlite3` 查 DB，完全绕过 `store/task/` 层。这意味着：DB schema 变化时 doctor 需要单独维护；Store 层的任何迁移对 doctor 不可见。  
 **修复**：Store 层提供 `health_check()` 接口，doctor 调用接口而不是直接查 DB。
 
 #### 问题 D2：无 HealthCheck 抽象，不可测试、不可扩展（严重）
@@ -755,7 +756,7 @@ _resp = _hc.post(f"{_base}/chat/completions", ...)  # 硬编码 chat/completions
 **修复**：模型探针改为通过 `provider/` 层的 `Provider.ping()` 接口，由 provider 决定走哪个端点。
 
 #### 问题 D4：Doctor 掌握了过多系统内部知识（中等）
-Doctor 知道：API key 如何从环境变量、legacy credentials、auth profile 解析；工具 registry 如何 discover；插件目录在哪；Config schema 兼容性如何 patch。这些逻辑本属于各自的子系统，却被重复实现（或直接内联调用私有 API）在 doctor 里。  
+Doctor 知道：API key 如何从环境变量、auth profile 解析；工具 registry 如何 discover；插件目录在哪；Config schema 如何校验。这些逻辑本属于各自的子系统，却被重复实现（或直接内联调用私有 API）在 doctor 里。  
 **修复**：每个子系统暴露自己的 health check 接口，doctor 只是运行聚合器，不了解各子系统内部。
 
 ---
@@ -795,9 +796,9 @@ Doctor 知道：API key 如何从环境变量、legacy credentials、auth profil
 
 | 已完成 | 说明 |
 |--------|------|
-| ✅ `store/task/` | `memory/task_store.py` 的 DB 操作层完整迁移 |
-| ✅ `store/episodic/` | `memory/episodic.py` 迁移，`store/episodic/__init__.py` |
-| ✅ `store/semantic/` | `memory/semantic.py` 迁移 |
+| ✅ `store/task/` | `store/task/` 的 DB 操作层完整迁移 |
+| ✅ `store/episodic/` | `store/episodic/` 迁移，`store/episodic/__init__.py` |
+| ✅ `store/semantic/` | `store/semantic/` 迁移 |
 | ✅ `store/task/models.py` | Run/Task/Failure dataclass 下沉到 store 层（修复 S1 逆向依赖） |
 | ✅ 截断常量清除（部分） | `max_chars=0`（无限制）语义建立，事件/episodic/chat 层已清理 |
 | ✅ `docs/design/BLUEPRINT_DIGITAL_LIFE.md` | 架构蓝图文档提交 |
@@ -809,7 +810,7 @@ Doctor 知道：API key 如何从环境变量、legacy credentials、auth profil
 | ✅ `core/immune/` 源码（pycache 已有痕迹但无 .py） | Phase 1-B |
 | ✅ `core/metabolic/` 源码（pycache 已有痕迹但无 .py） | Phase 1-C |
 | ✅ ~40 处散落 set_fact 收口 | Phase 2 |
-| ✅ `core/persona/soul.py` 拆分为 persona + soul | Phase 3 |
+| ✅ `core/persona/identity_bootstrap.py` 与 `core/persona/engine.py` 拆分 | Phase 3 |
 | ✅ `SubagentProposal` + cast(Any) 消灭 | Phase 4 |
 | ✅ `_tick_impl` 600+ 行拆装 | Phase 5 |
 | ✅ `EvolutionProposal` + 三审协议 | Phase 6 |

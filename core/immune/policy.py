@@ -3,7 +3,7 @@
 公理 A4：任何违反宪法的行为必须被免疫器官硬阻断。
 本模块是宪法在工具层的唯一执行入口；子灵、执行层均从此处查询阻断结论。
 
-迁移来源：core/subagent.py（原散落的 4 个 frozenset 和 _is_readonly_blocked_tool 函数）。
+迁移来源：core.subagent（原散落的 4 个 frozenset 和 _is_readonly_blocked_tool 函数）。
 """
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ _READONLY_BLOCKED_TOOL_NAMES: frozenset[str] = frozenset({
     "memory.add_semantic",
     "memory.set_fact",
     "schedule.add",
-    "schedule.ack",
     "schedule.cancel",
     "task.plan",
 })
@@ -62,7 +61,7 @@ def check_tool_blocked(
 def is_readonly_blocked_tool(name: str, manifest: Any | None) -> bool:
     """只读子灵的工具阻断判断（比默认黑名单更严格）。
 
-    迁移自 core/subagent.py::_is_readonly_blocked_tool，语义不变。
+    迁移自 core.subagent::_is_readonly_blocked_tool，语义不变。
     """
     if not name:
         return True
@@ -119,15 +118,10 @@ async def three_organ_preflight(task_store: Any) -> list[str]:
             failures.append(f"人格器官：soul:ethos_baseline 解析失败（{exc}），人格主干无法延续")
     # ethos 未初始化时允许通过（全新系统）
 
-    # ── 灵魂器官：soul:hard_axioms 非空 ──────────────────────────────────
-    axioms_json, axioms_found = await task_store.get_fact("soul:hard_axioms")
-    if axioms_found and axioms_json:
-        try:
-            axioms = _json.loads(axioms_json)
-            if not isinstance(axioms, list) or len(axioms) == 0:
-                failures.append("灵魂器官：soul:hard_axioms 为空列表，灵魂取向丢失（公理 A4）")
-        except Exception as exc:
-            failures.append(f"灵魂器官：soul:hard_axioms 解析失败（{exc}），宪法无法验证")
+    # ── 免疫器官：CONSTITUTION.md 必须已加载 ─────────────────────────────
+    from core.immune.constitution import get_constitution_hash
+
+    if not get_constitution_hash():
+        failures.append("免疫器官：CONSTITUTION.md 未加载，硬边界无法验证（公理 A3/A4）")
 
     return failures
-

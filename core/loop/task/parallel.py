@@ -1,8 +1,8 @@
 """core.loop.task.parallel — 任务并行执行器（delegate_tasks → asyncio.gather）。
 
 主 tick（reasoner）通过 JudgmentOutput.delegate_tasks 将独立子目标委派为
-真实 Task（持久化到 task_store）。run_tasks_parallel() 用 asyncio.gather
-并发执行多个 Task，每个 Task 独立调用 LLM（reader tier），结果写回 task.result_json。
+真实 Task（经代谢器官持久化）。run_tasks_parallel() 用 asyncio.gather
+并发执行多个 Task，每个 Task 独立调用 LLM（reader tier），结果经代谢器官写回。
 全部完成后主 tick（reasoner）做统一审查决策。
 
 架构：
@@ -10,9 +10,9 @@
     └── decide() → delegate_tasks: [{id, goal, tools, max_rounds, params}]
           ↓ run_tasks_parallel()
     ┌────────────────────────────────────────────────────────────┐
-    │  Task A  (task_store.add_task → Task)                      │
+    │  Task A  (metabolic create_task → Task)                    │
     │    decide_continue(active_task=A, reader) × max_rounds     │  asyncio.gather
-    │    → task_store.update_task_result + update_status         │
+    │    → metabolic update_task_status / mark_task_waiting      │
     │  Task B  ...                                               │
     └────────────────────────────────────────────────────────────┘
           ↓ history_entries → main tick decide_continue(reasoner)
@@ -26,6 +26,15 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.metabolic import (
+    amend_task,
+    create_task,
+    mark_task_waiting,
+    resume_task,
+    update_task_data,
+    update_task_result,
+    update_task_status,
+)
 from store.task import build_task_similarity_query
 
 _log = logging.getLogger("lingzhou.loop.task.parallel")
@@ -114,18 +123,92 @@ class _ScopedTaskStore:
         }
         if result_json is not None:
             kwargs["result_json"] = result_json
-        await self._inner.update_status(task_id, status, next_step, **kwargs)
+        try:
+            await update_task_status(
+                self._inner,
+                task_id,
+                status=status,
+                source="loop/task/parallel/update_status",
+                next_step=next_step,
+                current_step=current_step,
+                model_tier=model_tier,
+                result_json=result_json,
+            )
+            return
+        except RuntimeError:
+            pass
+        await self._call("update_status", task_id, status, next_step, **kwargs)
 
     async def mark_waiting(self, task_id: int, **kwargs: Any) -> None:
+        try:
+            await mark_task_waiting(
+                self._inner,
+                task_id,
+                wait_kind=kwargs.get("wait_kind") or "",
+                source="loop/task/parallel/mark_waiting",
+                wait_key=kwargs.get("wait_key", ""),
+                wait_json=kwargs.get("wait_json"),
+                current_step=kwargs.get("current_step"),
+                next_step=kwargs.get("next_step"),
+                result_json=kwargs.get("result_json"),
+            )
+            return
+        except RuntimeError:
+            pass
         await self._call("mark_waiting", task_id, **kwargs)
 
     async def resume_task(self, task_id: int, status: str = "in_progress", **kwargs: Any) -> None:
+        try:
+            await resume_task(
+                self._inner,
+                task_id,
+                source="loop/task/parallel/resume_task",
+                status=status,
+                current_step=kwargs.get("current_step"),
+                next_step=kwargs.get("next_step"),
+                result_json=kwargs.get("result_json"),
+            )
+            return
+        except RuntimeError:
+            pass
         await self._call("resume_task", task_id, status=status, **kwargs)
 
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
+        try:
+            await update_task_data(
+                self._inner,
+                task_id,
+                extra_dict,
+                source="loop/task/parallel/update_task_data",
+            )
+            return
+        except RuntimeError:
+            pass
         await self._call("update_task_data", task_id, extra_dict)
 
+    async def amend_task(self, task_id: int, **kwargs: Any) -> bool:
+        try:
+            return await amend_task(
+                self._inner,
+                task_id,
+                source="loop/task/parallel/amend_task",
+                **kwargs,
+            )
+        except RuntimeError:
+            pass
+        return await self._call("amend_task", task_id, **kwargs)
+
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
+        try:
+            await update_task_result(
+                self._inner,
+                task_id,
+                result_json,
+                source="loop/task/parallel/update_task_result",
+            )
+            return
+        except RuntimeError:
+            pass
         await self._call("update_task_result", task_id, result_json)
 
     async def list_runs(self, **kwargs: Any) -> list[Any]:
@@ -152,11 +235,17 @@ class _ScopedTaskStore:
     async def dismiss_failure(self, failure_id: int) -> None:
         await self._call("dismiss_failure", failure_id)
 
+    async def ledger_append(self, *args: Any, **kwargs: Any) -> None:
+        await self._call("ledger_append", *args, **kwargs)
+
     async def get_fact(self, key: str) -> tuple[str, bool]:
         return await self._call("get_fact", key)
 
     async def set_fact(self, key: str, value: str, *, scope: str = "general") -> None:
         await self._call("set_fact", key, value, scope=scope)
+
+    async def delete_fact(self, key: str) -> None:
+        await self._call("delete_fact", key)
 
     async def list_facts(self, prefix: str = "", limit: int = 20) -> list[tuple[str, str]]:
         return await self._call("list_facts", prefix=prefix, limit=limit)
@@ -269,11 +358,19 @@ async def _run_one_task(
         "terminal_decision": terminal_decision,
     }
     if error:
-        await loop._task_store.update_status(task.id, "failed", result_json=result_data)
+        await update_task_status(
+            loop,
+            task.id,
+            status="failed",
+            result_json=result_data,
+            source="loop/task.parallel",
+            decision_basis=(error or final_rationale or "parallel child task failed")[:240],
+        )
     elif terminal_decision in {"wait", "pause"}:
         wait_key = str(getattr(task, "parent_task_id", "") or "")
         next_step = (str(getattr(task, "next_step", "") or "").strip() or (final_rationale or "").strip() or None)
-        await loop._task_store.mark_waiting(
+        await mark_task_waiting(
+            loop,
             task.id,
             wait_kind="task",
             wait_key=wait_key,
@@ -284,9 +381,18 @@ async def _run_one_task(
             },
             next_step=next_step,
             result_json=result_data,
+            source="loop/task.parallel",
+            decision_basis=(final_rationale or f"parallel child task ended with {terminal_decision}")[:240],
         )
     else:
-        await loop._task_store.update_status(task.id, "done", result_json=result_data)
+        await update_task_status(
+            loop,
+            task.id,
+            status="done",
+            result_json=result_data,
+            source="loop/task.parallel",
+            decision_basis=(final_rationale or "parallel child task completed")[:240],
+        )
 
     # 构建返回给主 tick 的 history entry
     steps_text = "\n".join(
@@ -379,13 +485,16 @@ async def run_tasks_parallel(
                 scheduled.append(_reused_entry(spec, existing, score))
                 continue
         title = f"[并行:{spec['id']}] {spec['goal']}"
-        task_id = await loop._task_store.add_task(
-            title,
-            str(spec["goal"]),
+        task_id = await create_task(
+            loop,
+            proposal_source="loop/task.parallel",
+            title=title,
+            goal=str(spec["goal"]),
             priority="normal",
             source="internal",
             parent_task_id=str(parent_task_id) if parent_task_id else "",
             next_step=str(spec["goal"]),
+            decision_basis=f"parallel decomposition scheduled child task for: {spec['goal']}"[:240],
         )
         task = await loop._task_store.get_task_by_id(task_id)
         if task:

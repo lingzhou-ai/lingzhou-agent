@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .webhook import describe_webhook_channel, start_webhook_channel
 from .wechat import describe_wechat_channel, start_wechat_channel
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Callable
+    from pathlib import Path
 
 _CHANNEL_DESCRIBERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "wechat": describe_wechat_channel,

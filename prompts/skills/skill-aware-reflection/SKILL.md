@@ -1,6 +1,6 @@
 ---
 name: skill-aware-reflection
-aliases: skill.reflection, embodiskill
+aliases: embodiskill
 description: "Skill感知反思器。Use when 任务失败或效果不佳且 applied_skills 非空时，先对失败轨迹分类（SKILL_DEFECT / EXECUTION_LAPSE / DISCOVERY / OPTIMIZATION），再决定是否调用 skill.evolve，防止误改有效技能。基于 EmbodiSkill（arXiv:2605.10332）。"
 compatibility: Designed for Lingzhou agent runtime. Requires skill.activate, skill.evolve tools.
 tags: skill, evolution, reflection, failure-analysis

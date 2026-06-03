@@ -27,7 +27,7 @@ from core.judgment import JudgmentLayer, JudgmentOutput
 from core.loop.drive.behavior import BehaviorTracker
 from core.metabolic import MetabolicEngine
 from core.perception import EmotionState
-from core.persona.soul import SoulManager
+from core.persona import IdentityBootstrapManager
 from core.probe import ProbeManager
 from memory.working import WorkingMemory
 from provider import create_provider
@@ -120,7 +120,6 @@ class CognitionLoop:
         )
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
         self._task_store = TaskStore(Path(cfg.db_path))
-        self._metabolic = MetabolicEngine(self._task_store)  # 代谢器官（公理 A5）
 
         # 情绪状态(初始值来自 config)
         self._emotion = EmotionState.from_config(cfg)
@@ -135,7 +134,7 @@ class CognitionLoop:
         self._run_driver = RunDriver(self._execution)  # Phase 3b: Run 路由层
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
 
-        # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
+        # 分层路由 providers({"reader": p1, "reasoner": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
 
         # embedding 混合检索(embed_fn=None 则纯关键词模式)
@@ -176,9 +175,10 @@ class CognitionLoop:
             temporal_weight=cfg.memory.semantic_temporal_weight,
             temporal_window_days=cfg.memory.semantic_temporal_window_days,
         )
+        self._metabolic = MetabolicEngine(self._task_store, semantic_memory=self._semantic)  # 代谢器官（公理 A5）
 
         # 子系统:Soul 文件管理 + 行为模式追踪
-        self._soul = SoulManager(self._cfg, self._task_store, self._wm)
+        self._soul = IdentityBootstrapManager(self._cfg, self._task_store, self._wm)
         self._behavior = BehaviorTracker(
             wait_streak_notify=list(cfg.loop.wait_streak_notify),
             streak_threshold=cfg.loop.behavior_streak_threshold,
@@ -195,7 +195,7 @@ class CognitionLoop:
         )
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)
-        from core.loop.drive.self_drive import SelfDriveEngine
+        from core.loop.drive.engine import SelfDriveEngine
 
         self._self_drive = SelfDriveEngine(str(cfg.db_path))
 

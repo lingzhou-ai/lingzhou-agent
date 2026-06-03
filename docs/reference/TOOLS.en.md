@@ -49,7 +49,6 @@ Two design rules matter:
 - `task.plan`
 - `schedule.add`
 - `schedule.list`
-- `schedule.ack`
 - `schedule.cancel`
 
 ### 4. Memory and Reflection

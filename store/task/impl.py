@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any
 
 import aiosqlite
 
 from . import TaskStore
-from .migrate import migrate_interlocutor_facts, migrate_ledger_run_id, migrate_legacy_schema
+from .migrate import migrate_interlocutor_facts, migrate_ledger_audit_columns, migrate_legacy_schema
 from .schema import (
     _CREATE_CHAT,
     _CREATE_FACTS,
@@ -47,7 +48,7 @@ async def open(self: TaskStore) -> None:
     )
     await self._db.commit()
     await migrate_interlocutor_facts(self._db)
-    await migrate_ledger_run_id(self._db)
+    await migrate_ledger_audit_columns(self._db)
 
 
 async def close(self: TaskStore) -> None:
@@ -70,10 +71,8 @@ async def _write_with_retry(self: TaskStore, fn: Any, /, *args: Any, **kwargs: A
                 return await fn(*args, **kwargs)
         except Exception as exc:
             if "database is locked" in str(exc).lower() and attempt < 5:
-                try:
+                with contextlib.suppress(Exception):
                     await self._db.rollback()
-                except Exception:
-                    pass
                 await asyncio.sleep(0.15 * (2 ** attempt))
                 _logger.debug("[task_store] database locked, retry %d/5", attempt + 1)
             else:

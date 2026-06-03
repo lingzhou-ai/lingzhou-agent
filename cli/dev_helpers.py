@@ -12,11 +12,8 @@ _MODEL_TARGET_ALIASES = {
     "model": "primary",
     "main": "primary",
     "primary": "primary",
-    "thinking": "reasoner",
     "reasoner": "reasoner",
-    "complex": "reasoner",
     "reader": "reader",
-    "simple": "reader",
     "repair": "repair",
 }
 
@@ -63,6 +60,8 @@ def _apply_model_target_selection(
             ),
             "runtime_override_tier": None,
         }
+    if normalized not in _RUNTIME_ROUTING_TIERS:
+        raise ValueError(f"未知模型目标: {target!r}；可用值: primary, reader, reasoner, repair")
 
     routing = cfg_data.get("routing")
     if not isinstance(routing, dict):
@@ -165,6 +164,8 @@ def _sync_routing_models_on_primary_switch(
     new_provider = _provider_name(new_model)
     changed: list[str] = []
     for tier, model_ref in routing.items():
+        if tier not in _RUNTIME_ROUTING_TIERS:
+            continue
         if not isinstance(model_ref, str) or model_ref == new_model:
             continue
         if model_ref == old_model or (

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from core.config_models import ThresholdsConfig, run_result_memory_affect
 from core.contracts.execution import action_key_param
 from core.log_fields import execution_scope_fields
+from core.metabolic import add_semantic_memory, update_run, update_task_result
 from store.task import build_task_run_result_patch
 from tools.registry import ToolContext, ToolResult, tool_has_capability
 
@@ -73,6 +74,11 @@ def _coerce_result_text(value: Any) -> str:
 
 
 def _classify_durable_failure(result: ToolResult) -> str | None:
+    # 进化修复：防御上游误传 dict 导致 TypeError
+    if isinstance(result, dict):
+        return None
+    if not hasattr(result, "summary"):
+        return None
     text = "\n".join(
         segment
         for segment in (
@@ -301,7 +307,7 @@ def _record_run_started(
     )
 
 
-def record_run_outcome_memory(
+async def record_run_outcome_memory(
     episodic: Any | None,
     semantic: Any | None,
     *,
@@ -315,7 +321,13 @@ def record_run_outcome_memory(
     summary: str,
     error: str,
     evidence: str = "",
+    owner: Any | None = None,
+    task_store: Any | None = None,
+    metabolic: Any | None = None,
 ) -> None:
+    writer_owner = metabolic or owner or task_store
+    if semantic is None and writer_owner is None and task_store is None:
+        return
     is_failure = bool(error) or status == "failed"
     if episodic is not None:
         event_type = "run_failed" if is_failure or status == "failed" else "run_completed"
@@ -358,21 +370,43 @@ def record_run_outcome_memory(
         memory_cfg,
         is_failure=is_failure,
     )
-    semantic.upsert(MemoryNode(
-        id=f"run-result-{run_id}",
-        kind="run_result",
-        title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
-        body="\n".join(body_parts),
-        activation=activation,
-        valence=valence,
-        tags=tags,
-    ))
+    # 优先走代谢提案写入语义记忆；失败时回退到原始 upsert，避免影响主流程可用性。
+    try:
+        await add_semantic_memory(
+            writer_owner,
+            task_store=task_store,
+            semantic_memory=semantic,
+            node_id=f"run-result-{run_id}",
+            kind="run_result",
+            title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
+            body="\n".join(body_parts),
+            activation=activation,
+            valence=valence,
+            tags=tags,
+            source="execution/run_result",
+            decision_basis=f"run_result_{run_id}",
+        )
+    except Exception:
+        if semantic is not None:
+            semantic.upsert(MemoryNode(
+                id=f"run-result-{run_id}",
+                kind="run_result",
+                title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
+                body="\n".join(body_parts),
+                activation=activation,
+                valence=valence,
+                tags=tags,
+            ))
 
 
-def record_meta_reflection_memory(
+async def record_meta_reflection_memory(
     episodic: Any | None,
     semantic: Any | None,
     meta: dict[str, str | int],
+    *,
+    owner: Any | None = None,
+    task_store: Any | None = None,
+    metabolic: Any | None = None,
 ) -> None:
     reflection_id = str(meta.get("reflection_id") or "")
     target_kind = str(meta.get("target_kind") or "")
@@ -397,6 +431,7 @@ def record_meta_reflection_memory(
                 "decision": decision,
             },
         )
+    writer_owner = metabolic or owner or task_store
     if semantic is None:
         return
     from store.semantic import MemoryNode
@@ -406,36 +441,79 @@ def record_meta_reflection_memory(
         tags.append(tool_name)
     if task_id:
         tags.append(f"task:{task_id}")
-    semantic.upsert(MemoryNode(
-        id=f"meta-reflection-{reflection_id}",
-        kind="meta_reflection",
-        title=f"[{decision}] {target_kind or 'reflection'} run#{run_id}",
-        body=(
-            f"diagnosis={diagnosis}\n"
-            f"proposal={proposal}\n"
-            f"verification_plan={verification_plan}"
-        ),
-        activation=0.8 if decision != "defer" else 0.7,
-        valence=0.42 if decision == "rollback" else 0.58,
-        tags=tags,
-    ))
-    if decision in {"apply", "rollback"}:
-        rule_target = target_kind or "rule"
-        rule_tool = tool_name or "unknown-tool"
-        semantic.upsert(MemoryNode(
-            id=f"rule-revision-{reflection_id}",
-            kind="rule_revision",
-            title=f"[{decision}] {rule_target} via {rule_tool} run#{run_id}",
+    # 优先走代谢提案；失败则回退到直接 upsert，保证既能审计也不影响反思链路。
+    try:
+        await add_semantic_memory(
+            writer_owner,
+            task_store=task_store,
+            semantic_memory=semantic,
+            node_id=f"meta-reflection-{reflection_id}",
+            kind="meta_reflection",
+            title=f"[{decision}] {target_kind or 'reflection'} run#{run_id}",
             body=(
-                f"target_kind={target_kind}\n"
-                f"tool_name={tool_name}\n"
+                f"diagnosis={diagnosis}\n"
                 f"proposal={proposal}\n"
                 f"verification_plan={verification_plan}"
             ),
-            activation=0.83,
-            valence=0.46 if decision == "rollback" else 0.62,
-            tags=[target_kind, decision, tool_name or ""] if tool_name else [target_kind, decision],
+            activation=0.8 if decision != "defer" else 0.7,
+            valence=0.42 if decision == "rollback" else 0.58,
+            tags=tags,
+            source="execution/meta_reflection",
+            decision_basis=f"meta_reflection:{reflection_id}",
+        )
+    except Exception:
+        semantic.upsert(MemoryNode(
+            id=f"meta-reflection-{reflection_id}",
+            kind="meta_reflection",
+            title=f"[{decision}] {target_kind or 'reflection'} run#{run_id}",
+            body=(
+                f"diagnosis={diagnosis}\n"
+                f"proposal={proposal}\n"
+                f"verification_plan={verification_plan}"
+            ),
+            activation=0.8 if decision != "defer" else 0.7,
+            valence=0.42 if decision == "rollback" else 0.58,
+            tags=tags,
         ))
+    if decision in {"apply", "rollback"}:
+        rule_target = target_kind or "rule"
+        rule_tool = tool_name or "unknown-tool"
+        # apply/rollback 形成规则修订时，同步落地到语义层；异常回退避免丢事件。
+        try:
+            await add_semantic_memory(
+                writer_owner,
+                task_store=task_store,
+                semantic_memory=semantic,
+                node_id=f"rule-revision-{reflection_id}",
+                kind="rule_revision",
+                title=f"[{decision}] {rule_target} via {rule_tool} run#{run_id}",
+                body=(
+                    f"target_kind={target_kind}\n"
+                    f"tool_name={tool_name}\n"
+                    f"proposal={proposal}\n"
+                    f"verification_plan={verification_plan}"
+                ),
+                activation=0.83,
+                valence=0.46 if decision == "rollback" else 0.62,
+                tags=[target_kind, decision, tool_name or ""] if tool_name else [target_kind, decision],
+                source="execution/rule_revision",
+                decision_basis=f"rule_revision:{reflection_id}",
+            )
+        except Exception:
+            semantic.upsert(MemoryNode(
+                id=f"rule-revision-{reflection_id}",
+                kind="rule_revision",
+                title=f"[{decision}] {rule_target} via {rule_tool} run#{run_id}",
+                body=(
+                    f"target_kind={target_kind}\n"
+                    f"tool_name={tool_name}\n"
+                    f"proposal={proposal}\n"
+                    f"verification_plan={verification_plan}"
+                ),
+                activation=0.83,
+                valence=0.46 if decision == "rollback" else 0.62,
+                tags=[target_kind, decision, tool_name or ""] if tool_name else [target_kind, decision],
+            ))
 
 
 def _should_record_run_outcome(status: str) -> bool:
@@ -509,7 +587,8 @@ async def finalize_run(
     resolved_task_id = _resolved_run_task_id(result, active_task_id or 0)
     status = _run_status_from_result(result)
     progress = _run_progress_text(result)
-    await ctx.task_store.update_run(
+    await update_run(
+        ctx,
         run_id,
         task_id=resolved_task_id,
         status=status,
@@ -518,6 +597,8 @@ async def finalize_run(
         error_text=result.error or "",
         session_id=str(result.metadata.get("session_id") or ""),
         progress=progress,
+        source="execution/helpers/finalize_run",
+        decision_basis=f"run_id={run_id} status={status}",
     )
     _summary_log, _error_log, _state_log = _tool_result_log_fields(result)
     _worker_log = _worker_log_fields(result)
@@ -537,7 +618,7 @@ async def finalize_run(
         _state_log or "-",
     )
     if _should_record_run_outcome(status):
-        record_run_outcome_memory(
+        await record_run_outcome_memory(
             ctx.episodic,
             ctx.semantic,
             memory_cfg=getattr(ctx.config, "memory", None),
@@ -550,9 +631,11 @@ async def finalize_run(
             summary=result.summary,
             error=result.error or "",
             evidence=result.evidence,
+            task_store=ctx.task_store,
         )
     if resolved_task_id:
-        await ctx.task_store.update_task_result(
+        await update_task_result(
+            ctx,
             resolved_task_id,
             build_task_run_result_patch(
                 run_id=run_id,
@@ -563,6 +646,7 @@ async def finalize_run(
                 summary=result.summary,
                 error=result.error,
             ),
+            source="execution/helpers/finalize_run",
         )
     meta = build_meta_reflection(
         run_id=run_id,
@@ -584,4 +668,9 @@ async def finalize_run(
             run_id=int(meta["run_id"]),
             tool_name=str(meta["tool_name"]),
         )
-        record_meta_reflection_memory(ctx.episodic, ctx.semantic, meta)
+        await record_meta_reflection_memory(
+            ctx.episodic,
+            ctx.semantic,
+            meta,
+            task_store=ctx.task_store,
+        )

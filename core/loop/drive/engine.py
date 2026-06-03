@@ -1,4 +1,4 @@
-"""core/self_drive.py — 灵舟自驱力引擎 (Self-Drive Engine)
+"""core.loop.drive.engine — 灵舟自驱力引擎 (Self-Drive Engine)
 
 理论基础:
   - Active Inference (Friston 2013): 预测误差 → 驱动力
@@ -8,8 +8,8 @@
 
 核心逻辑:
   1. 感知层输入 → 计算好奇心信号 C(t)
-  2. C(t) > 阈值 → 生成自主探索目标
-  3. 目标注入 tasks 表 → loop 消费
+  2. C(t) > 阈值 → 形成自驱事件
+  3. 自驱事件进入 WM，由主脑感知后裁决是否行动
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class CuriosityState:
     """好奇心状态 — 追踪灵舟对各个领域的兴趣水平。"""
 
     # 知识领域 → 兴趣分 (0-1)
-    # 高兴趣 = 高好奇心 = 应该探索  # noqa: ERA001
+    # 高兴趣 = 高好奇心；是否行动由主脑在上下文中裁决
     interests: dict[str, float] = field(default_factory=lambda: {
         "code_structure": 0.5,    # 代码结构理解
         "tool_mastery": 0.5,      # 工具掌握
@@ -95,7 +95,7 @@ class CuriosityState:
 
 @dataclass
 class DriveSignal:
-    """自驱力信号 — 传递给判断层。"""
+    """自驱力信号 — 作为内在感知事件传递给判断层。"""
     should_explore: bool = False
     drive_type: str = "explore"    # "explore"（扩展探索）| "consolidate"（内聚整合）
     curiosity_score: float = 0.5
@@ -104,9 +104,9 @@ class DriveSignal:
 
 
 class SelfDriveEngine:
-    """自驱力引擎 — 计算好奇心、生成探索目标。
+    """自驱力引擎 — 计算好奇心和候选方向。
 
-    与主 loop 并行：loop 在 idle 时查询此引擎获取自驱目标。
+    与主 loop 并行：loop 在 idle 时查询此引擎，将事件注入 WM 供主脑裁决。
     """
 
     def __init__(self, db_path: str, state_file: str | None = None):
@@ -198,10 +198,10 @@ class SelfDriveEngine:
                 rationale="有用户消息或活跃任务，自驱力休眠",
             )
 
-        # 场景2: 长时间空闲 → 强制探索
+        # 场景2: 长时间空闲 → 形成高置信自驱事件
         if idle_ticks >= FORCE_EXPLORE_IDLE:
             should_explore = True
-            rationale_parts.append(f"空闲 {idle_ticks} 轮强制探索")
+            rationale_parts.append(f"空闲 {idle_ticks} 轮，自驱事件置信度升高")
 
         # 场景3: 好奇心超过阈值  # noqa: ERA001
         elif C > EXPLORE_THRESHOLD:
@@ -264,7 +264,10 @@ class SelfDriveEngine:
         )
 
     def generate_exploration_task(self, domain: str) -> dict:
-        """为指定领域生成探索任务。包含进化触发建议。"""
+        """为指定领域生成候选探索意图。
+
+        返回值只作为 WM 事件中的候选方向；是否创建任务或行动由主脑裁决。
+        """
         domain_tasks = {
             "code_structure": {
                 "title": "探索灵舟代码结构",

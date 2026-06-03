@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
     from tools.registry import ToolContext, ToolResult
 
+from core.metabolic import update_run
+
 from ..cycle.dispatcher import TickJob
 from ..cycle.focus import resolve_focus_task
 
@@ -117,10 +119,13 @@ class RunDriver:
                 return None
             # 认领：pending → running（started_at 由 update_run 通过写入 completed_at 时机判断）
             # 注意：update_run 只在终态时设置 completed_at，running 不设置。这里用 log_text 记录认领时间
-            await task_store.update_run(
+            await update_run(
+                loop,
                 run.id,
                 status="running",
                 log_text="[poll] claimed by run_driver",
+                source="loop/runs/driver/poll_pending_runs",
+                proposal_run_id=run.id,
             )
             # 注入 TickJob 到 dispatcher
             dispatcher = getattr(loop, "_tick_dispatcher", None)
@@ -139,14 +144,24 @@ class RunDriver:
                 )
                 if not accepted:
                     _log.debug("[poll] dispatcher queue full, pending Run #%d 回退到 pending", run.id)
-                    await task_store.update_run(run.id, status="pending", log_text="[poll] queue full, requeue")
+                    await update_run(
+                        loop,
+                        run.id,
+                        status="pending",
+                        log_text="[poll] queue full, requeue",
+                        source="loop/runs/driver/poll_pending_runs_requeue",
+                        proposal_run_id=run.id,
+                    )
                     return None
                 # TickJob 已入队，bootstrap Run 使命完成 → succeeded
                 with contextlib.suppress(Exception):
-                    await task_store.update_run(
+                    await update_run(
+                        loop,
                         run.id,
                         status="succeeded",
                         log_text="[poll] TickJob enqueued, bootstrap Run completed",
+                        source="loop/runs/driver/poll_pending_runs_enqueued",
+                        proposal_run_id=run.id,
                     )
                 _log.debug("[poll] pending Run #%d → succeeded，已注入 TickJob cycle=%d", run.id, dispatch_cycle)
                 return dispatch_cycle
@@ -157,10 +172,13 @@ class RunDriver:
                     await loop._tick(new_cycle)
                 # 直接 tick 也算完成
                 with contextlib.suppress(Exception):
-                    await task_store.update_run(
+                    await update_run(
+                        loop,
                         run.id,
                         status="succeeded",
                         log_text="[poll] direct tick completed, bootstrap Run completed",
+                        source="loop/runs/driver/poll_pending_runs_tick",
+                        proposal_run_id=run.id,
                     )
                 _log.debug("[poll] pending Run #%d → succeeded，直接 tick cycle=%d", run.id, new_cycle)
                 return new_cycle

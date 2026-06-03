@@ -10,7 +10,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import submit_fact
 
 from .breaker import (
     _is_global_breaker_cooling_down as _is_global_breaker_cooling_down_impl,
@@ -400,10 +400,13 @@ class EvolutionEngine:
                         "aspiration": aspiration,
                         "at": datetime.now(UTC).isoformat(),
                     }, ensure_ascii=False)
-                    await ctx.metabolic.submit(StateProposal(
-                        op="set_fact", key=fact_key, value=fact_val,
-                        scope="system", source="evolution/history",
-                    ))
+                    await submit_fact(
+                        ctx,
+                        key=fact_key,
+                        value=fact_val,
+                        scope="system",
+                        source="evolution/history",
+                    )
                 except Exception as exc:
                     _log.debug("[evolution] 历史 fact 写入跳过: %s", exc)
         except Exception as exc:
@@ -428,10 +431,13 @@ class EvolutionEngine:
                 "reason": reason if reason else "",
                 "at": datetime.now(UTC).isoformat(),
             }, ensure_ascii=False)
-            await ctx.metabolic.submit(StateProposal(
-                op="set_fact", key=key, value=val,
-                scope="system", source="evolution/history",
-            ))
+            await submit_fact(
+                ctx,
+                key=key,
+                value=val,
+                scope="system",
+                source="evolution/history",
+            )
         except Exception as exc:
             _log.debug("[evolution] 生命史账本写入跳过: %s", exc)
 

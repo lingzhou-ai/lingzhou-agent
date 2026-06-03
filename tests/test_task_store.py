@@ -215,6 +215,10 @@ async def _task_add_does_not_reuse_self_drive_task_for_external_request():
         assert result.metadata.get("reused_existing_task") is not True
         tasks = await store.list_tasks(limit=10)
         assert len(tasks) == 2
+        ledger = await store.ledger_recent(limit=3)
+        assert ledger[0]["op"] == "create_task"
+        assert ledger[0]["source"] == "tools/task.add"
+        assert ledger[0]["key"] == f"task:{result.metadata['task_id']}"
 
         await store.close()
 
@@ -301,6 +305,10 @@ async def _task_update_can_clear_runtime_fields():
         assert task.next_step == ""
         assert task.current_step == ""
         assert task.model_tier == ""
+        ledger = await store.ledger_recent(limit=3)
+        assert ledger[0]["op"] == "update_task_status"
+        assert ledger[0]["source"] == "tools/task.update"
+        assert ledger[0]["key"] == str(task_id)
 
         await store.close()
 
@@ -394,6 +402,9 @@ async def _task_wait_resume_can_clear_runtime_fields():
         assert resumed.status == "ready"
         assert resumed.current_step == ""
         assert resumed.next_step == ""
+        ledger = await store.ledger_recent(limit=3)
+        assert [row["op"] for row in ledger[:2]] == ["resume_task", "mark_task_waiting"]
+        assert [row["source"] for row in ledger[:2]] == ["tools/task.resume", "tools/task.wait"]
 
         await store.close()
 
@@ -549,6 +560,9 @@ async def _task_steer_inbox_is_consumed_once():
         consumed = await store.get_task_by_id(task_id)
         assert consumed is not None
         assert consumed.extras.get("inbox_messages") == []
+        ledger = await store.ledger_recent(limit=3)
+        assert ledger[0]["op"] == "update_task_data"
+        assert ledger[0]["source"] == "tools/task.steer"
 
         inbox_again = await store.pop_task_inbox(task_id)
         assert inbox_again == []
@@ -1009,4 +1023,3 @@ async def _task_amend_tool_uses_active_task_when_no_task_id():
         assert t.goal == "修正后目标（无需传 task_id）"
 
         await store.close()
-

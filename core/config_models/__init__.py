@@ -10,12 +10,13 @@ from .advanced import (
     SoulConfig,
     ThresholdsConfig,
 )
-from .base import LoopConfig, ProviderDefinition
+from .base import LoggingConfig, LoopConfig, ProviderDefinition
 from .runtime import MemoryConfig, PromptsConfig, run_result_memory_affect
 
 __all__ = [
     "ProviderDefinition",
     "LoopConfig",
+    "LoggingConfig",
     "PromptsConfig",
     "MemoryConfig",
     "run_result_memory_affect",

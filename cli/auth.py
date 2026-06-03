@@ -13,12 +13,9 @@ from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from store.auth import (
     AUTH_PROFILES_PATH,
     COPILOT_PROFILE_ID,
-    LEGACY_CREDENTIALS_PATH,
     get_auth_profile,
     load_github_device_client_id,
-    load_legacy_credentials,
     mask_secret,
-    save_legacy_credentials,
     set_token_profile,
 )
 
@@ -45,13 +42,7 @@ def _load_copilot_client_id(config: Path) -> str:
 
 
 def _store_copilot_token(token: str) -> None:
-    # Canonical store: lingzhou auth profile store
     set_token_profile(profile_id=COPILOT_PROFILE_ID, provider="copilot", token=token)
-
-    # Legacy compatibility: 保留 credentials.json 回退读取能力
-    legacy = load_legacy_credentials()
-    legacy["GITHUB_TOKEN"] = token
-    save_legacy_credentials(legacy)
 
 
 def _login_copilot_impl(
@@ -245,7 +236,6 @@ def _login_copilot_impl(
     console.print(
         f"\n[green]✓ Copilot 登录信息已保存[/green]\n"
         f"  auth profiles: [dim]{AUTH_PROFILES_PATH}[/dim]\n"
-        f"  legacy compat: [dim]{LEGACY_CREDENTIALS_PATH}[/dim]\n"
         f"  profile:       [dim]{COPILOT_PROFILE_ID}[/dim]\n"
         f"  token:         [dim]{mask_secret(token)}[/dim]"
     )
@@ -268,31 +258,14 @@ def auth_login_copilot(
     _login_copilot_impl(config, force, method=method, oauth_client_id=oauth_client_id)
 
 
-@auth_app.command("copilot")
-def auth_copilot(
-    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
-    force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
-    method: Annotated[
-        Literal["auto", "gh", "device", "token"],
-        typer.Option("--method", help="授权方式：auto | gh | device | token"),
-    ] = "auto",
-    oauth_client_id: Annotated[
-        str,
-        typer.Option("--oauth-client-id", help="GitHub OAuth App Client ID（仅 --method device 时使用）"),
-    ] = "",
-) -> None:
-    """Copilot 登录的兼容别名。"""
-    _login_copilot_impl(config, force, method=method, oauth_client_id=oauth_client_id)
-
-
 @auth_app.command("set-token")
 def auth_set_token(
     provider: Annotated[str, typer.Option("--provider", "-p", help="provider 名称，如 bailian / copilot")],
     token: Annotated[str, typer.Option("--token", help="访问 token", prompt=True, hide_input=True)],
-    env_name: Annotated[str, typer.Option("--env", help="写入 credentials.json 的键名；空则按 provider 自动推断")] = "",
+    env_name: Annotated[str, typer.Option("--env", help="提示用环境变量名；空则按 provider 自动推断")] = "",
     profile_id: Annotated[str, typer.Option("--profile-id", help="auth profile id；空则自动使用 <provider>:default")] = "",
 ) -> None:
-    """写入通用 provider token（auth-profiles + legacy credentials）。
+    """写入通用 provider token（auth-profiles）。
 
     适用于 bailian/openai_compat 等 provider。
     """
@@ -314,17 +287,12 @@ def auth_set_token(
 
     set_token_profile(profile_id=profile, provider=provider_name, token=token)
 
-    legacy = load_legacy_credentials()
-    legacy[env_key] = token
-    save_legacy_credentials(legacy)
-
     console.print(
         f"[green]✓ token 已保存[/green]\n"
         f"  provider: [dim]{provider_name}[/dim]\n"
         f"  profile:  [dim]{profile}[/dim]\n"
         f"  env key:  [dim]{env_key}[/dim]\n"
         f"  auth:     [dim]{AUTH_PROFILES_PATH}[/dim]\n"
-        f"  legacy:   [dim]{LEGACY_CREDENTIALS_PATH}[/dim]\n"
         "  [dim]提示：若要优先使用 auth profile，请在对应 provider 配置中设置 auth_profile_id。[/dim]"
     )
 
@@ -333,7 +301,7 @@ def auth_set_token(
 def auth_bailian(
     token: Annotated[str, typer.Option("--token", help="百炼 API Key", prompt=True, hide_input=True)],
     profile_id: Annotated[str, typer.Option("--profile-id", help="auth profile id，默认 bailian:default")] = "bailian:default",
-    env_name: Annotated[str, typer.Option("--env", help="写入 credentials.json 的键名，默认 DASHSCOPE_API_KEY")] = "DASHSCOPE_API_KEY",
+    env_name: Annotated[str, typer.Option("--env", help="提示用环境变量名，默认 DASHSCOPE_API_KEY")] = "DASHSCOPE_API_KEY",
 ) -> None:
     """快捷配置百炼 token：等价于 lingzhou auth set-token --provider bailian。"""
     auth_set_token(provider="bailian", token=token, env_name=env_name, profile_id=profile_id)
@@ -343,7 +311,7 @@ def auth_bailian(
 def auth_deepseek(
     token: Annotated[str, typer.Option("--token", help="DeepSeek API Key", prompt=True, hide_input=True)],
     profile_id: Annotated[str, typer.Option("--profile-id", help="auth profile id，默认 deepseek:default")] = "deepseek:default",
-    env_name: Annotated[str, typer.Option("--env", help="写入 credentials.json 的键名，默认 DEEPSEEK_API_KEY")] = "DEEPSEEK_API_KEY",
+    env_name: Annotated[str, typer.Option("--env", help="提示用环境变量名，默认 DEEPSEEK_API_KEY")] = "DEEPSEEK_API_KEY",
 ) -> None:
     """快捷配置 DeepSeek token：等价于 lingzhou auth set-token --provider deepseek。"""
     auth_set_token(provider="deepseek", token=token, env_name=env_name, profile_id=profile_id)

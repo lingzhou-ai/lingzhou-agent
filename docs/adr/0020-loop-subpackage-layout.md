@@ -20,7 +20,7 @@
 | `cycle/` | `driver`, `dispatcher`, `chat`, `focus` | 事件驱动调度与焦点 |
 | `runs/` | `driver`, `refresh` | Run 路由与运行中刷新 |
 | `shared/` | `common`, `logging`, `continue_phase`, `postprocess`, `progress` | tick 共享 helper（`continue` 为关键字，模块名用 `continue_phase`） |
-| `drive/` | `behavior`, `self_drive` | 行为统计与自驱力 |
+| `drive/` | `behavior`, `engine` | 行为统计与自驱力 |
 
 - 各子包 `__init__.py` **仅文档**，不重导出符号。
 - 删除 `loop/` 根目录下上述旧扁平文件。

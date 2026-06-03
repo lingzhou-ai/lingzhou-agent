@@ -3,10 +3,12 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager, suppress
 
-from . import EpisodicMemory
-from . import db
-from . import events
-from . import narrative
+from . import (
+    EpisodicMemory,
+    db,
+    events,
+    narrative,
+)
 
 
 def _conn_getter(self: EpisodicMemory) -> sqlite3.Connection:

@@ -7,7 +7,6 @@ from .common import chat_handle_tag, normalize_text, split_text_sentences
 from .extraction import extract_identity_cues
 from .models import ExtractedSignals
 
-
 _SPEAKER_CONTINUITY_MAX_QUERIES = 4
 _SPEAKER_CONTINUITY_MAX_CHARS = 96
 _SPEAKER_LOG_QUERY_PREVIEW_CHARS = 48

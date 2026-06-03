@@ -156,11 +156,12 @@ def test_trim_messages_omits_whole_messages_not_slices() -> None:
 
 
 def test_context_utils_module() -> None:
-    from core.judgment.context.utils import _fill_template, _validate_context_schema
     from core.judgment.context.utils import (
         _clear_context_cache,
         _compress_text_segments,
         _estimate_tokens,
+        _fill_template,
+        _validate_context_schema,
     )
     from core.judgment.context.utils import (
         _fill_template as fill_fn,

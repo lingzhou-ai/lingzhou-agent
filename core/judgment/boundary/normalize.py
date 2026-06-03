@@ -91,7 +91,15 @@ def normalize_action_shape(
         output.params = {}
 
     if output.decision not in {"act", "pause", "wait"}:
-        return JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
+        return JudgmentOutput(
+            decision="wait",
+            rationale=f"无效 decision: {output.decision!r}",
+            reflection=output.reflection,
+            reply_to_user=output.reply_to_user,
+            next_step=output.next_step,
+            model_strategy=dict(output.model_strategy or {}),
+            params={},
+        )
 
     if output.decision != "act":
         return output
@@ -122,9 +130,25 @@ def normalize_action_shape(
             return output
         if has_delegate_tasks and allow_delegate_tasks:
             return output
-        return JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        return JudgmentOutput(
+            decision="wait",
+            rationale="act 决策缺少 chosen_action_id",
+            speech_intent=output.speech_intent,
+            reply_to_user=output.reply_to_user,
+            next_step=output.next_step,
+            model_strategy=dict(output.model_strategy or {}),
+            params={},
+        )
 
     if registry is not None and registry.get(output.chosen_action_id) is None:
-        return JudgmentOutput.wait(reason=f"未知工具: {output.chosen_action_id!r}")
+        return JudgmentOutput(
+            decision="wait",
+            rationale=f"未知工具: {output.chosen_action_id!r}",
+            speech_intent=output.speech_intent,
+            reply_to_user=output.reply_to_user,
+            next_step=output.next_step,
+            model_strategy=dict(output.model_strategy or {}),
+            params={},
+        )
 
     return output

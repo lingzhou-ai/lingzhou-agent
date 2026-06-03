@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import BaseModel, Field
 
 
 class PromptsConfig(BaseModel):
@@ -51,7 +51,6 @@ class MemoryConfig(BaseModel):
         default=0.1,
         ge=0.0,
         le=10.0,
-        validation_alias=AliasChoices("semantic_decay_lambda", "decay_lambda"),
         description="语义记忆激活衰减率（Ebbinghaus，λ/天）；0 表示不衰减",
     )
     embedding_model: str | None = Field(
@@ -75,10 +74,6 @@ class MemoryConfig(BaseModel):
         description="语义检索时间权重的标准时间窗（天）",
     )
 
-    @property
-    def decay_lambda(self) -> float:
-        """兼容旧代码中的 memory.decay_lambda 访问。"""
-        return self.semantic_decay_lambda
     daily_recall_days: int = Field(
         default=2, ge=1, le=14,
         description="daily 补短检索的最近天数窗口；仅在长期记忆命中不足时使用",
@@ -208,5 +203,4 @@ def run_result_memory_affect(memory_cfg: Any | None, *, is_failure: bool) -> tup
         float(getattr(cfg, "run_result_success_activation", 0.72)),
         float(getattr(cfg, "run_result_success_valence", 0.65)),
     )
-
 

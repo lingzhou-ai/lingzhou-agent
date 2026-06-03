@@ -417,6 +417,8 @@ class _SubagentTaskStoreView:  # noqa: D101 - internal view for subagent tick co
         raise self._reject("update_status")
     async def update_task_data(self, *args: Any, **kwargs: Any) -> Any:
         raise self._reject("update_task_data")
+    async def amend_task(self, *args: Any, **kwargs: Any) -> Any:
+        raise self._reject("amend_task")
     async def add_signal(self, *args: Any, **kwargs: Any) -> Any:
         raise self._reject("add_signal")
     async def ack_signal(self, *args: Any, **kwargs: Any) -> Any:

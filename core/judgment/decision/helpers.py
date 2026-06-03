@@ -358,7 +358,7 @@ async def _repair_output_impl(
 ) -> JudgmentOutput | None:
     from provider.base import Message
 
-    _ = context_text  # 保持签名兼容；repair 仅依赖 broken_output。
+    _ = context_text  # repair 仅依赖 broken_output，完整上下文由调用层保留。
     compact_raw = raw
     if len(compact_raw) > 50000:
         compact_raw = compact_raw[:25000] + "\n...\n" + compact_raw[-25000:]

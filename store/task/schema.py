@@ -1,8 +1,7 @@
 """store/task/schema.py — DDL 常量与任务层工具函数。"""
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from store.task.models import Task
@@ -206,7 +205,10 @@ CREATE TABLE IF NOT EXISTS life_ledger (
     scope      TEXT    NOT NULL DEFAULT 'task',
     source     TEXT    NOT NULL DEFAULT '',
     accepted   INTEGER NOT NULL DEFAULT 1,  -- 0=被免疫器官拒绝
-    run_id     INTEGER NOT NULL DEFAULT 0   -- 产生此条目的 Run ID（0=未关联）
+    run_id     INTEGER NOT NULL DEFAULT 0,  -- 产生此条目的 Run ID（0=未关联）
+    reason     TEXT    NOT NULL DEFAULT '', -- 拒绝/失败原因，成功时为空
+    proposal_hash TEXT NOT NULL DEFAULT '', -- StateProposal 稳定指纹，用于回放去重
+    decision_basis TEXT NOT NULL DEFAULT '' -- 可公开审计的判断依据摘要，不记录内部思维链
 );
 CREATE INDEX IF NOT EXISTS idx_life_ledger_ts
     ON life_ledger(ts DESC);

@@ -6,7 +6,7 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from core.metabolic import StateProposal
+from core.metabolic import add_run, set_soul_fact, submit_fact, update_task_data
 from store.episodic import EpisodicMemory
 from tools.registry import ToolResult
 
@@ -43,6 +43,12 @@ if TYPE_CHECKING:
     from store.task import Task
 
 
+def _decision_basis(action: Any, fallback: str = "") -> str:
+    """把 action 的 rationale 压成账本可审计摘要，避免传播长篇内部独白。"""
+    basis = str(getattr(action, "rationale", "") or fallback or "")
+    return _clip_signal_text(" ".join(basis.split()), 240)
+
+
 async def _execute_tick_action(
     loop: Any,
     ctx: Any,
@@ -63,12 +69,15 @@ async def _execute_tick_action(
         if not _llm_skipped and loop._task_store is not None:
             _rt = "chat_reply" if action.speech_intent else "judge"
             try:
-                await loop._task_store.add_run(
+                await add_run(
+                    loop,
                     task_id=active_task.id if active_task else 0,
                     run_type=_rt,
                     worker_type=f"{_rt}-worker",
                     status="succeeded",
                     output_json={"decision": action.decision, "rationale": (action.rationale or "")},
+                    source="loop/tick/exec/judge_chat",
+                    decision_basis=f"action={action.rationale or action.decision}",
                 )
             except Exception as _exc:
                 _log.debug("[tick] judge/chat_reply run 写入失败（不影响主流程）: %s", _exc)
@@ -210,7 +219,13 @@ async def _apply_tick_model_strategy(
     persist_tier = next_tier if next_tier in _JUDGMENT_TIERS else (task_tier if task_tier in _JUDGMENT_TIERS else "")
 
     if active_task and persist_tier and persist_tier != task_tier:
-        await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
+        await update_task_data(
+            loop,
+            active_task.id,
+            {"model_tier": persist_tier},
+            source="loop/tick/model_strategy",
+            decision_basis=_decision_basis(action, "model strategy changed task tier"),
+        )
         active_task.model_tier = persist_tier
 
     if next_tier in _JUDGMENT_TIERS:
@@ -242,10 +257,14 @@ async def _apply_tick_model_strategy(
     if isinstance(raw_overrides, dict):
         if not raw_overrides:
             loop._pending_routing_overrides = None
-            await _loop_metabolic(loop).submit(StateProposal(
-                op="set_fact", key="pref:routing_overrides", value="",
-                scope="system", source="loop/tick/routing",
-            ))
+            await submit_fact(
+                loop,
+                key="pref:routing_overrides",
+                value="",
+                scope="system",
+                source="loop/tick/routing",
+                decision_basis=_decision_basis(action, "model strategy cleared routing overrides"),
+            )
         else:
             valid = {
                 key: value for key, value in raw_overrides.items()
@@ -253,16 +272,24 @@ async def _apply_tick_model_strategy(
             }
             if valid:
                 loop._pending_routing_overrides = valid
-                await _loop_metabolic(loop).submit(StateProposal(
-                    op="set_fact", key="pref:routing_overrides", value=json.dumps(valid),
-                    scope="system", source="loop/tick/routing",
-                ))
+                await submit_fact(
+                    loop,
+                    key="pref:routing_overrides",
+                    value=json.dumps(valid),
+                    scope="system",
+                    source="loop/tick/routing",
+                    decision_basis=_decision_basis(action, "model strategy set routing overrides"),
+                )
             else:
                 loop._pending_routing_overrides = None
-                await _loop_metabolic(loop).submit(StateProposal(
-                    op="set_fact", key="pref:routing_overrides", value="",
-                    scope="system", source="loop/tick/routing",
-                ))
+                await submit_fact(
+                    loop,
+                    key="pref:routing_overrides",
+                    value="",
+                    scope="system",
+                    source="loop/tick/routing",
+                    decision_basis=_decision_basis(action, "model strategy contained no valid routing overrides"),
+                )
 
     loop._pending_thinking_override = _next_thinking_override(strategy)
     return active_task
@@ -275,19 +302,22 @@ async def _persist_tick_post_state(
     cycle: int,
     ethos_state: Any = None,
 ) -> None:
-    await _loop_metabolic(loop).submit(StateProposal(
-        op="set_fact", key="soul:emotion_state",
+    await set_soul_fact(
+        loop,
+        key="soul:emotion_state",
         value=json.dumps({
             "valence": round(loop._emotion.valence, 4),
             "arousal": round(loop._emotion.arousal, 4),
             "dominance": round(loop._emotion.dominance, 4),
         }),
         source="loop/tick/post_state",
-    ))
+        decision_basis=_decision_basis(action, "post tick emotion state snapshot"),
+    )
 
     if ethos_state is not None:
-        await _loop_metabolic(loop).submit(StateProposal(
-            op="set_fact", key="soul:ethos_baseline",
+        await set_soul_fact(
+            loop,
+            key="soul:ethos_baseline",
             value=json.dumps({
                 "truth": ethos_state.values.truth,
                 "caution": ethos_state.values.caution,
@@ -296,7 +326,8 @@ async def _persist_tick_post_state(
                 "care": ethos_state.values.care,
             }),
             source="loop/tick/post_state",
-        ))
+            decision_basis=_decision_basis(action, "post tick ethos baseline snapshot"),
+        )
 
     import datetime as _dt
 

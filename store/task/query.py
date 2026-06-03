@@ -7,11 +7,11 @@ import aiosqlite
 
 from .models import Task
 from .schema import (
-    OPEN_TASK_STATUSES,
-    TASK_SIMILARITY_CONTEXT_SCORE,
     _TASK_PRIORITY_RANK,
     _TASK_SIMILARITY_SCAN_LIMIT,
     _TASK_STATUS_RANK,
+    OPEN_TASK_STATUSES,
+    TASK_SIMILARITY_CONTEXT_SCORE,
     _task_similarity_score,
     build_task_similarity_query,
 )

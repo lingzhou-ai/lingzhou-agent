@@ -17,8 +17,8 @@
 | `config_models_*.py` | `config_models/{base,runtime,advanced}.py` |
 | `skill.py` + `skill_helpers.py` | `skill/__init__.py` + `skill/helpers.py` |
 | `subagent.py` + `subagent_task_store_view.py` | `subagent/__init__.py` + `subagent/task_store_view.py` |
-| `soul.py` / `self_model.py` | `persona/soul.py` / `persona/self_model.py` |
-| `behavior_tracker.py` 等 | `loop/behavior.py`、`loop/run_refresh.py`、`loop/self_drive.py` |
+| `soul.py` / `self_model.py` | `persona/identity_bootstrap.py` / `persona/self_model.py` |
+| `behavior_tracker.py` 等 | `loop/drive/behavior.py`、`loop/runs/refresh.py`、`loop/drive/engine.py` |
 | `task_runtime.py` / `task_parallel.py` | `loop/task/{runtime,parallel}.py`（见 [ADR 0019](0019-loop-task-package.md)） |
 | `paths.py` / `plugin.py` | `paths/`、`plugin/` 包 |
 | `loop/runtime/helpers_*.py` | `loop/runtime/chain.py`、`loop/runtime/memory_hooks.py` |
@@ -30,7 +30,7 @@
 - `from core.skill import SkillRegistry`
 - `from core.subagent import make_subagent_runner`
 - `from core.loop import CognitionLoop`（实现位于 `core.loop.runtime.main`）
-- `from core.persona.soul import SoulManager`；`from core.loop.drive.behavior import BehaviorTracker`
+- `from core.persona import IdentityBootstrapManager`；`from core.loop.drive.behavior import BehaviorTracker`
 - `from core.loop.task.runtime import …`；`from core.loop.task.parallel import run_tasks_parallel`
 - 仓库根路径：`from core.paths import project_root`（禁止在业务代码用 `Path(__file__).parents[n]` 猜项目根）
 

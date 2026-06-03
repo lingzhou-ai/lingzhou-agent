@@ -5,7 +5,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from store.task.ingress import IngressStore
 
@@ -53,8 +53,7 @@ class WebhookChannel:
                 body = self.rfile.read(length)
                 try:
                     payload = _json.loads(body)
-                    msg = str(payload.get("message", "")).strip()
-                    priority = str(payload.get("priority", "high"))
+                    msg, priority = _normalize_webhook_message(payload)
                 except Exception:
                     self.send_response(400)
                     self.end_headers()
@@ -104,6 +103,45 @@ def describe_webhook_channel(wc_cfg: dict[str, Any]) -> str:
         f"Webhook 监听: http://{host}:{port}/message"
         f"{'  (Bearer token)' if secret else '  (无鉴权)'}"
     )
+
+
+def _normalize_webhook_message(payload: dict[str, Any]) -> tuple[str, str]:
+    """从 webhook payload 中抽取 message 与 priority，兼容可选图片/语音字段。"""
+    msg = str(payload.get("message", "")).strip()
+    for marker, value in (
+        ("图片", payload.get("images")),
+        ("语音", payload.get("voices")),
+        ("语音", payload.get("audio")),
+        ("语音", payload.get("audios")),
+    ):
+        for item in _as_iterable(value):
+            item_text = _format_webhook_media(item).strip()
+            if item_text:
+                label = f"[{marker}消息]"
+                msg = f"{msg}\n{label} {item_text}" if msg else f"{label} {item_text}"
+    priority = str(payload.get("priority", "high"))
+    return msg.strip(), priority
+
+
+def _as_iterable(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, list):
+        return tuple(value)
+    return (value,)
+
+
+def _format_webhook_media(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return _json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value)
 
 
 def _enqueue_webhook_task(ingress: IngressStore, message: str, priority: str) -> int:

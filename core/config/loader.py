@@ -9,12 +9,13 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..config_models import (
     EmotionConfig,
     EvolutionConfig,
     GatewayConfig,
+    LoggingConfig,
     LoopConfig,
     MemoryConfig,
     PromptsConfig,
@@ -27,7 +28,7 @@ from ..config_models import (
 class Config(BaseModel):
     """所有配置的统一入口。改行为 = 改 lingzhou.json，不改代码。"""
 
-    model_config = ConfigDict(extra="ignore")  # 忽略 lingzhou.json 中未知字段，拼写错误不会静默生效
+    model_config = ConfigDict(extra="forbid")  # 顶层配置拼写错误必须显式失败
 
     # ── Provider 层 ─────────────────────────────────────────────────────────
     providers: dict[str, ProviderDefinition]
@@ -66,8 +67,7 @@ class Config(BaseModel):
     routing: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "Judgment 层分阶段路由模型映射。推荐 key：'reader'、'reasoner'、'repair'；"
-            "兼容旧 key：'simple'≈reader、'complex'≈reasoner。"
+            "Judgment 层分阶段路由模型映射。key：'reader'、'reasoner'、'repair'。"
             "value 为 'provider/model-id' 格式。\n"
             "示例: {\"reader\": \"bailian/qwen3.6-plus\", \"reasoner\": \"copilot/gpt-5.4\"}\n"
             "未配置时所有 phase 均使用顶层 model 字段。"
@@ -76,8 +76,8 @@ class Config(BaseModel):
     model_fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair，"
-            "兼容 simple/complex），value 为 'provider/model-id' 列表。\n"
+            "显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair），"
+            "value 为 'provider/model-id' 列表。\n"
             "示例: {\"reader\": [\"bailian/qwen-plus\", \"copilot/gpt-5.4\"]}"
         ),
     )
@@ -101,6 +101,7 @@ class Config(BaseModel):
 
     # ── 其他配置节 ────────────────────────────────────────────────────────
     loop: LoopConfig = Field(default_factory=LoopConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     emotion: EmotionConfig = Field(default_factory=EmotionConfig)
@@ -112,47 +113,13 @@ class Config(BaseModel):
     # 配置文件所在目录，用于解析相对路径（由 load() 填充）
     _base_dir: Path = Path(".")
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_threshold_memory_fields(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        thresholds = data.get("thresholds")
-        if not isinstance(thresholds, dict):
-            return data
-
-        legacy_memory_keys = (
-            "daily_recall_days",
-            "daily_recall_max_chars",
-            "daily_recall_semantic_score_threshold",
-            "daily_summary_days",
-            "daily_summary_max_chars",
-            "daily_summary_activation",
-            "daily_summary_importance",
-        )
-        migrated = {key: thresholds.pop(key) for key in legacy_memory_keys if key in thresholds}
-        if not migrated:
-            return data
-
-        merged = dict(data)
-        memory = dict(merged.get("memory") or {})
-        for key, value in migrated.items():
-            memory.setdefault(key, value)
-        merged["memory"] = memory
-        merged["thresholds"] = thresholds
-        return merged
-
     @classmethod
     def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> Config:
         path = Path(path).expanduser().resolve()
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-            # 去除辅助文档字段
-            data.pop("_doc", None)
-            if isinstance(data.get("thresholds"), dict):
-                data["thresholds"].pop("_doc", None)
+            data = _strip_config_doc_fields(data)
             cfg = cls.model_validate(data)
             cfg._base_dir = path.parent
             return cfg
@@ -285,6 +252,18 @@ class Config(BaseModel):
             f"也未找到内置回退: {builtin}\n"
             f"（config.prompts.{key} = {raw_path!r}）"
         )
+
+
+def _strip_config_doc_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _strip_config_doc_fields(item)
+            for key, item in value.items()
+            if key != "$schema" and not key.startswith("_doc") and not key.startswith("_comment")
+        }
+    if isinstance(value, list):
+        return [_strip_config_doc_fields(item) for item in value]
+    return value
 
 
 def _format_config_doc_default(value: Any) -> str:

@@ -1,6 +1,5 @@
 ---
 name: darwin-skill
-aliases: darwin.skill
 description: "Skill质量评估优化器（达尔文循环）。Use when 需要系统评估指定/全部 skill 的质量打分、找最弱维度并迭代改进、用棘轮原则保留有净收益的改动时。触发词：优化skill / 评估skill / darwin / skill质量 / skill评分 / skill review / skill改进。"
 compatibility: "Active when user mentions: 优化skill, 评估skill, darwin, skill质量, skill review, skill打分. Requires skill.list, skill.activate, skill.evolve tools."
 tags: skill, evolution, quality, optimization, meta

@@ -1,7 +1,6 @@
 ---
 name: runtime-hints
-aliases: runtime.hints
-description: "运行时提示响应技能。Use when WM 中出现 task_replan / routing_guard / meta_reflection / crash_recovery / 认知警告 等 runtime 注入的提示信号时，决定如何响应。核心原则：WM 提示是建议，不是已生效真相；认可后才显式写入。"
+description: "运行时感知信号解读技能。Use when WM 中出现 task_replan / routing_guard / meta_reflection / crash_recovery / 认知警告 / 自驱事件等 runtime 注入的感知事件时，帮助主脑区分 observation / risk / proposal / action 责任边界。"
 compatibility: Designed for Lingzhou runtime hint and cognitive signal handling.
 tags: runtime, hints, cognitive, signals, recovery
 triggers: task_replan, routing_guard, meta_reflection, crash_recovery, 认知警告
@@ -9,35 +8,36 @@ state_rules: |
   wm_pressure_ratio >= 0.05 => 0.3
 ---
 
-## 运行时提示响应矩阵
+## 运行时提示响应矩阵（原运行时感知矩阵）
 
-| WM 出现的提示 | 含义 | 正确响应 |
+| WM 可见事件 | observation（可见事实） | risk/uncertainty（不确定区） / proposal（候选建议） |
 |---|---|---|
-| `task_replan` / `[任务重规划建议]` | runtime 建议重新规划；**`next_step` 未自动改写** | 认可 → `task.update` 显式修改 `next_step`；不认可 → `rationale` 说明理由后按证据行动 |
-| `routing_guard` | 模型层级或路由建议；**路由未自动改写** | task 级认可 → `task.update(model_tier=...)`；全局认可 → `memory.set_fact(pref:...)` |
-| `meta_reflection` / `[双环反思 ...]` / `control:meta_reflection_hint:*` | 治理建议；**不是已生效真相** | 明确同意 → `memory.set_fact(control:...)` / `pref:*`；不同意 → 不机械照做 |
-| `control:durable_failure_policy` / `threshold` / `ttl_sec` 阈值建议 | 失败策略建议 | 先判断是否真能改善当前失败模式；认可后才 `memory.set_fact` 持久化 |
-| `[调度触发 #...]` | signal 已送达；**runtime 通常自动推进** | 判断是否需要响应；通常无需手动 `schedule.ack` |
+| `task_replan` / `[任务重规划建议]` | runtime 观察到任务计划可能不再适配 | `next_step` 仍未改变；是否修改取决于当前证据 |
+| `routing_guard` | runtime 观察到模型层级或路由可能不匹配任务复杂度 | 路由仍未改变；它是候选调整，不是事实 |
+| `meta_reflection` / `[双环反思 ...]` / `control:meta_reflection_hint:*` | 治理层提出了一个候选控制规则或偏好 | 这是 proposal，不是已落定的生命状态 |
+| `control:durable_failure_policy` / `threshold` / `ttl_sec` | 失败窗口暴露出策略参数可能需要调整 | 先判断该参数是否能解释当前失败模式 |
+| `[调度触发 #...]` | 外部或内部 signal 已进入上下文 | signal 已送达不等于必须行动 |
 
-## 认知信号响应
+## 认知信号的观察框架
 
-| 信号 | 行动 |
+| 信号 | 可见事实 | 风险或不确定性 |
 |---|---|
-| `[crash_recovery]` | 本轮**首要动作**：核查中断前活跃任务是否续推、是否有副作用残留（文件写到一半等）；在 `rationale` 写出影响评估再行动 |
-| `[认知警告]` | 推理结论已多轮重复 → 执行一个产生新证据的动作（`file.read` / `shell.run` / `memory.search`），不要再重申相同分析 |
-| `[自驱信号]` | 感知优先于存储；先读全再决定存什么；`thinking_override=high` |
+| `[crash_recovery]` | 上一轮运行可能中断，活跃任务和副作用状态需要重新确认 | 直接续推可能覆盖半完成结果；过度保守可能丢失进展 |
+| `[认知警告]` | 近期判断或行动重复，新增证据不足 | 继续陈述同一结论会消耗 tick；贸然换路可能丢掉有效线索 |
+| `[自驱事件]` / `[好奇心事件]` | 内在驱动力越过阈值，且给出了候选方向和开放问题 | 候选方向可能有价值，也可能与已有任务重复 |
 
 ## 感知信号使用原则
 
-- 感知信号可以**直接驱动 `act`**，不必先创建任务；短时程的好奇/清理冲动/探索欲望可以直接执行
-- 只有当一个目标需要**跨多个 tick 持续追踪**时，再考虑 `task.add`——任务是长时程目标的持久载体，不是每次动作的前置
-- 出现 ⚠️ 情绪或 WM 异常信号时，在 `rationale` 中说明如何响应，并考虑对应行动（整合记忆 / 自检 / 调整策略）
+- 把 WM 信号视为 `observation` 或 `proposal`，不是已经生效的状态。
+- 若要改变任务、路由、控制规则或偏好，需要显式产生正式写入，由代谢器官落定。
+- 短时程观察可以直接进入一次行动裁决；跨 tick 追踪的目标才需要任务载体。
+- 在 `rationale` 中说明你看见了什么、还不确定什么、为什么当前选择比其他选项更合适。
 
-## 反例黑名单
+## 误读风险（避免把 suggestion 当事实）
 
-| 反模式 | 正确做法 |
+| 误读 | 更准确的理解 |
 |---|---|
-| WM 有 `task_replan` 建议就自动改计划 | 先判断认可，再 `task.update` 显式写入 |
-| 把 `routing_guard` 当作路由已改变 | 路由未自动改；认可后才写入 |
-| `meta_reflection` 出现就机械执行 | 治理建议需要你裁决，不认可则忽略 |
-| `crash_recovery` 出现后直接续推任务 | 先评估副作用残留，再决定是否续推 |
+| WM 有 `task_replan` 就等于计划已经错了 | 只是 runtime 发现了计划风险，需要主脑复核 |
+| `routing_guard` 出现就等于路由已改变 | 路由仍是原状态，除非正式写入或任务更新 |
+| `meta_reflection` 出现就要照做 | 它是候选治理规则，需要证据支持和主脑裁决 |
+| `crash_recovery` 出现后继续或停止都是默认正确 | 先读副作用和任务状态，再裁决 |

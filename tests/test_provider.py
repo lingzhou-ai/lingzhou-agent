@@ -22,18 +22,16 @@ def test_auth_store_profile_roundtrip(tmp_path):
 
 
 def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
-    from store.auth import resolve_copilot_token, save_legacy_credentials, set_token_profile
+    from store.auth import resolve_copilot_token, set_token_profile
 
     monkeypatch.setenv("GH_TOKEN", "env-gh-token")
     monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
     set_token_profile(profile_id="copilot:default", provider="copilot", token="profile-token", path=tmp_path / "auth-profiles.json")
-    save_legacy_credentials({"GITHUB_TOKEN": "legacy-token"}, path=tmp_path / "credentials.json")
 
     import store.auth as auth_mod
     monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
-    monkeypatch.setattr(auth_mod, "LEGACY_CREDENTIALS_PATH", tmp_path / "credentials.json")
 
     resolved = resolve_copilot_token()
     assert resolved is not None
@@ -920,5 +918,4 @@ def test_login_copilot_help_is_registered():
     assert "专用 Copilot 登录命令" in result.stdout
     assert "--method" in result.stdout
     assert "--oauth-client-id" in result.stdout
-
 

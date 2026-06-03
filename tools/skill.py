@@ -174,7 +174,7 @@ async def skill_activate(params: dict[str, Any], ctx: ToolContext) -> ToolResult
     ),
     prefer_tier="reasoner",
     params=[
-        ToolParam("name", "string", "要进化的 skill 名称（支持 hyphen 规范名与历史 dotted 名）", required=True),
+        ToolParam("name", "string", "要进化的 skill 名称（hyphen 规范名）", required=True),
         ToolParam("feedback", "string", "进化反馈：描述该 skill 哪里需要调整，或期望的新行为方向", required=True),
     ],
 ))

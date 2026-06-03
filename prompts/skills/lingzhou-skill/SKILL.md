@@ -1,6 +1,6 @@
 ---
 name: lingzhou-skill
-aliases: evolution-guardrail, lingzhou.evolution
+aliases: evolution-guardrail
 description: "灵舟自进化稳态技能。Use when 进行 code/tool/prompt/skill 自进化，或出现‘进化后崩溃/可用性下降/回归’信号时。"
 compatibility: Designed for Lingzhou self-evolution safety and rollback workflows.
 tags: evolution, reliability, rollback, guardrail, verification
@@ -69,7 +69,7 @@ state_rules: |
 1. **识别责任分组**：把类的方法按"同一关注点"归组（如：IO/存储、解析/构建、校验/策略、编排/调度）。
 2. **提取为包私有子模块**：在同一目录下新建 `_<concern>.py`（下划线前缀 = 包私有），将对应的独立函数搬入。函数不再依赖 `self` 时直接提取为模块级函数；仍需共享状态时改为接受明确参数。
 3. **主类改为薄编排层**：只保留对外公开 API 和协调调用，不包含大段业务逻辑实现。
-4. **公共接口不变**：外部 import 路径与方法签名保持向后兼容。
+4. **公共入口清晰**：保留当前架构认可的公开入口；旧路径、旧签名或旧命名若不再正确，应同步删除并更新调用点。
 
 > 已有参考：`core/loop/` 已按此模式拆分为 `tick.py / common.py / chat.py / continue_phase.py / focus.py` 等子模块。新进化应遵循相同风格。
 

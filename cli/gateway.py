@@ -16,14 +16,14 @@ from typing import Annotated, Any
 import typer
 
 from channels import describe_channel_runtime, start_channel_runtime
-from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from cli.bootstrap import onboarding_status
+from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg
 from cli.logs import logs_crash, logs_errors, logs_stats, logs_tail, logs_wechat
 from cli.plugin import plugin_app
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 _LOCK_FILE = Path("~/.lingzhou/lingzhou.lock").expanduser()
-_LOCK_FD: Any = None  # 保持打开的锁文件描述符，进程退出时自动释放锁
+_LOCK_FD: int | None = None  # 保持打开的锁文件描述符，进程退出时自动释放锁
 
 
 def _startup_config_log_line(
@@ -75,17 +75,24 @@ def _ensure_singleton() -> None:
     """
     global _LOCK_FD
     _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd: int | None = None
     try:
-        _LOCK_FD = open(_LOCK_FILE, "w")
-        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # 写入当前 PID 到锁文件（调试用）
-        _LOCK_FD.write(str(os.getpid()) + "\n")
-        _LOCK_FD.flush()
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        os.ftruncate(lock_fd, 0)
+        os.write(lock_fd, f"{os.getpid()}\n".encode())
+        os.fsync(lock_fd)
+        _LOCK_FD = lock_fd
     except BlockingIOError:
         try:
-            # 读取占用锁的 PID
-            _LOCK_FD.seek(0)
-            holder = _LOCK_FD.read().strip()
+            holder = "未知"
+            if lock_fd is not None:
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                holder = os.read(lock_fd, 1024).decode("utf-8", errors="ignore").strip()
+                os.close(lock_fd)
+                lock_fd = None
         except Exception:
             holder = "未知"
         console.print(f"[red]✗ lingzhou 已在运行[/red]  （锁文件: {_LOCK_FILE}）")
@@ -94,6 +101,9 @@ def _ensure_singleton() -> None:
         console.print("  [dim]停止: lingzhou gateway stop[/dim]")
         raise typer.Exit(1) from None
     except Exception as e:
+        if lock_fd is not None:
+            os.close(lock_fd)
+            lock_fd = None
         console.print(f"[red] 获取锁失败: {e}[/red]")
         raise typer.Exit(1) from None
 
@@ -520,7 +530,7 @@ def gateway_start(
         cfg.loop.act = not dry_run
 
     # 日志
-    log_dir = Path("~/.lingzhou/logs").expanduser()
+    log_dir = Path(cfg.logging.dir).expanduser()
     log_level = logging.DEBUG if (debug or cfg.loop.debug) else logging.INFO
     log_file, console_log_file = _configure_lingzhou_logging(log_dir, log_level)
     console.print(f"[dim]渠道: [cyan]{channel}[/cyan]  日志: {log_file}  console: {console_log_file}[/dim]")

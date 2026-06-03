@@ -23,6 +23,9 @@ from ..context.signals import (
     _fmt_hard_boundaries,
     _fmt_judgment_signals,
     _fmt_perception_replay,
+    _fmt_risk_sections,
+    _fmt_uncertainty_sections,
+    _fmt_wm_proposal_sections,
 )
 from ..context.skills import (
     _fmt_blind_spots,
@@ -185,6 +188,7 @@ def _build_context_state_sections(
         "emotion_dominant": emotion.dominant or "（未确定）",
         "emotion_regulation": f"{emotion.regulation.strategy}（{emotion.regulation.reason}）" if emotion.regulation.reason else emotion.regulation.strategy,
         "wm_section": _fmt_wm(_wm_items, wm_count=len(wm), wm_capacity=wm._capacity, wm_tokens=wm.total_tokens, wm_token_budget=wm._token_budget),
+        "wm_proposal_sections": _fmt_wm_proposal_sections(_wm_items),
         "tools_section": _fmt_tools(effective_registry.list_manifests()),
         "shell_capabilities_section": _fmt_shell_capabilities(),
         "perception_section": _fmt_percept(percept),
@@ -193,6 +197,18 @@ def _build_context_state_sections(
         "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
         "perception_replay_section": _fmt_perception_replay(perception_replay),
         "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
+        "risk_sections": _fmt_risk_sections(
+            judgment_signals=judgment_signals,
+            failures=failures,
+            durable_failure_snapshot=durable_failure_snapshot,
+            perception_replay=perception_replay,
+            cognitive_signals=cognitive_signals,
+        ),
+        "uncertainty_sections": _fmt_uncertainty_sections(
+            judgment_signals=judgment_signals,
+            perception_replay=perception_replay,
+            cognitive_signals=cognitive_signals,
+        ),
         "probe_sensors_section": _fmt_probe_sensors(probes),
         "blind_spot_section": _fmt_blind_spots(probes),
         "self_model_section": fmt_self_model(assembler._executor.self_model),

@@ -334,10 +334,10 @@ def test_episodic_search_exclude_task_id_blocks_self_echo():
         ep = EpisodicMemory(Path(d), max_events=0)
         # 旧任务写入了相同目标文本
         ep.record("user", goal, task_id="old-task-1")
-        ep.record("assistant", "已读取 core/loop/runtime.py", task_id="old-task-1")
+        ep.record("assistant", "已读取 core/loop/runtime/main.py", task_id="old-task-1")
         # 当前任务写入不同内容
         ep.record("user", "继续执行下一步", task_id="cur-task")
-        ep.record("assistant", "正在分析 core/evolution.py", task_id="cur-task")
+        ep.record("assistant", "正在分析 core/evolution/", task_id="cur-task")
 
         # 不传 exclude_task_id：old-task-1 的 goal echo 可能命中
         ep.search(goal, max_chars=4000)

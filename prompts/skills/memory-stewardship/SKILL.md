@@ -1,6 +1,5 @@
 ---
 name: memory-stewardship
-aliases: memory.stewardship
 description: "记忆与知识管理技能。Use when 任务完成后、空闲整理时、遇到新事实/经验/可复用流程时，决定用 memory.set_fact / memory.add_semantic / skill.synthesize 哪种方式存储。防止知识浪费和重复探索。"
 compatibility: Designed for Lingzhou memory and skill management.
 tags: memory, knowledge, skill, stewardship
@@ -35,7 +34,7 @@ WM 中出现 `[自驱信号]` 时：
 1. **感知优先于存储**：`file.read` / `file.list` 时不加 `limit` 参数，先读全，再决定存什么
 2. **信息完整是硬前提**：只看前 50 行就下结论 = 盲人摸象；宁可多读一次
 3. **存储可以选择**：只把真正有复用价值的结论写入长期记忆；临时探索上下文不必永久存储
-4. **thinking 档位**：探索阶段 `thinking_override=high`；进入纯写入/总结阶段才降到 `medium`
+4. **思考强度**：按模型路由与当前复杂度选择；探索阶段通常偏高，写入与总结阶段可回落。
 
 ## 反例黑名单
 
