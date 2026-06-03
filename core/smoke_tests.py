@@ -10,11 +10,12 @@
 Tier 说明：
   Tier 1 — 调用纯逻辑函数，验证返回值正确性  ← 最高价值
   Tier 2 — 验证关键类/方法存在（实例化依赖复杂）
-  Tier 3 — 仅加载不报错（FALLBACK_SNIPPET）
+  未登记模块才使用 import-only fallback；登记模块必须声明明确断言。
 """
 from __future__ import annotations
 
-# 无自定义 snippet 时的 fallback：加载模块不崩溃即通过
+# 未登记模块的 fallback：加载模块不崩溃即通过。
+# SMOKE_TESTS 中登记的模块不得使用裸 assert True 或 "or True" 放水。
 FALLBACK_SNIPPET = ""
 
 SMOKE_TESTS: dict[str, str] = {
@@ -286,7 +287,10 @@ assert callable(mod.run_tasks_parallel)
 """,
 
     "core/loop/shared/common.py": """
-assert True  # utility module, import-only check
+assert hasattr(mod, "_resolve_thinking_override"), "_resolve_thinking_override missing"
+assert callable(mod._resolve_thinking_override)
+assert hasattr(mod, "_should_continue_within_tick"), "_should_continue_within_tick missing"
+assert callable(mod._should_continue_within_tick)
 """,
 
     # ═══════════════════════════════════════════════════════════════════════════

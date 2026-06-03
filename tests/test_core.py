@@ -2374,6 +2374,21 @@ def test_smoke_test_module_package_init_uses_package_name():
     assert err is None
 
 
+def test_registered_smoke_tests_are_not_import_only():
+    from core.smoke_tests import SMOKE_TESTS
+
+    violations: list[str] = []
+    for rel_path, snippet in SMOKE_TESTS.items():
+        if "assert True" in snippet:
+            violations.append(f"{rel_path}: contains bare assert True")
+        if "or True" in snippet:
+            violations.append(f"{rel_path}: contains or True")
+        if not snippet.strip():
+            violations.append(f"{rel_path}: empty snippet")
+
+    assert not violations, "\n".join(violations)
+
+
 def test_smoke_failure_summary_uses_single_header_line():
     from core.evolution import _smoke_failure_summary
 
