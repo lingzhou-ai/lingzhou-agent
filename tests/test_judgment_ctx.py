@@ -518,6 +518,34 @@ def test_recent_runs_summary_prefers_output_and_progress():
     assert "summary=index.ts package.json SKILL.md" in text
 
 
+def test_recent_runs_summary_preview_keeps_token_budget():
+    from core.judgment.context.tasks import _fmt_recent_runs
+    from store.task import Run
+
+    runs = [
+        Run(
+            id=77,
+            task_id=9,
+            run_type="tool_chain",
+            worker_type="tool-chain-worker",
+            status="done",
+            created_at="2026-05-15T14:00:00+00:00",
+            tool_name="shell.run",
+            model_tier="reasoner",
+            progress="x" * 500,
+            output_json={"summary": "A" * 5000 + " mid " + "B" * 5000},
+        )
+    ]
+
+    text = _fmt_recent_runs(runs)
+    assert "run#77 [done]" in text
+    assert "summary=" in text
+    assert "omitted" in text
+    assert "A" in text
+    assert "B" in text
+    assert len(text) < 400
+
+
 def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
     from core.judgment.context.tasks import _fmt_waiting_tasks
     from store.task import Task
@@ -1836,6 +1864,26 @@ def test_model_routing_section_exposes_tool_history_compaction_policy():
     assert "tool_history_will_compact_next=true" in payload["delegation_guide"]
 
 
+def test_compact_history_line_keeps_summary_preview_not_full_blob():
+    from core.loop.shared.continue_phase import _compact_history_line
+
+    entry = {
+        "tool": "shell.run",
+        "status": "ok",
+        "result": "A" * 5000,
+        "metadata": {"log_summary": "B" * 5000},
+        "state_delta": {"details": "C" * 5000},
+        "artifact_paths": ["/tmp/out.log"],
+        "fingerprint": "abc",
+    }
+
+    compacted = _compact_history_line(entry)
+    assert "summary" in compacted
+    assert "omitted" in compacted
+    assert "A" * 5000 not in compacted
+    assert "B" * 100 not in compacted
+
+
 def test_fmt_durable_failures_exposes_policy_and_muted_actions():
     from core.judgment.context.tasks import _fmt_durable_failures
 
@@ -2689,6 +2737,28 @@ async def test_decide_continue_includes_structured_tool_history_window():
     assert "结构化最近工具结果(JSON)" in provider.last_messages[1].content
     assert '"status": "ok"' in provider.last_messages[1].content
     assert '"state_delta": {' in provider.last_messages[1].content
+
+
+def test_structured_tool_history_window_clips_huge_summary_and_state_delta():
+    from core.judgment.output import _structured_tool_history_window
+
+    tool_history = [
+        {
+            "tool": "shell.run",
+            "params": {"command": "ls -la"},
+            "status": "ok",
+            "summary": "A" * 5000,
+            "result": "A" * 5000,
+            "state_delta": {"blob": "B" * 5000, "count": 1},
+        },
+    ]
+
+    json_block, text_block = _structured_tool_history_window(tool_history)
+    assert "summary=" in text_block
+    assert "omitted" in text_block
+    assert json.loads(json_block)
+    assert len(json_block) < 2000
+    assert len(text_block) < 1200
 
 
 async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():

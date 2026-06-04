@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.judgment.output import JudgmentOutput, ModelSelection
 from core.log_fields import format_log_fields, llm_call_fields
+from core.judgment.context.budget import resolve_judgment_prompt_budget
 
 if TYPE_CHECKING:
     from core.judgment.executor import JudgmentExecutor
@@ -233,7 +234,30 @@ async def _chat_with_retry_impl(
             primary_skill_name=primary_skill_name,
             primary_skill_guidance=primary_skill_guidance,
         )
+        prompt_budget = resolve_judgment_prompt_budget(
+            executor._cfg,
+            selection.model_ref,
+            catalog_path=executor._cfg.workspace_dir / "models.json",
+        )
         message_count, char_count, est_tokens = _message_log_stats(executor, messages)
+        if est_tokens > prompt_budget:
+            trimmed_messages = executor._trim_messages_for_prompt_limit(
+                messages,
+                prompt_budget,
+                prompt_count=est_tokens,
+            )
+            if trimmed_messages is not messages:
+                _log.warning(
+                    "%s [llm] proactive_prompt_trim %s messages=%s chars=%s est_tokens=%s limit=%s",
+                    log_prefix,
+                    _llm_scope(selection, attempt=_attempt + 1, proactive=True),
+                    message_count,
+                    char_count,
+                    est_tokens,
+                    prompt_budget,
+                )
+                messages = trimmed_messages
+                message_count, char_count, est_tokens = _message_log_stats(executor, messages)
         try:
             raw = await asyncio.wait_for(
                 selected_provider.chat(messages, thinking_override=thinking_override),

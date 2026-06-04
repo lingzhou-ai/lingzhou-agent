@@ -20,6 +20,7 @@ from .common import (
     _tool_history_entry,
 )
 from .progress import action_key_param
+from core.judgment.context.utils import _clip_for_context
 
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
@@ -43,10 +44,20 @@ def _compact_history_line(entry: dict[str, Any]) -> str:
         or ""
     )
     result = str(entry.get("result") or entry.get("summary") or "").strip()
+    result_preview = _clip_for_context(result, 320) if result else ""
     result_hash = hashlib.md5(result.encode("utf-8", errors="replace")).hexdigest()[:12] if result else ""
     meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
     log_summary = str(meta.get("log_summary") or "").strip()
+    summary_preview = _clip_for_context(log_summary, 320) if log_summary else result_preview
     artifacts = [str(item) for item in (entry.get("artifact_paths") or []) if item]
+    raw_state_delta = entry.get("state_delta")
+    if isinstance(raw_state_delta, dict):
+        clipped_state_delta = {
+            str(_clip_for_context(str(key), 64)): _clip_for_context(str(value), 220)
+            for key, value in raw_state_delta.items()
+        }
+    else:
+        clipped_state_delta = {}
     facts: dict[str, Any] = {
         "tool": tool,
         "status": status,
@@ -56,16 +67,17 @@ def _compact_history_line(entry: dict[str, Any]) -> str:
     if entry.get("error"):
         facts["error"] = str(entry.get("error"))
     if log_summary:
-        facts["summary"] = log_summary
+        facts["summary"] = summary_preview
     elif result:
+        facts["summary_preview"] = result_preview
         facts["result_chars"] = len(result)
         facts["result_hash"] = result_hash
     if entry.get("fingerprint"):
         facts["fingerprint"] = str(entry.get("fingerprint"))
     if artifacts:
         facts["artifacts"] = artifacts
-    if isinstance(entry.get("state_delta"), dict) and entry["state_delta"]:
-        facts["state_delta"] = entry["state_delta"]
+    if clipped_state_delta:
+        facts["state_delta"] = clipped_state_delta
     return json.dumps(facts, ensure_ascii=False, sort_keys=True)
 
 
