@@ -183,6 +183,54 @@ def test_self_drive_signal_does_not_auto_create_task():
     asyncio.run(_self_drive_signal_does_not_auto_create_task())
 
 
+def test_self_drive_feedback_receives_tick_event():
+    from core.loop.tick.exec import _update_self_drive_from_tick
+    from tools.registry import ToolResult
+
+    class _SelfDrive:
+        def __init__(self):
+            self.events: list[dict[str, Any]] = []
+
+        def update_from_tick(self, events: list[dict[str, Any]]) -> None:
+            self.events.extend(events)
+
+    self_drive = _SelfDrive()
+    loop = SimpleNamespace(
+        _self_drive=self_drive,
+        _last_action_status="ok",
+        _last_act_progressful=True,
+    )
+    action = _judgment_output(decision="act", chosen_action_id="task.complete", params={})
+    replay = SimpleNamespace(avg_prediction_error=0.42)
+
+    _update_self_drive_from_tick(loop, action, ToolResult(summary="任务已完成"), replay)
+
+    assert self_drive.events == [{
+        "type": "task_complete",
+        "summary": "任务已完成",
+        "status": "ok",
+        "progressful": True,
+        "prediction_error": 0.42,
+    }]
+
+
+def test_self_drive_engine_updates_from_tick_feedback(tmp_path):
+    from core.loop.drive.engine import SelfDriveEngine
+
+    engine = SelfDriveEngine(str(tmp_path / "runtime.db"))
+    before = engine.snapshot()
+
+    engine.update_from_tick([{
+        "type": "task_complete",
+        "summary": "完成一次自驱复盘",
+        "prediction_error": 0.7,
+    }])
+
+    after = engine.snapshot()
+    assert after["tasks_completed"] == before["tasks_completed"] + 1
+    assert after["prediction_error_ema"] > before["prediction_error_ema"]
+
+
 def test_crash_recovery_uses_runtime_emotion_fallback():
     from core.loop.runtime.startup import _inject_crash_recovery
     from memory.working import WorkingMemory

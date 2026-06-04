@@ -360,6 +360,38 @@ async def _persist_tick_post_state(
         loop._wm.add(belief_item)
 
 
+def _update_self_drive_from_tick(
+    loop: Any,
+    action: Any,
+    result: ToolResult | Any,
+    perception_replay: Any = None,
+) -> None:
+    self_drive = getattr(loop, "_self_drive", None)
+    if self_drive is None or not hasattr(self_drive, "update_from_tick"):
+        return
+
+    if action.decision == "act":
+        tool_name = action.chosen_action_id or ""
+        event_type = tool_name.replace(".", "_") or "act"
+        if getattr(result, "error", ""):
+            event_type = "error"
+    else:
+        event_type = action.decision or "wait"
+
+    prediction_error = float(getattr(perception_replay, "avg_prediction_error", 0.1) or 0.1)
+    event = {
+        "type": event_type,
+        "summary": _clip_signal_text(getattr(result, "summary", "") or getattr(action, "rationale", "") or ""),
+        "status": getattr(loop, "_last_action_status", ""),
+        "progressful": bool(getattr(loop, "_last_act_progressful", False)),
+        "prediction_error": prediction_error,
+    }
+    try:
+        self_drive.update_from_tick([event])
+    except Exception:
+        _log.debug("[self_drive] tick feedback update failed", exc_info=True)
+
+
 async def _run_tick_maintenance(loop: Any, active_task: Task | None, cycle: int) -> None:
     cfg = loop._cfg
     wm_pressure = loop._wm.pressure
@@ -443,6 +475,7 @@ async def _tick_finalize_impl(
     await _maybe_run_tick_evolution(loop, cycle, perception_replay)
 
     active_task = await _sync_tick_action_state(loop, action, result, active_task, cycle, chat_id)
+    _update_self_drive_from_tick(loop, action, result, perception_replay)
     active_task = await finalize_focus_task(
         loop,
         action=action,
