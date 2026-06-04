@@ -67,6 +67,83 @@ def _restart_mode_log_line(
     )
 
 
+def _load_lingzhou_dotenv() -> None:
+    """加载 ~/.lingzhou/.env，让 daemon 与前台启动使用同一套凭证环境。"""
+    try:
+        from dotenv import load_dotenv  # type: ignore[import-untyped]
+
+        load_dotenv(Path("~/.lingzhou/.env").expanduser())
+    except Exception:
+        pass
+
+
+def _provider_names_used_by_runtime(cfg: Any) -> list[str]:
+    providers = getattr(cfg, "providers", None)
+    if not isinstance(providers, dict) or not providers:
+        return []
+
+    names: list[str] = []
+
+    def _add_model_ref(model_ref: Any) -> None:
+        ref = str(model_ref or "").strip()
+        if "/" not in ref:
+            return
+        provider_name = ref.split("/", 1)[0].strip()
+        if provider_name and provider_name not in names:
+            names.append(provider_name)
+
+    _add_model_ref(getattr(cfg, "model", ""))
+    routing = getattr(cfg, "routing", {}) or {}
+    if isinstance(routing, dict):
+        for model_ref in routing.values():
+            _add_model_ref(model_ref)
+    fallbacks = getattr(cfg, "model_fallbacks", {}) or {}
+    if isinstance(fallbacks, dict):
+        for fallback_chain in fallbacks.values():
+            if isinstance(fallback_chain, (list, tuple)):
+                for model_ref in fallback_chain:
+                    _add_model_ref(model_ref)
+            else:
+                _add_model_ref(fallback_chain)
+    return names
+
+
+def _gateway_provider_preflight_error(cfg: Any) -> str | None:
+    """启动前检查运行时会用到的 provider 凭证，避免 daemon fork 后才 traceback。"""
+    providers = getattr(cfg, "providers", None)
+    if not isinstance(providers, dict) or not providers:
+        return None
+
+    errors: list[str] = []
+    for provider_name in _provider_names_used_by_runtime(cfg):
+        provider = providers.get(provider_name)
+        if provider is None:
+            errors.append(
+                f"provider {provider_name!r} 未在 providers 中定义。"
+            )
+            continue
+
+        api_key_env = str(getattr(provider, "api_key_env", "") or "").strip()
+        if getattr(provider, "mode", "") == "copilot":
+            from store.auth import resolve_copilot_token
+
+            if not resolve_copilot_token(api_key_env):
+                errors.append(
+                    f"provider {provider_name!r} 缺少 Copilot token。"
+                    "请运行: lingzhou auth login-copilot"
+                )
+            continue
+
+        try:
+            _ = provider.api_key
+        except OSError as exc:
+            errors.append(f"provider {provider_name!r} 凭证不可用: {exc}")
+
+    if not errors:
+        return None
+    return "\n".join(errors)
+
+
 def _ensure_singleton() -> None:
     """保证唯一实例。通过 flock 独占锁，与 wrapper.sh 共用同一个锁文件。
 
@@ -492,6 +569,13 @@ def gateway_start(
         console.print(f"[yellow]{channel} 渠道尚在开发中。当前可用: {', '.join(_GATEWAY_READY)}[/yellow]")
         raise typer.Exit(1)
 
+    _load_lingzhou_dotenv()
+    provider_error = _gateway_provider_preflight_error(cfg)
+    if provider_error:
+        console.print(f"[red]Provider 凭证不可用，启动已停止。[/red]\n{provider_error}")
+        console.print("[dim]可运行 `lingzhou dev doctor` 查看完整诊断。[/dim]")
+        raise typer.Exit(1)
+
     if daemon and hasattr(os, "fork"):
         # 后台模式：先杀旧进程（释放锁），再获取锁 fork
         _kill_existing_loop(quiet=False)
@@ -518,12 +602,6 @@ def gateway_start(
             raise typer.Exit(1)
         gw_conf = _json.loads(gw_cfg_path.read_text(encoding="utf-8"))
 
-    # 加载 .env 确保 daemon 进程有 API keys
-    try:
-        from dotenv import load_dotenv  # type: ignore[import-untyped]
-        load_dotenv(Path("~/.lingzhou/.env").expanduser())
-    except Exception:
-        pass
     if debug is not None:
         cfg.loop.debug = debug
     if dry_run is not None:

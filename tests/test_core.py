@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import typer
 from conftest import (
     _execution_layer,
     _judgment_output,
@@ -1189,6 +1190,61 @@ def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch,
     gateway_mod.gateway_start(channel=None, config=requested_cfg, daemon=False)
 
     assert chosen_channels == ["local"]
+
+
+def test_gateway_provider_preflight_reports_missing_active_key(monkeypatch):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+    })
+
+    error = gateway_mod._gateway_provider_preflight_error(cfg)
+
+    assert error is not None
+    assert "provider 'bailian' 凭证不可用" in error
+    assert "DASHSCOPE_API_KEY" in error
+
+
+def test_gateway_start_stops_before_loop_when_provider_key_missing(monkeypatch, tmp_path):
+    import core.loop as loop_mod
+    from cli import gateway as gateway_mod
+    from core.config import Config
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+    })
+
+    printed: list[str] = []
+    monkeypatch.setattr(gateway_mod, "onboarding_status", lambda config: (True, "ok"))
+    monkeypatch.setattr(gateway_mod, "load_cfg", lambda config: cfg)
+    monkeypatch.setattr(gateway_mod, "_is_systemd_managed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_load_lingzhou_dotenv", lambda: None)
+    monkeypatch.setattr(gateway_mod.console, "print", lambda *args, **kwargs: printed.append(str(args[0])))
+    monkeypatch.setattr(loop_mod, "CognitionLoop", lambda cfg: (_ for _ in ()).throw(AssertionError("loop should not start")))
+
+    with pytest.raises(typer.Exit):
+        gateway_mod.gateway_start(channel="local", config=tmp_path / "lingzhou.json", daemon=False)
+
+    assert any("Provider 凭证不可用" in line for line in printed)
+    assert any("lingzhou dev doctor" in line for line in printed)
 
 
 def test_enqueue_webhook_task_uses_ingress_store():
