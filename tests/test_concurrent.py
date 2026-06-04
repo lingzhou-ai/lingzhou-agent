@@ -150,6 +150,49 @@ async def _process_pending_chat_turn_skips_pop_when_dispatcher_is_saturated():
     assert handled is False
     assert cycle == 7
 
+
+def test_run_cycle_does_not_enqueue_auto_tick_when_dispatcher_has_work():
+    asyncio.run(_run_cycle_does_not_enqueue_auto_tick_when_dispatcher_has_work())
+
+
+async def _run_cycle_does_not_enqueue_auto_tick_when_dispatcher_has_work():
+    from core.loop.cycle.driver import _run_cycle_impl
+
+    class _FakeStore:
+        async def pop_pending_chat_message(self):
+            return None
+
+    class _FakeDispatcher:
+        enabled = True
+        pending_count = 2
+        running_count = 1
+
+        def can_accept(self) -> bool:
+            return True
+
+        def has_running(self) -> bool:
+            return True
+
+        def has_pending(self) -> bool:
+            return True
+
+        async def enqueue(self, job):
+            raise AssertionError("已有 running/pending job 时不应继续灌入 auto tick")
+
+    class _FakeRunDriver:
+        async def poll_pending_runs(self, loop, cycle: int):
+            return None
+
+    loop = SimpleNamespace(
+        _task_store=_FakeStore(),
+        _tick_dispatcher=_FakeDispatcher(),
+        _run_driver=_FakeRunDriver(),
+    )
+
+    cycle = await _run_cycle_impl(loop, 12)
+
+    assert cycle == 12
+
 def test_scoped_task_store_get_active_returns_pinned():
     """_ScopedTaskStore.get_active() 必须始终返回构造时传入的 pinned task。"""
     asyncio.run(_scoped_task_store_get_active_returns_pinned())

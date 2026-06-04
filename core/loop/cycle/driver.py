@@ -28,10 +28,18 @@ async def _run_cycle_impl(loop: Any, cycle: int) -> int:
                 return polled_cycle
 
         if getattr(loop, "_tick_dispatcher", None) is not None and loop._tick_dispatcher.enabled:
+            dispatcher = loop._tick_dispatcher
+            if dispatcher.has_running() or dispatcher.has_pending():
+                _log.debug(
+                    "[tick-dispatch] active work running=%d pending=%d, skip auto tick",
+                    dispatcher.running_count,
+                    dispatcher.pending_count,
+                )
+                return cycle
             active_task = await resolve_focus_task(loop)
             dispatch_cycle = await loop._next_dispatch_cycle()
             chain_key = loop._resolve_tick_chain_key(active_task=active_task, source="auto")
-            accepted = await loop._tick_dispatcher.enqueue(
+            accepted = await dispatcher.enqueue(
                 TickJob(cycle=dispatch_cycle, chain_key=chain_key, source="auto")
             )
             if accepted:
