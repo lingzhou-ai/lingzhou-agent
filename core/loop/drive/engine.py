@@ -339,4 +339,13 @@ class SelfDriveEngine:
         # 记录本次探索的域和时间（wall clock），用于冷却判断
         self._state.last_explored_at[domain] = time.time()
         self._save()
-        return domain_tasks.get(domain, domain_tasks["self_evolution"])
+        template = dict(domain_tasks.get(domain, domain_tasks["self_evolution"]))
+        template["domain"] = domain if domain in domain_tasks else "self_evolution"
+        template.setdefault("question", f"当前最值得验证的 {template['domain']} 问题是什么？")
+        template.setdefault("evidence_needed", [
+            "读取相关运行时状态或代码证据",
+            "确认是否已有未完成 self_drive 任务覆盖同一问题",
+            "形成一条可复用观察或明确维持现状的理由",
+        ])
+        template.setdefault("done_condition", "能用具体证据回答 question，并写出下一步是否需要行动。")
+        return template

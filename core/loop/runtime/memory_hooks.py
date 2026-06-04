@@ -33,6 +33,12 @@ def _describe_elapsed_seconds(seconds: float) -> str:
     return f"{secs // 86400} 天前"
 
 
+def _fmt_drive_template_list(items: Any) -> str:
+    if not isinstance(items, list) or not items:
+        return "- （未提供）"
+    return "\n".join(f"- {str(item)}" for item in items)
+
+
 async def emit_self_drive_signal(loop: Any) -> None:
     """将自驱意图转为可观察、可裁决的工作记忆事件。"""
     # 只有 global:* 链负责全局空转探索；chat/task 链有专职执行，不触发自驱事件。
@@ -136,6 +142,10 @@ async def emit_self_drive_signal(loop: Any) -> None:
             f"candidate_task_title: {task_template['title']}\n"
             f"candidate_task_goal: {task_template['goal']}\n"
             f"candidate_next_step: {task_template.get('next_step', '(未提供)')}\n"
+            f"candidate_question: {task_template.get('question', '(未提供)')}\n"
+            "candidate_evidence_needed:\n"
+            f"{_fmt_drive_template_list(task_template.get('evidence_needed'))}\n"
+            f"candidate_done_condition: {task_template.get('done_condition', '(未提供)')}\n"
             "proposal:\n"
             "- create_task: 为候选方向建立一次轻量探索任务。\n"
             "- observe_more: 先补证据再决策。\n"

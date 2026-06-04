@@ -230,6 +230,12 @@ def test_self_drive_engine_updates_from_tick_feedback(tmp_path):
     assert after["tasks_completed"] == before["tasks_completed"] + 1
     assert after["prediction_error_ema"] > before["prediction_error_ema"]
 
+    template = engine.generate_exploration_task("memory_system")
+    assert template["domain"] == "memory_system"
+    assert template["question"]
+    assert template["evidence_needed"]
+    assert template["done_condition"]
+
 
 def test_crash_recovery_uses_runtime_emotion_fallback():
     from core.loop.runtime.startup import _inject_crash_recovery
@@ -327,6 +333,9 @@ async def _self_drive_signal_does_not_auto_create_task():
             assert "[自驱事件]" in content
             assert "scope: observation" in content
             assert "proposal:" in content
+            assert "candidate_question:" in content
+            assert "candidate_evidence_needed:" in content
+            assert "candidate_done_condition:" in content
             assert "open_questions:" in content
             assert "available_directions:" in content
             assert "task.add" not in content
