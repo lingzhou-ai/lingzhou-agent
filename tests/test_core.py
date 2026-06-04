@@ -1295,7 +1295,7 @@ def test_gateway_provider_preflight_does_not_require_fallback_provider_key(monke
     assert gateway_mod._gateway_provider_preflight_error(cfg) is None
 
 
-def test_gateway_provider_preflight_requires_routing_provider_key(monkeypatch, tmp_path):
+def test_gateway_provider_preflight_does_not_require_routing_provider_key(monkeypatch, tmp_path):
     from cli import gateway as gateway_mod
     from core.config import Config
     from store import auth as auth_store
@@ -1323,10 +1323,7 @@ def test_gateway_provider_preflight_requires_routing_provider_key(monkeypatch, t
         },
     })
 
-    error = gateway_mod._gateway_provider_preflight_error(cfg)
-
-    assert error is not None
-    assert "provider 'deepseek' 凭证不可用" in error
+    assert gateway_mod._gateway_provider_preflight_error(cfg) is None
 
 
 def test_gateway_start_stops_before_loop_when_provider_key_missing(monkeypatch, tmp_path):

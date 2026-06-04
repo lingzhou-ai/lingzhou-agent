@@ -93,17 +93,13 @@ def _provider_names_required_for_startup(cfg: Any) -> list[str]:
             names.append(provider_name)
 
     _add_model_ref(getattr(cfg, "model", ""))
-    routing = getattr(cfg, "routing", {}) or {}
-    if isinstance(routing, dict):
-        for model_ref in routing.values():
-            _add_model_ref(model_ref)
     return names
 
 
 def _gateway_provider_preflight_error(cfg: Any) -> str | None:
-    """启动前检查主模型与路由模型凭证，避免 daemon fork 后才 traceback。
+    """启动前检查主模型凭证，避免 daemon fork 后才 traceback。
 
-    model_fallbacks 不是启动必需路径：缺少 fallback token 不应阻断已配置好的主链路。
+    routing/model_fallbacks 不是启动必需路径：缺少 token 时运行时会跳过并回退主模型。
     """
     providers = getattr(cfg, "providers", None)
     if not isinstance(providers, dict) or not providers:
