@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 
 _THRESHOLDS_DEFAULTS = ThresholdsConfig()
+_RUN_OUTCOME_MEMORY_FIELD_MAX_CHARS = 6000
 
 
 def _default_durable_failure_policy() -> dict[str, int]:
@@ -32,6 +33,20 @@ def _default_durable_failure_policy() -> dict[str, int]:
         "threshold": _THRESHOLDS_DEFAULTS.durable_failure_threshold,
         "ttl_sec": _THRESHOLDS_DEFAULTS.durable_failure_ttl_sec,
     }
+
+
+def _clip_run_outcome_memory_field(text: str, *, limit: int = _RUN_OUTCOME_MEMORY_FIELD_MAX_CHARS) -> str:
+    """压缩 run_result 语义记忆字段，避免大 stdout 污染检索路径。"""
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    keep_each_side = max(200, (limit - 120) // 2)
+    omitted = len(value) - keep_each_side * 2
+    return (
+        value[:keep_each_side]
+        + f"\n...[run_result memory truncated, omitted {omitted} chars]...\n"
+        + value[-keep_each_side:]
+    )
 
 
 async def _load_durable_failure_policy(task_store: TaskStoreViewProtocol | None) -> dict[str, int]:
@@ -361,11 +376,13 @@ async def record_run_outcome_memory(
         f"tool={tool_name or 'unknown'}",
     ]
     if progress:
-        body_parts.append(f"progress={progress}")
+        body_parts.append(f"progress={_clip_run_outcome_memory_field(progress)}")
     if summary:
-        body_parts.append(f"summary={summary}")
+        body_parts.append(f"summary={_clip_run_outcome_memory_field(summary)}")
     if error:
-        body_parts.append(f"error={error}")
+        body_parts.append(f"error={_clip_run_outcome_memory_field(error)}")
+    if evidence:
+        body_parts.append(f"evidence={_clip_run_outcome_memory_field(evidence)}")
     activation, valence = run_result_memory_affect(
         memory_cfg,
         is_failure=is_failure,

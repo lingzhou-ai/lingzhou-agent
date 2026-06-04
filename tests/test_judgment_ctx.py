@@ -3203,6 +3203,71 @@ async def _assemble_context_includes_runtime_life_snapshot():
             await store.close()
 
 
+def test_assemble_context_semantic_timeout_degrades(monkeypatch, caplog):
+    asyncio.run(_assemble_context_semantic_timeout_degrades(monkeypatch, caplog))
+
+
+async def _assemble_context_semantic_timeout_degrades(monkeypatch, caplog):
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.judgment.assembler import assemble_context as assemble_context_mod
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    async def _timeout(_awaitable, timeout):
+        raise TimeoutError
+
+    monkeypatch.setattr(assemble_context_mod.asyncio, "wait_for", _timeout)
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d, caplog.at_level(logging.WARNING):
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="即使语义检索超时也要继续",
+            )
+
+            assert "即使语义检索超时也要继续" in text
+            assert "semantic_multi_anchor_timeout" in caplog.text
+        finally:
+            await store.close()
+
+
 def test_assemble_context_with_active_task_skips_global_open_task_overview_fetches():
     asyncio.run(_assemble_context_with_active_task_skips_global_open_task_overview_fetches())
 

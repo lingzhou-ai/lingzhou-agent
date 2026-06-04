@@ -399,12 +399,34 @@ async def _assemble_context(
         resolved_chat_id or "",
         len(anchors),
     )
-    memories = await asyncio.get_running_loop().run_in_executor(
-        None,
-        semantic.retrieve_multi_anchor,
-        anchors,
-        assembler._cfg.memory.semantic_top_k,
-    )
+    try:
+        memories = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                semantic.retrieve_multi_anchor,
+                anchors,
+                assembler._cfg.memory.semantic_top_k,
+            ),
+            timeout=8.0,
+        )
+    except TimeoutError:
+        memories = []
+        _log.warning(
+            "[context.stage] semantic_multi_anchor_timeout dt=%.3fs task=%s chat=%s anchors=%d fallback=empty",
+            time.perf_counter() - memories_t0,
+            task_id_str or "",
+            resolved_chat_id or "",
+            len(anchors),
+        )
+    except Exception:
+        memories = []
+        _log.exception(
+            "[context.stage] semantic_multi_anchor_failed dt=%.3fs task=%s chat=%s anchors=%d fallback=empty",
+            time.perf_counter() - memories_t0,
+            task_id_str or "",
+            resolved_chat_id or "",
+            len(anchors),
+        )
     semantic_top_score = max((float(item.get("score") or 0.0) for item in memories if isinstance(item.get("score"), (int, float))), default=0.0)
     _log.info(
         "[context.stage] semantic_multi_anchor_done dt=%.3fs hits=%d top_score=%.4f",

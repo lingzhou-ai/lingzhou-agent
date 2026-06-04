@@ -3801,6 +3801,39 @@ async def _execution_dispatch_records_run():
         await store.close()
 
 
+def test_record_run_outcome_memory_clips_large_semantic_body():
+    asyncio.run(_record_run_outcome_memory_clips_large_semantic_body())
+
+
+async def _record_run_outcome_memory_clips_large_semantic_body():
+    from core.execution.helpers import record_run_outcome_memory
+    from store.semantic import SemanticMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d) / "memory")
+        huge_summary = "A" * 7000 + "TAIL"
+
+        await record_run_outcome_memory(
+            episodic=None,
+            semantic=semantic,
+            memory_cfg=None,
+            run_id=991,
+            task_id=12,
+            tool_name="shell.run",
+            worker_type="tool-chain-worker",
+            status="succeeded",
+            progress="ok",
+            summary=huge_summary,
+            error="",
+        )
+
+        node = semantic.get("run-result-991")
+        assert node is not None
+        assert len(node.body) < len(huge_summary)
+        assert "run_result memory truncated" in node.body
+        assert "TAIL" in node.body
+
+
 def test_execution_logs_worker_metadata(caplog):
     asyncio.run(_execution_logs_worker_metadata(caplog))
 
