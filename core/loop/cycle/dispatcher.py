@@ -107,17 +107,11 @@ class ConcurrentTickDispatcher:
 
     async def _run_job_with_guard(self, job: TickJob) -> None:
         """运行单个 tick，失败和超时都要有明确告警并保证不阻塞运行计数。"""
-        timeout = 0.0
-        try:
-            cfg = getattr(self._loop, "_cfg", None)
-            if cfg is not None:
-                timeout = float(getattr(cfg, "timeout", 0.0) or 0.0)
-        except Exception:
-            timeout = 0.0
+        guard = _tick_job_guard_seconds(getattr(self._loop, "_cfg", None))
 
-        timeout = timeout if timeout > 0 else 300.0
-        guard = float(timeout) * 1.5 + 30.0
-
+        if guard is None:
+            await self._loop._run_dispatched_tick(job)
+            return
         try:
             await asyncio.wait_for(self._loop._run_dispatched_tick(job), timeout=guard)
         except TimeoutError as exc:
@@ -130,3 +124,21 @@ class ConcurrentTickDispatcher:
             raise RuntimeError(
                 f"tick job timeout: chain={job.chain_key} cycle={job.cycle}"
             ) from exc
+
+
+def _tick_job_guard_seconds(cfg: Any | None) -> float | None:
+    """Return explicit dispatcher timeout, or None to let inner timeouts own cancellation."""
+    explicit = None
+    try:
+        loop_cfg = getattr(cfg, "loop", None)
+        explicit = getattr(loop_cfg, "tick_job_timeout", None) if loop_cfg is not None else None
+    except Exception:
+        explicit = None
+    if explicit is not None:
+        try:
+            value = float(explicit)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    return None

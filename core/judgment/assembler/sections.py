@@ -244,6 +244,8 @@ def _finalize_context_text(assembler: Any, ctx: dict[str, Any], wm: WorkingMemor
     if budget > 0 and wm is not None and wm._token_budget > 0:
         wm._token_budget = max(256, int(budget * assembler._cfg.memory.wm_token_budget_ratio))
     ctx = apply_context_budget(ctx, budget, skill_min_tokens=assembler._cfg.thresholds.skill_min_budget_tokens)
+    assembler._last_context_sections = dict(ctx)
+    assembler._last_context_budget = int(budget)
     if budget:
         used = sum(len(v) for v in ctx.values())
         assembler._executor.self_model.context_budget = f"{budget // 1000}K" if budget >= 1000 else str(budget)

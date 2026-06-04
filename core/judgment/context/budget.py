@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .utils import _cache_put, _context_fmt_cache, _estimate_tokens
+from core.config.budget import adaptive_judgment_input_budget, context_window_input_hard_budget
 from provider.catalog import resolve_context_window
 
 
@@ -81,7 +82,7 @@ def resolve_judgment_prompt_budget(cfg: Any, model_ref: str, *, catalog_path: Pa
         cfg.context_window_tokens if model_ref == cfg.model else None,
         catalog_path=Path(catalog_path) if catalog_path is not None else None,
     )
-    fallback_budget = 96_000
+    fallback_budget = 16_000
 
     max_limit = getattr(cfg, "max_judgment_input_tokens", None)
     if max_limit is not None:
@@ -92,10 +93,7 @@ def resolve_judgment_prompt_budget(cfg: Any, model_ref: str, *, catalog_path: Pa
             return max_limit
         return fallback_budget
 
-    budget = context_window - max(1024, context_window // 4)
+    hard_budget = context_window_input_hard_budget(context_window)
     if max_limit is not None and max_limit > 0:
-        budget = min(budget, max_limit)
-    else:
-        budget = min(budget, fallback_budget)
-
-    return budget
+        return min(hard_budget, max_limit)
+    return adaptive_judgment_input_budget(context_window)

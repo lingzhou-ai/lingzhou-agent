@@ -2524,6 +2524,48 @@ async def test_decide_continue_surfaces_missing_chosen_action_id_without_runtime
     assert provider.calls == 1
 
 
+async def test_decide_continue_defaults_to_provider_natural_timeout(monkeypatch):
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait","rationale":"ok"}'
+
+        async def close(self):
+            return None
+
+    async def _fail_wait_for(*args, **kwargs):
+        raise AssertionError("LLM chat should not be wrapped by local wait_for when timeout=None")
+
+    import core.judgment.decision.helpers as helpers
+
+    monkeypatch.setattr(helpers.asyncio, "wait_for", _fail_wait_for)
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    layer._assembler._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "task.list", "params": {"status": "all"}, "result": "命中 3 条任务"}],
+        user_message="继续",
+        prefer_tier="reasoner",
+    )
+
+    assert out.decision == "wait"
+
+
 async def test_judgment_normalizes_whitespace_tool_name_to_wait():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -2737,6 +2779,102 @@ async def test_decide_continue_includes_structured_tool_history_window():
     assert "结构化最近工具结果(JSON)" in provider.last_messages[1].content
     assert '"status": "ok"' in provider.last_messages[1].content
     assert '"state_delta": {' in provider.last_messages[1].content
+
+
+def test_continue_context_rebuilds_budgeted_working_set_not_raw_prompt():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    asm = layer._assembler
+    asm._judgment_template = "{{user_message}}\n{{wm_section}}\n{{tools_section}}"
+    asm._last_context_text = "RAW_PREVIOUS_PROMPT" * 1000
+    asm._last_context_sections = {
+        "user_message": "继续",
+        "wm_section": "WM_FACT",
+        "tools_section": "TOOL_CATALOG",
+    }
+    asm._last_context_budget = 6000
+
+    text = asm._build_continue_context(
+        [{"tool": "memory.search", "params": {"query": "x"}, "result": "命中 1 条"}],
+        user_message="继续",
+        reply_only=False,
+        wm_delta=None,
+    )
+
+    assert "RAW_PREVIOUS_PROMPT" not in text
+    assert "WM_FACT" in text
+    assert "TOOL_CATALOG" in text
+    assert "结构化最近工具结果(JSON)" in text
+
+
+def test_reply_only_context_omits_tool_catalog_from_working_set():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    asm = layer._assembler
+    asm._judgment_template = "{{user_message}}\n{{wm_section}}\n{{tools_section}}"
+    asm._last_context_sections = {
+        "user_message": "继续",
+        "wm_section": "WM_FACT",
+        "tools_section": "TOOL_CATALOG",
+    }
+    asm._last_context_budget = 6000
+
+    text = asm._build_continue_context(
+        [{"tool": "memory.search", "params": {"query": "x"}, "result": "命中 1 条"}],
+        user_message="继续",
+        reply_only=True,
+        wm_delta=None,
+    )
+
+    assert "WM_FACT" in text
+    assert "TOOL_CATALOG" not in text
+    assert "禁止再调用任何工具" in text
 
 
 def test_structured_tool_history_window_clips_huge_summary_and_state_delta():

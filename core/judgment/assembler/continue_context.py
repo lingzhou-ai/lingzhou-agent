@@ -1,14 +1,56 @@
 from __future__ import annotations
 
 from typing import Any
-from core.judgment.context.utils import _clip_for_context
+
+from core.judgment.context.budget import apply_context_budget, resolve_judgment_prompt_budget
+from core.judgment.context.utils import _clip_for_context, _estimate_tokens, _fill_template
 
 from ..output import _structured_tool_history_window
 
 
-
 def _clip_continue_summary(text: str, limit: int = 2048) -> str:
     return _clip_for_context(text or "", limit)
+
+
+def _continuation_prompt_budget(assembler: Any) -> int:
+    cached = int(getattr(assembler, "_last_context_budget", 0) or 0)
+    if cached > 0:
+        return cached
+    catalog_path = assembler._cfg.workspace_dir / "models.json"
+    budgets: list[int] = []
+    for tier in ("reader", "reasoner", "repair"):
+        _, model_ref = assembler._executor._resolve_tier_model(tier)
+        budgets.append(resolve_judgment_prompt_budget(assembler._cfg, model_ref, catalog_path=catalog_path))
+    return min(budgets) if budgets else assembler._cfg.judgment_input_token_budget()
+
+
+def _build_continue_base_context(assembler: Any, *, reserve_text: str, reply_only: bool) -> str:
+    sections = dict(getattr(assembler, "_last_context_sections", {}) or {})
+    if not sections:
+        return str(getattr(assembler, "_last_context_text", "") or "")
+
+    if reply_only:
+        # 最终口腔阶段禁止工具调用，工具/技能目录不再消耗上下文预算。
+        for key in (
+            "tools_section",
+            "skills_catalog_section",
+            "primary_skill_section",
+            "skills_section",
+            "shell_capabilities_section",
+        ):
+            if key in sections:
+                sections[key] = ""
+
+    base_budget = _continuation_prompt_budget(assembler)
+    reserve_cfg = int(getattr(assembler._cfg.thresholds, "continue_context_reserve_tokens", 4096) or 4096)
+    reserve_tokens = max(reserve_cfg, _estimate_tokens(reserve_text))
+    context_budget = max(1024, base_budget - reserve_tokens)
+    sections = apply_context_budget(
+        sections,
+        context_budget,
+        skill_min_tokens=assembler._cfg.thresholds.skill_min_budget_tokens,
+    )
+    return _fill_template(assembler._judgment_template, sections)
 
 
 def _build_continue_context(
@@ -66,32 +108,48 @@ def _build_continue_context(
             f"- 调节策略: {_reg}\n\n"
         )
 
-    if reply_only:
-        intent_hint = f"\n执行前意图草稿「{speech_intent}」，请基于实际执行结果确认或修正。" if speech_intent else ""
-        return (
-            f"{assembler._last_context_text}\n\n"
-            "---\n"
-            f"{wm_delta_block}"
-            f"{action_result_block}"
-            f"{emotion_block}"
-            "## 结构化最近工具结果(JSON)\n"
-            f"{history_json_block}\n\n"
-            "## 本轮已执行工具历史\n"
-            f"{history_block}\n\n"
-            f"你现在处于最终回复阶段。禁止再调用任何工具。{intent_hint}\n"
-            "请只基于已有证据生成对用户的最终 reply_to_user。"
-            "decision 只能是 pause 或 wait，chosen_action_id 必须留空。"
-        )
-
-    hint = "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。" if user_message else ""
-    return (
-        f"{assembler._last_context_text}\n\n"
-        "---\n"
+    common_tail = (
         f"{wm_delta_block}"
+        f"{action_result_block}"
+        f"{emotion_block}"
         "## 结构化最近工具结果(JSON)\n"
         f"{history_json_block}\n\n"
         "## 本轮已执行工具历史\n"
         f"{history_block}\n\n"
+    )
+
+    if reply_only:
+        intent_hint = f"\n执行前意图草稿「{speech_intent}」，请基于实际执行结果确认或修正。" if speech_intent else ""
+        final_instruction = (
+            f"你现在处于最终回复阶段。禁止再调用任何工具。{intent_hint}\n"
+            "请只基于已有证据生成对用户的最终 reply_to_user。"
+            "decision 只能是 pause 或 wait，chosen_action_id 必须留空。"
+        )
+        base_context = _build_continue_base_context(
+            assembler,
+            reserve_text=common_tail + final_instruction,
+            reply_only=True,
+        )
+        return (
+            f"{base_context}\n\n"
+            "---\n"
+            f"{common_tail}"
+            f"{final_instruction}"
+        )
+
+    hint = "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。" if user_message else ""
+    final_instruction = (
         "优先依据结构化结果判断当前状态，不要只凭模糊回忆续写。\n\n"
         f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
+    )
+    base_context = _build_continue_base_context(
+        assembler,
+        reserve_text=common_tail + final_instruction,
+        reply_only=False,
+    )
+    return (
+        f"{base_context}\n\n"
+        "---\n"
+        f"{common_tail}"
+        f"{final_instruction}"
     )

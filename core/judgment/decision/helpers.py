@@ -223,9 +223,7 @@ async def _chat_with_retry_impl(
     raw: str | None = None
     last_error: Exception | None = None
     max_attempts = 3
-    call_timeout = float(getattr(executor._cfg, "timeout", 300.0) or 300.0)
-    if call_timeout <= 0:
-        call_timeout = 30.0
+    call_timeout = _configured_llm_timeout(executor._cfg)
     for _attempt in range(max_attempts):
         executor._set_last_call_meta(
             selection,
@@ -259,10 +257,8 @@ async def _chat_with_retry_impl(
                 messages = trimmed_messages
                 message_count, char_count, est_tokens = _message_log_stats(executor, messages)
         try:
-            raw = await asyncio.wait_for(
-                selected_provider.chat(messages, thinking_override=thinking_override),
-                timeout=call_timeout,
-            )
+            chat_coro = selected_provider.chat(messages, thinking_override=thinking_override)
+            raw = await asyncio.wait_for(chat_coro, timeout=call_timeout) if call_timeout is not None else await chat_coro
             executor._mark_model_success(selection.model_ref)
             executor._track_token_usage(selected_provider)
             usage = getattr(selected_provider, "last_usage", None)
@@ -290,7 +286,7 @@ async def _chat_with_retry_impl(
             )
             return raw, selection, None
         except TimeoutError as exc:
-            _err = f"llm call timeout {call_timeout:.1f}s"
+            _err = f"llm call timeout {call_timeout:.1f}s" if call_timeout is not None else "llm call timeout"
             last_error = TimeoutError(_err)
             _log.warning(
                 "%s LLM timeout %s attempt=%s/%s err=%s",
@@ -485,13 +481,9 @@ async def _repair_output_impl(
         _, repair_model_ref = executor._resolve_tier_model("repair")
         repair_provider = executor._find_or_create_provider(repair_model_ref)
         _log.info("[judgment] repair %s", format_log_fields(tier="repair", model_ref=repair_model_ref))
-        repaired_raw = await asyncio.wait_for(
-            repair_provider.chat(
-                repair_messages,
-                temperature=0.0,
-            ),
-            timeout=float(getattr(executor._cfg, "timeout", 120.0) or 120.0),
-        )
+        repair_coro = repair_provider.chat(repair_messages, temperature=0.0)
+        repair_timeout = _configured_llm_timeout(executor._cfg)
+        repaired_raw = await asyncio.wait_for(repair_coro, timeout=repair_timeout) if repair_timeout is not None else await repair_coro
     except Exception as exc:
         _log.warning("[judgment] repair request failed: %s", exc)
         return None
@@ -506,3 +498,14 @@ async def _repair_output_impl(
         format_log_fields(tier="repair", model_ref=repair_model_ref),
     )
     return repaired
+
+
+def _configured_llm_timeout(cfg: Any) -> float | None:
+    raw = getattr(cfg, "timeout", None)
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except Exception:
+        return None
+    return value if value > 0 else None

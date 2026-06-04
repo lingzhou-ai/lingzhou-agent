@@ -3255,7 +3255,7 @@ def test_catalog_explicit_path_isolated_from_global_runtime_path(tmp_path):
 
 
 def test_catalog_budget_auto_lookup():
-    """Config 不填 context_window_tokens 时，目录自动推断预算。"""
+    """Config 不填 context_window_tokens 时，目录自动推断自适应工作集预算。"""
     from core.config import Config
 
     cfg = Config.model_validate({
@@ -3270,8 +3270,22 @@ def test_catalog_budget_auto_lookup():
         "temperature": 0.7,
         "timeout": 60.0,
     })
-    # budget = 131072 - max(1024, 131072//4) = 131072 - 32768 = 98304
-    assert cfg.judgment_input_token_budget() == 98304
+    assert cfg.judgment_input_token_budget() == 32768
+
+    capped_budget = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.5-plus",  # 目录里 context_window=131072
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "max_judgment_input_tokens": 16000,
+    })
+    assert capped_budget.judgment_input_token_budget() == 16000
 
 
 def test_judgment_budget_is_derived_from_model_window():
