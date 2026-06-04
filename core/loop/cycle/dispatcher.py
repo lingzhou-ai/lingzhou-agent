@@ -93,7 +93,7 @@ class ConcurrentTickDispatcher:
                 async with self._semaphore:
                     self._running_count += 1
                     try:
-                        await self._loop._run_dispatched_tick(job)
+                        await self._run_job_with_guard(job)
                     except Exception:
                         _log.exception(
                             "[tick-dispatch] chain=%s cycle=%s failed",
@@ -104,3 +104,29 @@ class ConcurrentTickDispatcher:
                         self._running_count = max(0, self._running_count - 1)
         finally:
             self._workers.pop(chain_key, None)
+
+    async def _run_job_with_guard(self, job: TickJob) -> None:
+        """运行单个 tick，失败和超时都要有明确告警并保证不阻塞运行计数。"""
+        timeout = 0.0
+        try:
+            cfg = getattr(self._loop, "_cfg", None)
+            if cfg is not None:
+                timeout = float(getattr(cfg, "timeout", 0.0) or 0.0)
+        except Exception:
+            timeout = 0.0
+
+        timeout = timeout if timeout > 0 else 300.0
+        guard = float(timeout) * 1.5 + 30.0
+
+        try:
+            await asyncio.wait_for(self._loop._run_dispatched_tick(job), timeout=guard)
+        except TimeoutError as exc:
+            _log.error(
+                "[tick-dispatch] chain=%s cycle=%s job_timeout=%ss",
+                job.chain_key,
+                getattr(job, "cycle", 0),
+                f"{guard:.1f}",
+            )
+            raise RuntimeError(
+                f"tick job timeout: chain={job.chain_key} cycle={job.cycle}"
+            ) from exc
