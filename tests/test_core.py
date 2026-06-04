@@ -1264,6 +1264,71 @@ def test_gateway_provider_preflight_uses_default_auth_profile(monkeypatch, tmp_p
     assert gateway_mod._gateway_provider_preflight_error(cfg) is None
 
 
+def test_gateway_provider_preflight_does_not_require_fallback_provider_key(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from store import auth as auth_store
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    auth_store.set_token_profile(profile_id="bailian:default", provider="bailian", token="sk-test-profile")
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "deepseek": {
+                "type": "openai_compat",
+                "base_url": "https://deepseek.invalid/v1",
+                "api_key_env": "DEEPSEEK_API_KEY",
+            },
+        },
+        "model": "bailian/qwen3.6-plus",
+        "model_fallbacks": {
+            "reasoner": ["deepseek/deepseek-chat"],
+        },
+    })
+
+    assert gateway_mod._gateway_provider_preflight_error(cfg) is None
+
+
+def test_gateway_provider_preflight_requires_routing_provider_key(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from store import auth as auth_store
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    auth_store.set_token_profile(profile_id="bailian:default", provider="bailian", token="sk-test-profile")
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "deepseek": {
+                "type": "openai_compat",
+                "base_url": "https://deepseek.invalid/v1",
+                "api_key_env": "DEEPSEEK_API_KEY",
+            },
+        },
+        "model": "bailian/qwen3.6-plus",
+        "routing": {
+            "reasoner": "deepseek/deepseek-chat",
+        },
+    })
+
+    error = gateway_mod._gateway_provider_preflight_error(cfg)
+
+    assert error is not None
+    assert "provider 'deepseek' 凭证不可用" in error
+
+
 def test_gateway_start_stops_before_loop_when_provider_key_missing(monkeypatch, tmp_path):
     import core.loop as loop_mod
     from cli import gateway as gateway_mod

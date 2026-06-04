@@ -77,7 +77,7 @@ def _load_lingzhou_dotenv() -> None:
         pass
 
 
-def _provider_names_used_by_runtime(cfg: Any) -> list[str]:
+def _provider_names_required_for_startup(cfg: Any) -> list[str]:
     providers = getattr(cfg, "providers", None)
     if not isinstance(providers, dict) or not providers:
         return []
@@ -97,25 +97,20 @@ def _provider_names_used_by_runtime(cfg: Any) -> list[str]:
     if isinstance(routing, dict):
         for model_ref in routing.values():
             _add_model_ref(model_ref)
-    fallbacks = getattr(cfg, "model_fallbacks", {}) or {}
-    if isinstance(fallbacks, dict):
-        for fallback_chain in fallbacks.values():
-            if isinstance(fallback_chain, (list, tuple)):
-                for model_ref in fallback_chain:
-                    _add_model_ref(model_ref)
-            else:
-                _add_model_ref(fallback_chain)
     return names
 
 
 def _gateway_provider_preflight_error(cfg: Any) -> str | None:
-    """启动前检查运行时会用到的 provider 凭证，避免 daemon fork 后才 traceback。"""
+    """启动前检查主模型与路由模型凭证，避免 daemon fork 后才 traceback。
+
+    model_fallbacks 不是启动必需路径：缺少 fallback token 不应阻断已配置好的主链路。
+    """
     providers = getattr(cfg, "providers", None)
     if not isinstance(providers, dict) or not providers:
         return None
 
     errors: list[str] = []
-    for provider_name in _provider_names_used_by_runtime(cfg):
+    for provider_name in _provider_names_required_for_startup(cfg):
         provider = providers.get(provider_name)
         if provider is None:
             errors.append(
