@@ -15,34 +15,23 @@ import dataclasses
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 from rich.panel import Panel
 
-from core.evolution import EvolutionEngine
-from core.execution import ExecutionLayer
-from core.judgment import JudgmentLayer, JudgmentOutput
-from core.loop.drive.behavior import BehaviorTracker
+from core.judgment import JudgmentOutput
 from core.metabolic import MetabolicEngine
-from core.perception import EmotionState
-from core.persona import IdentityBootstrapManager
 from core.probe import ProbeManager
-from memory.working import WorkingMemory
-from provider import create_provider
-from provider.base import EmbeddingProvider
 from store.episodic import EpisodicMemory
 from store.semantic import SemanticMemory
 from store.task import Task, TaskStore
-from tools.registry import ToolRegistry
 
-from ..cycle.dispatcher import ConcurrentTickDispatcher, TickJob
+from ..cycle.dispatcher import TickJob
 from ..cycle.driver import _run_cycle_impl, _wait_after_cycle_impl
 from ..cycle.focus import resolve_focus_task
-from ..runs.driver import RunDriver
 from ..tick import _post_tick_memory_impl, _tick_impl
+from .builder import build_runtime_context
 from .chain import (
     mount_chain_view,
     new_chain_runtime_state,
@@ -94,194 +83,8 @@ class ChainState:
 
 class CognitionLoop:
     def __init__(self, cfg: Config) -> None:
-        init_started = time.monotonic()
-        self._cfg = cfg
-
-        # 工具注册
-        stage_started = time.monotonic()
-        self._registry = ToolRegistry()
-        repo_root = Path(__file__).resolve().parents[3]
-        tools_dir = repo_root / "tools"
-        self._registry.discover(tools_dir)
-        _log.info("[startup] loop tools discovered dt=%.3fs", time.monotonic() - stage_started)
-
-        # 插件系统：发现并加载插件
-        stage_started = time.monotonic()
-        from core.plugin import PluginManager
-
-        plugins_dir = repo_root / "plugins"
-        self._plugin_manager = PluginManager(plugins_dir)
-        self._plugin_manager.discover()
-        self._plugin_manager.load_all()
-        self._plugin_manager.register_all(tool_registry=self._registry)
-        self._plugin_manager.start_all()
-        _log.info("[plugin] 已加载 %d 个插件", len(self._plugin_manager.list_plugins()))
-        _log.info("[startup] loop plugins ready dt=%.3fs", time.monotonic() - stage_started)
-
-        # 记忆层
-        stage_started = time.monotonic()
-        self._wm = WorkingMemory(
-            capacity=cfg.memory.working_capacity,
-            token_budget=cfg.effective_wm_token_budget(),
-            item_max_tokens=cfg.memory.wm_item_max_tokens,
-        )
-        self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
-        self._task_store = TaskStore(Path(cfg.db_path))
-        _log.info("[startup] loop base memory ready dt=%.3fs", time.monotonic() - stage_started)
-
-        # 情绪状态(初始值来自 config)
-        self._emotion = EmotionState.from_config(cfg)
-
-        # 认知组件
-        stage_started = time.monotonic()
-        self._provider = create_provider(cfg)
-        from core.perception import PerceptionLayer
-
-        self._perception = PerceptionLayer(cfg)
-        self._judgment = JudgmentLayer(self._provider, self._registry, cfg)
-        self._execution = ExecutionLayer(self._registry, cfg)
-        self._run_driver = RunDriver(self._execution)  # Phase 3b: Run 路由层
-        self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
-        _log.info("[startup] loop cognition layers ready dt=%.3fs", time.monotonic() - stage_started)
-
-        # 分层路由 providers({"reader": p1, "reasoner": p2},由 open() 注入 JudgmentLayer)
-        self._routing_providers: dict[str, Any] = {}
-
-        # embedding 混合检索(embed_fn=None 则纯关键词模式)
-        embed_fn: Callable[..., Any] | None = None
-        if cfg.memory.local_embed_model:
-            try:
-                import importlib
-                import os as _os
-
-                _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-                _os.environ.setdefault("HF_HUB_OFFLINE", "1")
-                st_kwargs: dict[str, Any] = {}
-                if cfg.memory.local_embed_cache_dir:
-                    st_kwargs["cache_folder"] = cfg.memory.local_embed_cache_dir
-                st_module = importlib.import_module("sentence_transformers")
-                sentence_transformer = st_module.SentenceTransformer
-                local_st = sentence_transformer(cfg.memory.local_embed_model, **st_kwargs)
-
-                def _local_embed(texts: list[str]) -> list[list[float]]:
-                    return local_st.encode(texts, normalize_embeddings=True).tolist()
-
-                embed_fn = _local_embed
-            except Exception as exc:
-                _log.warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", exc)
-                embed_fn = (
-                    self._provider.embed
-                    if cfg.memory.embedding_model and isinstance(self._provider, EmbeddingProvider)
-                    else None
-                )
-        elif cfg.memory.embedding_model:
-            embed_fn = self._provider.embed if isinstance(self._provider, EmbeddingProvider) else None
-        stage_started = time.monotonic()
-        _log.info("[startup] semantic init start")
-        self._semantic = SemanticMemory(
-            cfg.memory_dir,
-            decay_lambda=cfg.memory.semantic_decay_lambda,
-            embed_fn=embed_fn,
-            embedding_weight=cfg.memory.embedding_weight,
-            source_weight=cfg.memory.semantic_source_weight,
-            temporal_weight=cfg.memory.semantic_temporal_weight,
-            temporal_window_days=cfg.memory.semantic_temporal_window_days,
-        )
-        _log.info("[startup] semantic init done dt=%.3fs", time.monotonic() - stage_started)
-        self._metabolic = MetabolicEngine(self._task_store, semantic_memory=self._semantic)  # 代谢器官（公理 A5）
-
-        # 子系统:Soul 文件管理 + 行为模式追踪
-        stage_started = time.monotonic()
-        self._soul = IdentityBootstrapManager(self._cfg, self._task_store, self._wm)
-        self._behavior = BehaviorTracker(
-            wait_streak_notify=list(cfg.loop.wait_streak_notify),
-            streak_threshold=cfg.loop.behavior_streak_threshold,
-            wm_priorities={
-                "behavior_loop": cfg.thresholds.wm_pri_user_msg,
-                "edit_caution": cfg.thresholds.wm_pri_self_aware,
-                "belief_stale": cfg.thresholds.wm_pri_critical,
-            },
-            registry=self._registry,
-            seq_window_warn_at=cfg.thresholds.behavior_seq_window_warn_at,
-            seq_window_gap_ratio=cfg.thresholds.behavior_seq_window_gap_ratio,
-            belief_stale_threshold=cfg.thresholds.behavior_belief_stale_threshold,
-            belief_window=cfg.thresholds.behavior_belief_window,
-        )
-
-        # 自驱力引擎 (Active Inference + Intrinsic Motivation)
-        from core.loop.drive.engine import SelfDriveEngine
-
-        self._self_drive = SelfDriveEngine(str(cfg.db_path))
-
-        # tick 间连续性追踪(预测误差 + 认知信号计算用)
-        self._last_next_step: str = ""
-        self._last_decision: str = "wait"
-        self._last_act_progressful: bool = False
-        self._last_act_progress_reason: str = ""  # LLM 可见的进展判断原因
-        self._last_action_tool: str = ""
-        self._last_action_key: str = ""
-        self._last_action_status: str = ""
-        self._last_action_summary: str = ""
-        self._last_action_error: str = ""
-        self._last_action_state_delta: str = ""
-        self._success_stall_task_id: str | None = None
-        self._success_stall_streak: int = 0
-        self._recent_action_feedback: deque[str] = deque(maxlen=3)
-        self._last_action_sig: str = ""
-        self._last_result_fp: str = ""
-        self._idle_cycles: int = 0
-        self._last_curiosity_signal_idle_cycle: int = 0
-
-        # 多轮对话历史(最多保留 6 轮 user/assistant 对)
-        self._conv_history: deque[tuple[str, str]] = deque(maxlen=6)
-        # 心跳计时(monotonic,独立于用户 cron,不存 DB)
-        self._last_heartbeat_at: float = 0.0
-        # bootstrap 模式（由 soul.bootstrap() 在 open/run 时写入）
-        # "full" = 首次运行；"none" = 正常运行（BOOTSTRAP.md 已删除）
-        self._bootstrap_mode: str = "none"
-        # 探针系统：配置来自工作区 probes.json（与主 DB 完全解耦）
-        probe_file = cfg.workspace_dir / "probes.json"
-        self._probe_manager: ProbeManager = ProbeManager(probe_file)
-        self._judgment._assembler._probe_manager = self._probe_manager
-        # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
-        self._ticks_since_judge: int = 0
-        # 当前执行链标识(由 _run_chain_job 临时注入)
-        self._current_chain_key: str = ""
-        # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
-        self._pending_tier: str | None = None
-        self._pending_idle_gap: float | None = None
-        # LLM 通过 routing_overrides 临时覆盖 tier→model
-        self._pending_routing_overrides: dict[str, str] | None = None
-        # LLM 通过 thinking_override 覆盖下轮 thinking 等级
-        self._pending_thinking_override: str | None = None
-        # gateway 外围 channel 在 runtime ready 后再启动，避免冷启动期间提前收消息。
-        self._runtime_ready_callback: Callable[[], None] | None = None
-
-        cfg_file = cfg._base_dir / "lingzhou.json"
-        self._cfg_file: Path = cfg_file
-        self._cfg_mtime: float = cfg_file.stat().st_mtime if cfg_file.exists() else 0.0
-
-        # 同时监听 auth-profiles.json(token 更新时重建 provider)
-        from store.auth import AUTH_PROFILES_PATH
-
-        self._auth_profiles_path: Path = AUTH_PROFILES_PATH
-        self._auth_profiles_mtime: float = (
-            AUTH_PROFILES_PATH.stat().st_mtime if AUTH_PROFILES_PATH.exists() else 0.0
-        )
-
-        # 并发 tick 调度：由 cfg.loop.max_concurrent_ticks 控制；默认配置为 4。
-        # 同一 chain 内仍严格 FIFO，不同 chain 才会并行。
-        self._tick_dispatcher = ConcurrentTickDispatcher(
-            self,
-            max_concurrent=cfg.loop.max_concurrent_ticks,
-            max_queue=cfg.loop.max_tick_queue,
-        )
-        self._dispatch_cycle: int = 0
-        self._dispatch_cycle_lock = asyncio.Lock()
-        self._dispatch_state_lock = asyncio.Lock()
-        self._chain_runtime_state: dict[str, dict[str, Any]] = {}
-        _log.info("[startup] loop runtime objects ready dt=%.3fs", time.monotonic() - stage_started)
-        _log.info("[startup] loop construct complete dt=%.3fs", time.monotonic() - init_started)
+        self._runtime = build_runtime_context(cfg, owner=self)
+        self._runtime.install_on(self)
 
     @property
     def metabolic(self) -> MetabolicEngine:

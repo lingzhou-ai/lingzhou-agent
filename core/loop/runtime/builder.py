@@ -1,0 +1,194 @@
+"""运行时构造器。
+
+这里集中创建 lingzhou 的器官；CognitionLoop 只保留 façade 与旧调用点兼容。
+"""
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from core.evolution import EvolutionEngine
+from core.execution import ExecutionLayer
+from core.judgment import JudgmentLayer
+from core.loop.drive.behavior import BehaviorTracker
+from core.metabolic import MetabolicEngine
+from core.perception import EmotionState
+from core.persona import IdentityBootstrapManager
+from core.probe import ProbeManager
+from memory.working import WorkingMemory
+from provider import create_provider
+from provider.base import EmbeddingProvider
+from store.episodic import EpisodicMemory
+from store.semantic import SemanticMemory
+from store.task import TaskStore
+from tools.registry import ToolRegistry
+
+from ..cycle.dispatcher import ConcurrentTickDispatcher
+from ..runs.driver import RunDriver
+from .context import RuntimeContext
+
+if TYPE_CHECKING:
+    from core.config import Config
+
+_log = logging.getLogger("lingzhou.loop")
+
+
+def build_runtime_context(cfg: Config, owner: Any) -> RuntimeContext:
+    """构造完整运行时器官上下文。"""
+    init_started = time.monotonic()
+
+    stage_started = time.monotonic()
+    registry = ToolRegistry()
+    repo_root = Path(__file__).resolve().parents[3]
+    tools_dir = repo_root / "tools"
+    registry.discover(tools_dir)
+    _log.info("[startup] loop tools discovered dt=%.3fs", time.monotonic() - stage_started)
+
+    stage_started = time.monotonic()
+    from core.plugin import PluginManager
+
+    plugins_dir = repo_root / "plugins"
+    plugin_manager = PluginManager(plugins_dir)
+    plugin_manager.discover()
+    plugin_manager.load_all()
+    plugin_manager.register_all(tool_registry=registry)
+    plugin_manager.start_all()
+    _log.info("[plugin] 已加载 %d 个插件", len(plugin_manager.list_plugins()))
+    _log.info("[startup] loop plugins ready dt=%.3fs", time.monotonic() - stage_started)
+
+    stage_started = time.monotonic()
+    wm = WorkingMemory(
+        capacity=cfg.memory.working_capacity,
+        token_budget=cfg.effective_wm_token_budget(),
+        item_max_tokens=cfg.memory.wm_item_max_tokens,
+    )
+    episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
+    task_store = TaskStore(Path(cfg.db_path))
+    _log.info("[startup] loop base memory ready dt=%.3fs", time.monotonic() - stage_started)
+
+    emotion = EmotionState.from_config(cfg)
+
+    stage_started = time.monotonic()
+    provider = create_provider(cfg)
+    from core.perception import PerceptionLayer
+
+    perception = PerceptionLayer(cfg)
+    judgment = JudgmentLayer(provider, registry, cfg)
+    execution = ExecutionLayer(registry, cfg)
+    run_driver = RunDriver(execution)
+    evolution = EvolutionEngine(cfg, provider, registry)
+    _log.info("[startup] loop cognition layers ready dt=%.3fs", time.monotonic() - stage_started)
+
+    embed_fn = _build_embedding_fn(cfg, provider)
+    stage_started = time.monotonic()
+    _log.info("[startup] semantic init start")
+    semantic = SemanticMemory(
+        cfg.memory_dir,
+        decay_lambda=cfg.memory.semantic_decay_lambda,
+        embed_fn=embed_fn,
+        embedding_weight=cfg.memory.embedding_weight,
+        source_weight=cfg.memory.semantic_source_weight,
+        temporal_weight=cfg.memory.semantic_temporal_weight,
+        temporal_window_days=cfg.memory.semantic_temporal_window_days,
+    )
+    _log.info("[startup] semantic init done dt=%.3fs", time.monotonic() - stage_started)
+    metabolic = MetabolicEngine(task_store, semantic_memory=semantic)
+
+    stage_started = time.monotonic()
+    soul = IdentityBootstrapManager(cfg, task_store, wm)
+    behavior = BehaviorTracker(
+        wait_streak_notify=list(cfg.loop.wait_streak_notify),
+        streak_threshold=cfg.loop.behavior_streak_threshold,
+        wm_priorities={
+            "behavior_loop": cfg.thresholds.wm_pri_user_msg,
+            "edit_caution": cfg.thresholds.wm_pri_self_aware,
+            "belief_stale": cfg.thresholds.wm_pri_critical,
+        },
+        registry=registry,
+        seq_window_warn_at=cfg.thresholds.behavior_seq_window_warn_at,
+        seq_window_gap_ratio=cfg.thresholds.behavior_seq_window_gap_ratio,
+        belief_stale_threshold=cfg.thresholds.behavior_belief_stale_threshold,
+        belief_window=cfg.thresholds.behavior_belief_window,
+    )
+
+    from core.loop.drive.engine import SelfDriveEngine
+
+    self_drive = SelfDriveEngine(str(cfg.db_path))
+
+    probe_file = cfg.workspace_dir / "probes.json"
+    probe_manager = ProbeManager(probe_file)
+    judgment._assembler._probe_manager = probe_manager
+
+    cfg_file = cfg._base_dir / "lingzhou.json"
+    from store.auth import AUTH_PROFILES_PATH
+
+    tick_dispatcher = ConcurrentTickDispatcher(
+        owner,
+        max_concurrent=cfg.loop.max_concurrent_ticks,
+        max_queue=cfg.loop.max_tick_queue,
+    )
+
+    context = RuntimeContext(
+        _cfg=cfg,
+        _registry=registry,
+        _plugin_manager=plugin_manager,
+        _wm=wm,
+        _episodic=episodic,
+        _task_store=task_store,
+        _emotion=emotion,
+        _provider=provider,
+        _perception=perception,
+        _judgment=judgment,
+        _execution=execution,
+        _run_driver=run_driver,
+        _evolution=evolution,
+        _routing_providers={},
+        _semantic=semantic,
+        _metabolic=metabolic,
+        _soul=soul,
+        _behavior=behavior,
+        _self_drive=self_drive,
+        _probe_manager=probe_manager,
+        _cfg_file=cfg_file,
+        _cfg_mtime=cfg_file.stat().st_mtime if cfg_file.exists() else 0.0,
+        _auth_profiles_path=AUTH_PROFILES_PATH,
+        _auth_profiles_mtime=AUTH_PROFILES_PATH.stat().st_mtime if AUTH_PROFILES_PATH.exists() else 0.0,
+        _tick_dispatcher=tick_dispatcher,
+    )
+    _log.info("[startup] loop runtime objects ready dt=%.3fs", time.monotonic() - stage_started)
+    _log.info("[startup] loop construct complete dt=%.3fs", time.monotonic() - init_started)
+    return context
+
+
+def _build_embedding_fn(cfg: Config, provider: Any) -> Callable[..., Any] | None:
+    if cfg.memory.local_embed_model:
+        try:
+            import importlib
+            import os as _os
+
+            _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            _os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            st_kwargs: dict[str, Any] = {}
+            if cfg.memory.local_embed_cache_dir:
+                st_kwargs["cache_folder"] = cfg.memory.local_embed_cache_dir
+            st_module = importlib.import_module("sentence_transformers")
+            sentence_transformer = st_module.SentenceTransformer
+            local_st = sentence_transformer(cfg.memory.local_embed_model, **st_kwargs)
+
+            def _local_embed(texts: list[str]) -> list[list[float]]:
+                return local_st.encode(texts, normalize_embeddings=True).tolist()
+
+            return _local_embed
+        except Exception as exc:
+            _log.warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", exc)
+            return (
+                provider.embed
+                if cfg.memory.embedding_model and isinstance(provider, EmbeddingProvider)
+                else None
+            )
+    if cfg.memory.embedding_model:
+        return provider.embed if isinstance(provider, EmbeddingProvider) else None
+    return None

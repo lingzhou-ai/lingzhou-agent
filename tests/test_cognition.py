@@ -110,6 +110,7 @@ def test_cognition_loop_init():
     os.environ.setdefault("GITHUB_TOKEN", "test-token")
     from core.config import Config
     from core.loop import CognitionLoop
+    from core.loop.runtime.context import RuntimeContext
 
     cfg = Config.load(_proj_root() / "lingzhou.json.example")
     with tempfile.TemporaryDirectory() as d:
@@ -120,6 +121,12 @@ def test_cognition_loop_init():
         cfg.evolution.enabled = False
 
         loop = CognitionLoop(cfg)
+        assert isinstance(loop._runtime, RuntimeContext)
+        assert loop._runtime._semantic is loop.semantic
+        assert loop._runtime._episodic is loop.episodic
+        assert loop._runtime._task_store is loop.task_store
+        assert loop._runtime._tick_dispatcher is loop._tick_dispatcher
+        assert loop._judgment._assembler._probe_manager is loop.probe_manager
         assert loop.semantic.decay_lambda == cfg.memory.semantic_decay_lambda
         assert loop.episodic.max_events == cfg.memory.max_events
 
