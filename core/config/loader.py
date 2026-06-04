@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..config_models import (
     EmotionConfig,
@@ -112,6 +112,15 @@ class Config(BaseModel):
 
     # 配置文件所在目录，用于解析相对路径（由 load() 填充）
     _base_dir: Path = Path(".")
+
+    @model_validator(mode="after")
+    def _apply_provider_auth_profile_defaults(self) -> Config:
+        """把 auth CLI 的默认 profile 约定接入 provider 配置。"""
+        for name, provider in self.providers.items():
+            if provider.auth_profile_id.strip():
+                continue
+            provider.auth_profile_id = "copilot:default" if provider.mode == "copilot" else f"{name}:default"
+        return self
 
     @classmethod
     def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> Config:

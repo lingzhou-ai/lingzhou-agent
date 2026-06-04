@@ -1116,6 +1116,30 @@ def test_config_rejects_unknown_top_level_keys():
         })
 
 
+def test_config_defaults_provider_auth_profile_id_to_provider_name():
+    from core.config import Config
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://example.invalid",
+                "api_key_env": "COPILOT_GITHUB_TOKEN",
+            },
+        },
+        "model": "bailian/qwen3.6-plus",
+    })
+
+    assert cfg.providers["bailian"].auth_profile_id == "bailian:default"
+    assert cfg.providers["copilot"].auth_profile_id == "copilot:default"
+
+
 def test_create_provider_with_model_exposes_public_model_ref(monkeypatch):
     from core.config import Config
     from provider import create_provider_with_model
@@ -1195,8 +1219,10 @@ def test_gateway_start_prefers_config_default_channel_over_raw_json(monkeypatch,
 def test_gateway_provider_preflight_reports_missing_active_key(monkeypatch):
     from cli import gateway as gateway_mod
     from core.config import Config
+    from store import auth as auth_store
 
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", Path("/tmp/lingzhou-missing-auth-profiles.json"))
     cfg = Config.model_validate({
         "providers": {
             "bailian": {
@@ -1215,12 +1241,37 @@ def test_gateway_provider_preflight_reports_missing_active_key(monkeypatch):
     assert "DASHSCOPE_API_KEY" in error
 
 
+def test_gateway_provider_preflight_uses_default_auth_profile(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from store import auth as auth_store
+
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    auth_store.set_token_profile(profile_id="bailian:default", provider="bailian", token="sk-test-profile")
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+    })
+
+    assert cfg.providers["bailian"].auth_profile_id == "bailian:default"
+    assert gateway_mod._gateway_provider_preflight_error(cfg) is None
+
+
 def test_gateway_start_stops_before_loop_when_provider_key_missing(monkeypatch, tmp_path):
     import core.loop as loop_mod
     from cli import gateway as gateway_mod
     from core.config import Config
+    from store import auth as auth_store
 
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "missing-auth-profiles.json")
     cfg = Config.model_validate({
         "providers": {
             "bailian": {
