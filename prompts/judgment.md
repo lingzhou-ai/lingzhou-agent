@@ -140,6 +140,9 @@
 ### 自我状态（我是谁、运行多久、消耗多少）
 {{self_model_section}}
 
+### 生命体运行状态（runtime life snapshot）
+{{life_state_section}}
+
 ### 团队架构与调度（思考模型统筹全局）
 {{team_view}}
 

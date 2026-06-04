@@ -159,6 +159,31 @@ class SelfDriveEngine:
 
         self._save()
 
+    def snapshot(self) -> dict[str, object]:
+        """返回自驱器官的可读状态，供 LLM 感知而非直接执行。"""
+        state = self._state
+        ranked_interests = sorted(state.interests.items(), key=lambda item: -item[1])
+        now_wall = time.time()
+        recent_domains = sorted(
+            state.last_explored_at.items(),
+            key=lambda item: -item[1],
+        )[:3]
+        return {
+            "overall": round(state.overall, 4),
+            "learning_rate": round(state.learning_rate, 4),
+            "tasks_completed": state.tasks_completed,
+            "prediction_error_ema": round(state.prediction_error_ema, 4),
+            "surprise_count": state.surprise_count,
+            "top_interests": [
+                {"domain": domain, "score": round(score, 4)}
+                for domain, score in ranked_interests[:3]
+            ],
+            "recent_domains": [
+                {"domain": domain, "seconds_ago": max(0, round(now_wall - ts, 1))}
+                for domain, ts in recent_domains
+            ],
+        }
+
     def compute_signal(self, *, idle_ticks: int = 0, has_user_message: bool = False,
                        has_active_task: bool = False, tick: int = 0,
                        force_explore_idle: int = 3) -> DriveSignal:

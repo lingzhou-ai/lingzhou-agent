@@ -345,6 +345,7 @@ async def _assemble_context(
     effective_thinking: str | None = None,
     routing_overrides: dict[str, str] | None = None,
     registry_override: Any | None = None,
+    runtime_life_snapshot: dict[str, Any] | None = None,
 ) -> str:
     percept, wm, task_store, episodic, semantic, emotion = assembler._coerce_frame_args(
         frame_or_percept, wm, task_store, episodic, semantic, emotion
@@ -528,6 +529,7 @@ async def _assemble_context(
         all_skills=all_skills,
         config_with_breaker=config_with_breaker,
         effective_registry=registry_override or assembler._registry,
+        runtime_life_snapshot=runtime_life_snapshot,
     )
     ctx = {**task_sections, **memory_sections, **state_sections}
     return _finalize_context_text(assembler, ctx, wm)

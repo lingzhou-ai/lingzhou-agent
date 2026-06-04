@@ -191,6 +191,7 @@ class JudgmentContextAssembler:
         effective_thinking: str | None = None,
         routing_overrides: dict[str, str] | None = None,
         registry_override: Any | None = None,
+        runtime_life_snapshot: dict[str, Any] | None = None,
     ) -> str:
         return await _assemble_context_impl(
             self,
@@ -214,4 +215,5 @@ class JudgmentContextAssembler:
             effective_thinking=effective_thinking,
             routing_overrides=routing_overrides,
             registry_override=registry_override,
+            runtime_life_snapshot=runtime_life_snapshot,
         )

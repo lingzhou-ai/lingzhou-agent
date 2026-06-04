@@ -119,6 +119,45 @@ def _fmt_memory_system(
     return "\n".join(lines)
 
 
+def _fmt_life_state(snapshot: dict[str, Any] | None) -> str:
+    """格式化 runtime life snapshot；无快照时保持可读空态。"""
+    if not snapshot:
+        return "（本轮未提供 runtime life snapshot）"
+
+    memory = snapshot.get("memory") or {}
+    startup = snapshot.get("startup") or {}
+    pressure = snapshot.get("pressure") or {}
+    drive = snapshot.get("drive") or {}
+    action = snapshot.get("action") or {}
+    top_interests = drive.get("top_interests") or []
+    if isinstance(top_interests, list) and top_interests:
+        interests_text = ", ".join(
+            f"{item.get('domain')}={float(item.get('score') or 0.0):.2f}"
+            for item in top_interests
+            if isinstance(item, dict)
+        ) or "none"
+    else:
+        interests_text = "none"
+
+    return "\n".join([
+        f"memory.wm_pressure: {float(memory.get('wm_pressure') or 0.0):.2f}",
+        f"memory.wm_tokens: {int(memory.get('wm_tokens') or 0)} / {int(memory.get('wm_token_budget') or 0)}",
+        f"memory.semantic_nodes: {int(memory.get('semantic_nodes') or 0)}",
+        f"memory.semantic_maintenance: state={memory.get('semantic_maintenance_state') or 'unknown'} deferred={'yes' if memory.get('semantic_maintenance_deferred') else 'no'} error={memory.get('semantic_maintenance_last_error') or 'none'}",
+        f"startup.bootstrap_mode: {startup.get('bootstrap_mode') or 'none'}",
+        f"startup.tick_count: {int(startup.get('tick_count') or 0)}",
+        f"startup.runtime_ready_callback_pending: {'yes' if startup.get('runtime_ready_callback_pending') else 'no'}",
+        f"pressure.dispatch: running={int(pressure.get('dispatch_running') or 0)} pending={int(pressure.get('dispatch_pending') or 0)} queue_pressure={float(pressure.get('dispatch_queue_pressure') or 0.0):.2f}",
+        f"pressure.idle_cycles: {int(pressure.get('idle_cycles') or 0)}",
+        f"pressure.wait_streak: {int(pressure.get('wait_streak') or 0)}",
+        f"drive.overall: {float(drive.get('overall') or 0.0):.2f}",
+        f"drive.prediction_error_ema: {float(drive.get('prediction_error_ema') or 0.0):.2f}",
+        f"drive.top_interests: {interests_text}",
+        f"action.last: decision={action.get('last_decision') or 'none'} tool={action.get('last_tool') or 'none'} status={action.get('last_status') or 'none'} progressful={'yes' if action.get('last_progressful') else 'no'}",
+        f"action.progress_reason: {action.get('last_progress_reason') or 'none'}",
+    ])
+
+
 def _fmt_tools(manifests: list[ToolManifest]) -> str:
     if not manifests:
         return "（无可用工具）"

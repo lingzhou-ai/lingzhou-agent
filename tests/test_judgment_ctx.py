@@ -3123,6 +3123,86 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
             await store.close()
 
 
+def test_assemble_context_includes_runtime_life_snapshot():
+    asyncio.run(_assemble_context_includes_runtime_life_snapshot())
+
+
+async def _assemble_context_includes_runtime_life_snapshot():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=None,
+                user_message="检查生命状态",
+                runtime_life_snapshot={
+                    "memory": {
+                        "wm_pressure": 0.73,
+                        "wm_tokens": 730,
+                        "wm_token_budget": 1000,
+                        "semantic_nodes": 42,
+                        "semantic_maintenance_state": "ready",
+                    },
+                    "startup": {"bootstrap_mode": "none", "tick_count": 8},
+                    "pressure": {"dispatch_running": 1, "dispatch_pending": 2, "dispatch_queue_pressure": 0.5, "idle_cycles": 3, "wait_streak": 4},
+                    "drive": {
+                        "overall": 0.61,
+                        "prediction_error_ema": 0.2,
+                        "top_interests": [{"domain": "memory_system", "score": 0.9}],
+                    },
+                    "action": {"last_decision": "wait", "last_tool": "", "last_status": "", "last_progressful": False},
+                },
+            )
+
+            assert "### 生命体运行状态（runtime life snapshot）" in text
+            assert "memory.wm_pressure: 0.73" in text
+            assert "memory.semantic_nodes: 42" in text
+            assert "pressure.dispatch: running=1 pending=2 queue_pressure=0.50" in text
+            assert "drive.top_interests: memory_system=0.90" in text
+        finally:
+            await store.close()
+
+
 def test_assemble_context_with_active_task_skips_global_open_task_overview_fetches():
     asyncio.run(_assemble_context_with_active_task_skips_global_open_task_overview_fetches())
 

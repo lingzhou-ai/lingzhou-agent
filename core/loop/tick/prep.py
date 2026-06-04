@@ -413,6 +413,9 @@ async def _decide_initial_action(
         user_message=user_message,
         pending_override=pending_initial_thinking,
     )
+    from core.loop.runtime.life import collect_runtime_life_snapshot
+
+    runtime_life_snapshot = collect_runtime_life_snapshot(loop).as_dict()
     action = await loop._judgment.decide(
         prep.percept,
         loop._wm,
@@ -436,6 +439,7 @@ async def _decide_initial_action(
             has_user_message=bool(user_message),
         ),
         routing_overrides=loop._pending_routing_overrides,
+        runtime_life_snapshot=runtime_life_snapshot,
     )
     loop._pending_tier = None
     loop._pending_thinking_override = None

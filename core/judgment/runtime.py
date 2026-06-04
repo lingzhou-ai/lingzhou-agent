@@ -102,6 +102,7 @@ class JudgmentLayer:
         routing_overrides: dict[str, str] | None = None,
         phase: str = "initial",
         registry_override: Any | None = None,
+        runtime_life_snapshot: dict[str, Any] | None = None,
     ) -> JudgmentOutput:
         return await decide_initial(
             self._round_deps(),
@@ -124,6 +125,7 @@ class JudgmentLayer:
             routing_overrides=routing_overrides,
             phase=phase,
             registry_override=registry_override,
+            runtime_life_snapshot=runtime_life_snapshot,
         )
 
     async def decide_continue(

@@ -13,6 +13,7 @@ from ..context.sections import (
     _fmt_cross_task_episodic,
     _fmt_current_time,
     _fmt_ethos,
+    _fmt_life_state,
     _fmt_memories,
     _fmt_percept,
     _fmt_shell_capabilities,
@@ -180,6 +181,7 @@ def _build_context_state_sections(
     all_skills: list[Skill],
     config_with_breaker: str,
     effective_registry: Any,
+    runtime_life_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
     _wm_items = wm.get_top(15)
     state_sections = {
@@ -212,6 +214,7 @@ def _build_context_state_sections(
         "probe_sensors_section": _fmt_probe_sensors(probes),
         "blind_spot_section": _fmt_blind_spots(probes),
         "self_model_section": fmt_self_model(assembler._executor.self_model),
+        "life_state_section": _fmt_life_state(runtime_life_snapshot),
         "team_view": _build_team_view_from_cfg(assembler._cfg),
         "model_routing_section": assembler._build_model_routing_section(
             phase=phase,

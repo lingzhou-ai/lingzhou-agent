@@ -130,6 +130,7 @@ async def decide_initial(
     routing_overrides: dict[str, str] | None = None,
     phase: str = "initial",
     registry_override: Any | None = None,
+    runtime_life_snapshot: dict[str, Any] | None = None,
 ) -> JudgmentOutput:
     from core.judgment.context.utils import _clear_context_cache
 
@@ -165,6 +166,7 @@ async def decide_initial(
             effective_thinking=thinking_override or deps.cfg.thinking,
             routing_overrides=routing_overrides,
             registry_override=registry_override,
+            runtime_life_snapshot=runtime_life_snapshot,
         )
     except Exception as ctx_exc:
         repeat_count = _track_assemble_context_failure(ctx_exc)
