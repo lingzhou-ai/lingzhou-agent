@@ -219,6 +219,35 @@ def test_crash_recovery_uses_runtime_emotion_fallback():
         assert "arousal=0.66" in items[0]["content"]
 
 
+def test_runtime_ready_callback_is_single_use():
+    from core.loop.runtime.lifecycle import _invoke_runtime_ready_callback
+
+    calls: list[str] = []
+    loop = SimpleNamespace(_runtime_ready_callback=lambda: calls.append("ready"))
+
+    _invoke_runtime_ready_callback(loop)
+    _invoke_runtime_ready_callback(loop)
+
+    assert calls == ["ready"]
+    assert loop._runtime_ready_callback is None
+
+
+def test_runtime_lifecycle_marks_clean_exit(tmp_path):
+    from core.loop.runtime.lifecycle import _mark_clean_exit
+
+    snapshot_path = tmp_path / "survival.json"
+    snapshot_path.write_text(
+        json.dumps({"tick": 3, "exit_type": "crash"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    loop = SimpleNamespace(_cfg=SimpleNamespace(state_dir=tmp_path))
+
+    _mark_clean_exit(loop)
+
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["exit_type"] == "clean"
+
+
 async def _self_drive_signal_does_not_auto_create_task():
     os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
     os.environ.setdefault("GITHUB_TOKEN", "test-token")

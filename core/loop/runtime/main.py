@@ -10,15 +10,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
-import logging
-import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
-
-from rich.console import Console
-from rich.panel import Panel
 
 from core.judgment import JudgmentOutput
 from core.metabolic import MetabolicEngine
@@ -28,7 +22,6 @@ from store.semantic import SemanticMemory
 from store.task import Task, TaskStore
 
 from ..cycle.dispatcher import TickJob
-from ..cycle.driver import _run_cycle_impl, _wait_after_cycle_impl
 from ..cycle.focus import resolve_focus_task
 from ..tick import _post_tick_memory_impl, _tick_impl
 from .builder import build_runtime_context
@@ -38,14 +31,12 @@ from .chain import (
     run_dispatched_tick,
     sync_chain_state_from_view,
 )
+from .lifecycle import run_runtime_forever
 from .memory_hooks import consolidate, emit_curiosity_signal, emit_self_drive_signal
-from .startup import _open_runtime_impl, _prepare_runtime_run_impl
+from .startup import _open_runtime_impl
 
 if TYPE_CHECKING:
     from core.config import Config
-
-console = Console()
-_log = logging.getLogger("lingzhou.loop")
 
 
 @dataclasses.dataclass
@@ -107,76 +98,7 @@ class CognitionLoop:
         await _open_runtime_impl(self)
 
     async def run(self) -> None:
-        cfg, routing_summary = await _prepare_runtime_run_impl(self)
-
-        console.print(
-            Panel(
-                f"[bold green]lingzhou[/bold green] 启动\n"
-                f"provider={cfg.model}  idle_gap={cfg.loop.max_idle_gap}ms  "
-                f"act={'yes' if cfg.loop.act else 'dry-run'}\n"
-                f"routing:\n{routing_summary}",
-                title="🌱 认知循环",
-            )
-        )
-
-        ready_callback = self._runtime_ready_callback
-        self._runtime_ready_callback = None
-        if ready_callback is not None:
-            callback_started = time.monotonic()
-            _log.info("[startup] runtime ready; invoking ready callback")
-            try:
-                ready_callback()
-            except Exception:
-                _log.exception("[startup] runtime ready callback failed")
-                raise
-            _log.info("[startup] ready callback done dt=%.3fs", time.monotonic() - callback_started)
-
-        cycle = 0
-        consecutive_errors = 0
-
-        try:
-            while True:
-                try:
-                    cycle = await _run_cycle_impl(self, cycle)
-                    consecutive_errors = 0
-                except Exception:
-                    consecutive_errors += 1
-                    console.print_exception(max_frames=5)
-                    if consecutive_errors >= cfg.loop.max_consecutive_errors:
-                        console.print(f"[red]连续错误 {consecutive_errors} 次,暂停循环[/red]")
-                        break
-
-                try:
-                    await _wait_after_cycle_impl(self)
-                except Exception:
-                    _log.exception("[loop] _wait_after_cycle_impl 异常，跳过本次等待")
-                    await asyncio.sleep(1.0)  # 防止异常紧循环消耗 CPU
-                cfg = self._cfg  # 可能已更新
-        finally:
-            if self._tick_dispatcher.enabled:
-                await self._tick_dispatcher.shutdown()
-            self._probe_manager.stop()
-            await self._task_store.close()
-            await self._provider.close()
-            for routing_provider in self._routing_providers.values():
-                try:
-                    await routing_provider.close()
-                except Exception:
-                    _log.exception("[loop] 关闭 routing provider 失败")
-            # 干净退出：更新 survival.json 的 exit_type，下次启动不触发崩溃注入
-            try:
-                import json
-
-                snapshot_path = self._cfg.state_dir / "survival.json"
-                if snapshot_path.exists():
-                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                    snapshot["exit_type"] = "clean"
-                    snapshot_path.write_text(
-                        json.dumps(snapshot, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-            except Exception:
-                pass
+        await run_runtime_forever(self)
 
     async def _next_dispatch_cycle(self) -> int:
         async with self._dispatch_cycle_lock:
