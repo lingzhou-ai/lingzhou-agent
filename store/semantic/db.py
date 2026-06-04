@@ -318,21 +318,6 @@ def _validate_and_repair_index(self) -> None:
         _log.warning("[semantic] 索引校验失败，跳过自动重建: %s", exc)
 
 
-def _run_deferred_maintenance(self) -> None:
-    started = time.monotonic()
-    _log.info("[semantic] 后台索引恢复启动")
-    with self._db_session():
-        stage_started = time.monotonic()
-        self._sync_from_files(max_seconds=None)
-        _log.info("[semantic] 后台 JSON→索引同步完成 dt=%.3fs", time.monotonic() - stage_started)
-    with self._db_session():
-        stage_started = time.monotonic()
-        self._migrate_embeddings(batch_limit=5000)
-        _log.info("[semantic] 后台旧 embedding 迁移完成 dt=%.3fs", time.monotonic() - stage_started)
-    self._maintenance_deferred = False
-    _log.info("[semantic] 后台索引恢复完成 dt=%.3fs", time.monotonic() - started)
-
-
 def rebuild_index(self) -> None:
     with self._db_session():
         self._conn.execute("DELETE FROM nodes")
@@ -442,6 +427,11 @@ def stats(self) -> dict[str, Any]:
             total_nodes = int(row[0] or 0) if row else 0
         except Exception:
             total_nodes = 0
+    maintenance = {}
+    try:
+        maintenance = self._maintenance.snapshot()
+    except Exception:
+        maintenance = {}
     return {
         "nodes": total_nodes,
         "fts5_ok": bool(self._fts5_ok),
@@ -452,6 +442,11 @@ def stats(self) -> dict[str, Any]:
         "temporal_window_days": float(self._temporal_window_days),
         "db_path": str(self._db_path),
         "nodes_dir": str(self._dir),
+        "maintenance_state": maintenance.get("state", "unknown"),
+        "maintenance_deferred": bool(maintenance.get("deferred", False)),
+        "maintenance_last_error": str(maintenance.get("last_error", "")),
+        "maintenance_last_startup_seconds": float(maintenance.get("last_startup_seconds") or 0.0),
+        "maintenance_last_background_seconds": float(maintenance.get("last_background_seconds") or 0.0),
     }
 
 

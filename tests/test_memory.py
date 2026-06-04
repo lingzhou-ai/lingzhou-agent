@@ -236,8 +236,9 @@ def test_semantic_sync_from_files_skips_reading_existing_node_json(monkeypatch):
 
 def test_semantic_deferred_maintenance_imports_nodes_after_light_startup(monkeypatch):
     from store.semantic import SemanticMemory
+    from store.semantic.maintenance import SemanticMaintenance
 
-    monkeypatch.setattr(SemanticMemory, "_start_deferred_maintenance", lambda self: None)
+    monkeypatch.setattr(SemanticMaintenance, "start_background", lambda self: None)
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -261,13 +262,47 @@ def test_semantic_deferred_maintenance_imports_nodes_after_light_startup(monkeyp
             )
 
         semantic = SemanticMemory(root, decay_lambda=0.0, startup_maintenance_seconds=0.000001)
-        assert semantic._maintenance_deferred is True
+        assert semantic._maintenance.status.deferred is True
 
-        semantic._run_deferred_maintenance()
+        semantic._maintenance.run_background()
 
-        assert semantic._maintenance_deferred is False
+        assert semantic._maintenance.status.deferred is False
         results = semantic.retrieve("后台恢复测试节点", top_k=3)
         assert {item["id"] for item in results} == {"node-0", "node-1", "node-2"}
+
+
+def test_semantic_stats_exposes_maintenance_status(monkeypatch):
+    from store.semantic import SemanticMemory
+    from store.semantic.maintenance import SemanticMaintenance
+
+    monkeypatch.setattr(SemanticMaintenance, "start_background", lambda self: None)
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        nodes_dir = root / "nodes"
+        nodes_dir.mkdir(parents=True, exist_ok=True)
+        (nodes_dir / "node.json").write_text(
+            json.dumps({
+                "id": "node",
+                "kind": "fact",
+                "title": "维护状态",
+                "body": "semantic maintenance status",
+                "activation": 0.8,
+                "valence": 0.5,
+                "importance": 0.5,
+                "tags": [],
+                "source": "pytest",
+                "created_at": datetime.now(UTC).isoformat(),
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        semantic = SemanticMemory(root, decay_lambda=0.0, startup_maintenance_seconds=0.000001)
+        stats = semantic.stats()
+
+        assert stats["maintenance_state"] == "deferred"
+        assert stats["maintenance_deferred"] is True
+        assert "maintenance_last_startup_seconds" in stats
 
 
 # ══════════════════════════════════════════════════════════════════════════════

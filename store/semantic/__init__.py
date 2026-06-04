@@ -16,7 +16,6 @@ import logging as _log_sem
 import math
 import re
 import threading
-import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -215,41 +214,10 @@ class SemanticMemory:
         self._conn = None
         self._session_depth = 0
         self._maintenance_deferred = False
-        self._maintenance_thread: threading.Thread | None = None
-        init_started = time.monotonic()
-        with self._db_session():
-            stage_started = time.monotonic()
-            self._migrate()
-            _log.info("[semantic] 启动阶段 migrate 完成 dt=%.3fs", time.monotonic() - stage_started)
-            stage_started = time.monotonic()
-            self._sync_from_files(max_seconds=startup_maintenance_seconds)
-            _log.info("[semantic] 启动阶段 sync_from_files 完成 dt=%.3fs", time.monotonic() - stage_started)
-            stage_started = time.monotonic()
-            self._migrate_interlocutor_profiles(max_seconds=startup_maintenance_seconds)
-            _log.info("[semantic] 启动阶段 migrate_profiles 完成 dt=%.3fs", time.monotonic() - stage_started)
-            stage_started = time.monotonic()
-            self._validate_and_repair_index()
-            _log.info("[semantic] 启动阶段 validate_index 完成 dt=%.3fs", time.monotonic() - stage_started)
-        _log.info("[semantic] 启动完成 dt=%.3fs", time.monotonic() - init_started)
-        if self._maintenance_deferred:
-            self._start_deferred_maintenance()
+        from .maintenance import SemanticMaintenance
 
-    def _start_deferred_maintenance(self) -> None:
-        if self._maintenance_thread is not None and self._maintenance_thread.is_alive():
-            return
-
-        def _worker() -> None:
-            try:
-                self._run_deferred_maintenance()
-            except Exception:
-                _log.exception("[semantic] 后台索引恢复失败")
-
-        self._maintenance_thread = threading.Thread(
-            target=_worker,
-            name="lingzhou-semantic-maintenance",
-            daemon=True,
-        )
-        self._maintenance_thread.start()
+        self._maintenance = SemanticMaintenance(self)
+        self._maintenance.run_startup(max_seconds=startup_maintenance_seconds)
 
     # These placeholders are replaced by bind_semantic_memory() at import time.
     # Keep them to satisfy static analysis for runtime-bound methods used in __init__.
@@ -269,9 +237,6 @@ class SemanticMemory:
 
     def _validate_and_repair_index(self) -> None:
         raise RuntimeError("semantic index validation binding missing")
-
-    def _run_deferred_maintenance(self) -> None:
-        raise RuntimeError("semantic deferred maintenance binding missing")
 
 
 def _bind_semantic_memory() -> None:

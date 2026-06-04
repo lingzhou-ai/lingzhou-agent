@@ -104,6 +104,11 @@ def _fmt_memory_system(
         f"semantic_nodes_dir: {stats.get('nodes_dir')}",
         f"semantic_nodes: {int(stats.get('nodes') or 0)}",
         f"semantic_fts5_ok: {'yes' if stats.get('fts5_ok') else 'no'}",
+        f"semantic_maintenance_state: {stats.get('maintenance_state') or 'unknown'}",
+        f"semantic_maintenance_deferred: {'yes' if stats.get('maintenance_deferred') else 'no'}",
+        f"semantic_maintenance_last_error: {stats.get('maintenance_last_error') or 'none'}",
+        f"semantic_maintenance_startup_seconds: {float(stats.get('maintenance_last_startup_seconds') or 0.0):.3f}",
+        f"semantic_maintenance_background_seconds: {float(stats.get('maintenance_last_background_seconds') or 0.0):.3f}",
         f"embedding_enabled: {'yes' if stats.get('embedding_enabled') else 'no'}",
         f"decay_lambda: {float(stats.get('decay_lambda') or 0.0):.3f}",
         f"tick_dispatch.max_concurrent_ticks: {int(max_concurrent_ticks)}",
@@ -433,4 +438,3 @@ def _fmt_chat_memories(memories: list[dict[str, Any]]) -> str:
     result = _fmt_memories(memories)
     _cache_put(cache_key, result)
     return result
-
