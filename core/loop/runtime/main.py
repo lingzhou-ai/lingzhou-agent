@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -93,15 +94,19 @@ class ChainState:
 
 class CognitionLoop:
     def __init__(self, cfg: Config) -> None:
+        init_started = time.monotonic()
         self._cfg = cfg
 
         # 工具注册
+        stage_started = time.monotonic()
         self._registry = ToolRegistry()
         repo_root = Path(__file__).resolve().parents[3]
         tools_dir = repo_root / "tools"
         self._registry.discover(tools_dir)
+        _log.info("[startup] loop tools discovered dt=%.3fs", time.monotonic() - stage_started)
 
         # 插件系统：发现并加载插件
+        stage_started = time.monotonic()
         from core.plugin import PluginManager
 
         plugins_dir = repo_root / "plugins"
@@ -111,8 +116,10 @@ class CognitionLoop:
         self._plugin_manager.register_all(tool_registry=self._registry)
         self._plugin_manager.start_all()
         _log.info("[plugin] 已加载 %d 个插件", len(self._plugin_manager.list_plugins()))
+        _log.info("[startup] loop plugins ready dt=%.3fs", time.monotonic() - stage_started)
 
         # 记忆层
+        stage_started = time.monotonic()
         self._wm = WorkingMemory(
             capacity=cfg.memory.working_capacity,
             token_budget=cfg.effective_wm_token_budget(),
@@ -120,11 +127,13 @@ class CognitionLoop:
         )
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
         self._task_store = TaskStore(Path(cfg.db_path))
+        _log.info("[startup] loop base memory ready dt=%.3fs", time.monotonic() - stage_started)
 
         # 情绪状态(初始值来自 config)
         self._emotion = EmotionState.from_config(cfg)
 
         # 认知组件
+        stage_started = time.monotonic()
         self._provider = create_provider(cfg)
         from core.perception import PerceptionLayer
 
@@ -133,6 +142,7 @@ class CognitionLoop:
         self._execution = ExecutionLayer(self._registry, cfg)
         self._run_driver = RunDriver(self._execution)  # Phase 3b: Run 路由层
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
+        _log.info("[startup] loop cognition layers ready dt=%.3fs", time.monotonic() - stage_started)
 
         # 分层路由 providers({"reader": p1, "reasoner": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
@@ -166,6 +176,8 @@ class CognitionLoop:
                 )
         elif cfg.memory.embedding_model:
             embed_fn = self._provider.embed if isinstance(self._provider, EmbeddingProvider) else None
+        stage_started = time.monotonic()
+        _log.info("[startup] semantic init start")
         self._semantic = SemanticMemory(
             cfg.memory_dir,
             decay_lambda=cfg.memory.semantic_decay_lambda,
@@ -175,9 +187,11 @@ class CognitionLoop:
             temporal_weight=cfg.memory.semantic_temporal_weight,
             temporal_window_days=cfg.memory.semantic_temporal_window_days,
         )
+        _log.info("[startup] semantic init done dt=%.3fs", time.monotonic() - stage_started)
         self._metabolic = MetabolicEngine(self._task_store, semantic_memory=self._semantic)  # 代谢器官（公理 A5）
 
         # 子系统:Soul 文件管理 + 行为模式追踪
+        stage_started = time.monotonic()
         self._soul = IdentityBootstrapManager(self._cfg, self._task_store, self._wm)
         self._behavior = BehaviorTracker(
             wait_streak_notify=list(cfg.loop.wait_streak_notify),
@@ -266,6 +280,8 @@ class CognitionLoop:
         self._dispatch_cycle_lock = asyncio.Lock()
         self._dispatch_state_lock = asyncio.Lock()
         self._chain_runtime_state: dict[str, dict[str, Any]] = {}
+        _log.info("[startup] loop runtime objects ready dt=%.3fs", time.monotonic() - stage_started)
+        _log.info("[startup] loop construct complete dt=%.3fs", time.monotonic() - init_started)
 
     @property
     def metabolic(self) -> MetabolicEngine:
@@ -303,7 +319,14 @@ class CognitionLoop:
         ready_callback = self._runtime_ready_callback
         self._runtime_ready_callback = None
         if ready_callback is not None:
-            ready_callback()
+            callback_started = time.monotonic()
+            _log.info("[startup] runtime ready; invoking ready callback")
+            try:
+                ready_callback()
+            except Exception:
+                _log.exception("[startup] runtime ready callback failed")
+                raise
+            _log.info("[startup] ready callback done dt=%.3fs", time.monotonic() - callback_started)
 
         cycle = 0
         consecutive_errors = 0

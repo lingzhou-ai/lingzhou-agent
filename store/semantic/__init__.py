@@ -16,6 +16,7 @@ import logging as _log_sem
 import math
 import re
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -195,6 +196,7 @@ class SemanticMemory:
         source_weight: float = 0.12,
         temporal_weight: float = 0.08,
         temporal_window_days: float = 7.0,
+        startup_maintenance_seconds: float = 2.0,
     ) -> None:
         self._dir = memory_dir / "nodes"
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -212,11 +214,21 @@ class SemanticMemory:
         self._db_lock = threading.RLock()
         self._conn = None
         self._session_depth = 0
+        init_started = time.monotonic()
         with self._db_session():
+            stage_started = time.monotonic()
             self._migrate()
-            self._sync_from_files()
-            self._migrate_interlocutor_profiles()
+            _log.info("[semantic] 启动阶段 migrate 完成 dt=%.3fs", time.monotonic() - stage_started)
+            stage_started = time.monotonic()
+            self._sync_from_files(max_seconds=startup_maintenance_seconds)
+            _log.info("[semantic] 启动阶段 sync_from_files 完成 dt=%.3fs", time.monotonic() - stage_started)
+            stage_started = time.monotonic()
+            self._migrate_interlocutor_profiles(max_seconds=startup_maintenance_seconds)
+            _log.info("[semantic] 启动阶段 migrate_profiles 完成 dt=%.3fs", time.monotonic() - stage_started)
+            stage_started = time.monotonic()
             self._validate_and_repair_index()
+            _log.info("[semantic] 启动阶段 validate_index 完成 dt=%.3fs", time.monotonic() - stage_started)
+        _log.info("[semantic] 启动完成 dt=%.3fs", time.monotonic() - init_started)
 
     # These placeholders are replaced by bind_semantic_memory() at import time.
     # Keep them to satisfy static analysis for runtime-bound methods used in __init__.
@@ -228,10 +240,10 @@ class SemanticMemory:
     def _migrate(self) -> None:
         raise RuntimeError("semantic migrate binding missing")
 
-    def _sync_from_files(self) -> None:
+    def _sync_from_files(self, max_seconds: float | None = None) -> None:
         raise RuntimeError("semantic sync binding missing")
 
-    def _migrate_interlocutor_profiles(self) -> None:
+    def _migrate_interlocutor_profiles(self, max_seconds: float | None = None) -> None:
         raise RuntimeError("semantic interlocutor migration binding missing")
 
     def _validate_and_repair_index(self) -> None:

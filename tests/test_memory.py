@@ -169,6 +169,71 @@ def test_semantic_migrates_legacy_person_profile_nodes_to_interlocutor_profile()
         assert "person_profile" not in migrated.tags
 
 
+def test_semantic_startup_does_not_rebuild_index_when_fts_is_unavailable(monkeypatch):
+    from store.semantic import SemanticMemory
+
+    called = False
+
+    def _unexpected_rebuild(self):
+        nonlocal called
+        called = True
+        raise AssertionError("启动期不应同步全量 rebuild semantic index")
+
+    monkeypatch.setattr(SemanticMemory, "rebuild_index", _unexpected_rebuild)
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        nodes_dir = root / "nodes"
+        nodes_dir.mkdir(parents=True, exist_ok=True)
+        (nodes_dir / "n1.json").write_text(
+            json.dumps({
+                "id": "n1",
+                "kind": "fact",
+                "title": "n1",
+                "body": "body",
+                "activation": 0.5,
+                "valence": 0.5,
+                "importance": 0.0,
+                "tags": [],
+                "source": "",
+                "created_at": datetime.now(UTC).isoformat(),
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        semantic = SemanticMemory(root, decay_lambda=0.0, startup_maintenance_seconds=0.0)
+        semantic._fts5_ok = False
+        semantic._validate_and_repair_index()
+
+    assert called is False
+
+
+def test_semantic_sync_from_files_skips_reading_existing_node_json(monkeypatch):
+    from store.semantic import MemoryNode, SemanticMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        semantic = SemanticMemory(root, decay_lambda=0.0)
+        semantic.upsert(MemoryNode(
+            id="existing",
+            kind="fact",
+            title="existing",
+            body="body",
+            created_at=datetime.now(UTC).isoformat(),
+        ))
+
+        original_read_text = Path.read_text
+
+        def _guard_read_text(self, *args, **kwargs):
+            if self.name == "existing.json":
+                raise AssertionError("已在 DB 中的节点不应在启动同步时重复解析 JSON")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _guard_read_text)
+
+        with semantic._db_session():
+            semantic._sync_from_files(max_seconds=1.0)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — events.jsonl 轮转
 # ══════════════════════════════════════════════════════════════════════════════

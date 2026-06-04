@@ -9,6 +9,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -608,7 +609,11 @@ def gateway_start(
     )
 
     from core.loop import CognitionLoop
+    gateway_logger = logging.getLogger("lingzhou.gateway")
+    construct_started = time.monotonic()
+    gateway_logger.info("[startup] loop construct start")
     loop_instance = CognitionLoop(cfg)
+    gateway_logger.info("[startup] loop construct done dt=%.3fs", time.monotonic() - construct_started)
     if channel != "local":
         # 将 Config.gateway 的默认值注入 gw_conf（json 文件已有的 key 优先）
         if channel == "webhook":
@@ -620,6 +625,7 @@ def gateway_start(
 
         loop_instance._runtime_ready_callback = _start_channel_when_ready
     try:
+        gateway_logger.info("[startup] loop.run enter")
         asyncio.run(loop_instance.run())
     except KeyboardInterrupt:
         console.print("\n[dim]认知循环已停止。[/dim]")

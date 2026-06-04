@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -195,20 +196,38 @@ async def _open_runtime_impl(loop: Any) -> None:
 
 async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
     from core.paths import project_root as _project_root
+    started = time.monotonic()
+    stage_started = time.monotonic()
     _startup_health_check(loop._cfg, _project_root())
+    _log.info("[startup] phase=health_check done dt=%.3fs", time.monotonic() - stage_started)
+    stage_started = time.monotonic()
     await loop._task_store.open()
+    _log.info("[startup] phase=task_store.open done dt=%.3fs", time.monotonic() - stage_started)
     cfg = loop._cfg
+    stage_started = time.monotonic()
     await ensure_models_json(cfg)
+    _log.info("[startup] phase=ensure_models_json done dt=%.3fs", time.monotonic() - stage_started)
+    stage_started = time.monotonic()
     loop._routing_providers = _build_routing_providers(cfg)
+    _log.info("[startup] phase=routing_providers done dt=%.3fs", time.monotonic() - stage_started)
     routing_summary = _log_runtime_config(cfg, loop._routing_providers, stage="run")
     loop._judgment.set_routing_providers(loop._routing_providers)
+    stage_started = time.monotonic()
     loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
+    _log.info("[startup] phase=soul.bootstrap done dt=%.3fs", time.monotonic() - stage_started)
     loop._judgment.self_model.record_start(name="lingzhou")
     loop._judgment.self_model.set_routing(cfg)
+    stage_started = time.monotonic()
     await _restore_self_model_impl(loop)
+    _log.info("[startup] phase=restore_self_model done dt=%.3fs", time.monotonic() - stage_started)
     # 探针系统：从 probes.json 加载（已在 ProbeManager.__init__ 同步完成），启动调度 Task
+    stage_started = time.monotonic()
     await loop._probe_manager.start(loop._wm, loop_ref=loop)
+    _log.info("[startup] phase=probe.start done dt=%.3fs", time.monotonic() - stage_started)
+    stage_started = time.monotonic()
     await _restore_state_from_db_impl(loop)
+    _log.info("[startup] phase=restore_state done dt=%.3fs", time.monotonic() - stage_started)
+    _log.info("[startup] runtime prepare done dt=%.3fs", time.monotonic() - started)
     return cfg, routing_summary
 
 

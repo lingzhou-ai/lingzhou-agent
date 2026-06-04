@@ -4,6 +4,7 @@ import json
 import logging as _log_sem
 import sqlite3
 import struct
+import time
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any
@@ -64,9 +65,20 @@ def _is_legacy_interlocutor_profile(cls, node: MemoryNode) -> bool:
     )
 
 
-def _migrate_interlocutor_profiles(self) -> None:
+def _migrate_interlocutor_profiles(self, max_seconds: float | None = None) -> None:
+    started = time.monotonic()
     migrated = 0
+    scanned = 0
     for path in self._dir.glob("*.json"):
+        scanned += 1
+        if max_seconds is not None and max_seconds > 0 and time.monotonic() - started >= max_seconds:
+            _log.info(
+                "[semantic] 旧画像迁移超过启动预算 %.1fs，已延期 scanned=%d migrated=%d",
+                max_seconds,
+                scanned,
+                migrated,
+            )
+            break
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             node = MemoryNode.from_dict(payload)
@@ -143,11 +155,21 @@ def _setup_embeddings_table(self, conn: sqlite3.Connection) -> None:
         _log.warning("[semantic] node_embeddings 表初始化失败: %s", exc)
 
 
-def _migrate_embeddings(self) -> None:
+def _migrate_embeddings(self, batch_limit: int = 500) -> None:
     """将 nodes.embedding 历史数据（一次性幂等）迁移到 node_embeddings 表。"""
     try:
         rows = self._conn.execute(
-            "SELECT id, embedding, created_at FROM nodes WHERE embedding IS NOT NULL"
+            """
+            SELECT n.id, n.embedding, n.created_at
+            FROM nodes n
+            WHERE n.embedding IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM node_embeddings e
+                  WHERE e.node_id = n.id AND e.modality = 'text' AND e.model = 'legacy'
+              )
+            LIMIT ?
+            """,
+            (max(1, int(batch_limit)),),
         ).fetchall()
         if not rows:
             return
@@ -173,6 +195,8 @@ def _migrate_embeddings(self) -> None:
         self._conn.commit()
         if count:
             _log.info("[semantic] 已迁移 %d 个旧 embedding 到 node_embeddings", count)
+        if len(rows) >= max(1, int(batch_limit)):
+            _log.info("[semantic] 旧 embedding 迁移达到启动批量上限 %d，剩余部分延期", batch_limit)
     except Exception as exc:
         _log.warning("[semantic] embedding 迁移失败，跳过: %s", exc)
 
@@ -227,14 +251,6 @@ def _setup_fts5(self, conn: sqlite3.Connection) -> None:
             conn.execute("DROP TABLE IF EXISTS nodes_fts")
             conn.commit()
         conn.executescript(_DDL_FTS5)
-        conn.execute(
-            f"""
-            INSERT INTO nodes_fts(id, title, body, tags)
-            SELECT id, title, SUBSTR(body, 1, {_FTS_BODY_MAX}), tags FROM nodes
-            WHERE id NOT IN (SELECT id FROM nodes_fts)
-            AND LENGTH(body) <= {_FTS_BODY_MAX * 8}
-            """
-        )
         conn.commit()
         self._fts5_ok = True
     except Exception as exc:
@@ -243,24 +259,39 @@ def _setup_fts5(self, conn: sqlite3.Connection) -> None:
 
 
 def _connect(self) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=120)
+    conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=90000")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _sync_from_files(self) -> None:
+def _sync_from_files(self, max_seconds: float | None = None) -> None:
     try:
+        started = time.monotonic()
         existing_ids: set[str] = {
             row[0] for row in self._conn.execute("SELECT id FROM nodes")
         }
+        scanned = 0
+        imported = 0
         for p in self._dir.glob("*.json"):
+            scanned += 1
+            if max_seconds is not None and max_seconds > 0 and time.monotonic() - started >= max_seconds:
+                _log.info(
+                    "[semantic] JSON→索引同步超过启动预算 %.1fs，已延期 scanned=%d imported=%d",
+                    max_seconds,
+                    scanned,
+                    imported,
+                )
+                break
             try:
+                if p.stem in existing_ids:
+                    continue
                 d = json.loads(p.read_text(encoding="utf-8"))
                 if d.get("id") not in existing_ids:
                     self._db_upsert(MemoryNode.from_dict(d))
+                    imported += 1
             except Exception as exc:
                 _log.warning("[semantic] 跳过损坏的节点文件 %s: %s", p.name, exc)
         self._conn.commit()
@@ -270,11 +301,16 @@ def _sync_from_files(self) -> None:
 
 def _validate_and_repair_index(self) -> None:
     try:
-        json_count = sum(1 for _ in self._dir.glob("*.json"))
         db_count = self._conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
-        if json_count > 0 and (db_count == 0 or abs(db_count - json_count) > json_count * 0.2 or not self._fts5_ok):
-            _log.warning("[semantic] 索引不一致或 FTS5 异常 (json=%d, db=%d, fts5=%s)，触发自动重建", json_count, db_count, self._fts5_ok)
-            self.rebuild_index()
+        has_json = next(self._dir.glob("*.json"), None) is not None
+        if has_json and (db_count == 0 or not self._fts5_ok):
+            _log.warning(
+                "[semantic] 索引为空或 FTS5 异常 (has_json=%s, db=%d, fts5=%s)，"
+                "启动期跳过全量重建；运行可继续，必要时手动 rebuild_index",
+                has_json,
+                db_count,
+                self._fts5_ok,
+            )
     except Exception as exc:
         _log.warning("[semantic] 索引校验失败，跳过自动重建: %s", exc)
 
