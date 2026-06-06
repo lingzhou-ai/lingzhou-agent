@@ -44,11 +44,11 @@ def _compact_history_line(entry: dict[str, Any]) -> str:
         or ""
     )
     result = str(entry.get("result") or entry.get("summary") or "").strip()
-    result_preview = _clip_for_context(result, 320) if result else ""
+    result_preview = _clip_for_context(result, 150) if result else ""  # 优化：缩短摘要长度以降低上下文压力
     result_hash = hashlib.md5(result.encode("utf-8", errors="replace")).hexdigest()[:12] if result else ""
     meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
     log_summary = str(meta.get("log_summary") or "").strip()
-    summary_preview = _clip_for_context(log_summary, 320) if log_summary else result_preview
+    summary_preview = _clip_for_context(log_summary, 150) if log_summary else result_preview  # 优化：缩短摘要长度以降低上下文压力
     artifacts = [str(item) for item in (entry.get("artifact_paths") or []) if item]
     raw_state_delta = entry.get("state_delta")
     if isinstance(raw_state_delta, dict):
@@ -132,7 +132,7 @@ async def _run_continue_phase(
             break
 
         # 工具历史超长时压缩早期条目，避免上下文窗口爆炸
-        if len(tool_history) >= compact_threshold and len(tool_history) > keep_last:
+        if len(tool_history) >= compact_threshold + keep_last and len(tool_history) > keep_last:  # 优化：提高压缩触发阈值，避免频繁重组
             _compact_tool_history(tool_history, keep_last=keep_last)
 
         next_tier = _next_initial_tier_hint(action) or ""
