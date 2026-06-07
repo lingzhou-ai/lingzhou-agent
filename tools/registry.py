@@ -272,4 +272,4 @@ class ToolRegistry:
         return [e.manifest.to_dict() for e in _registry.values()]
 
 # 兼容性别名：供外部 `from tools.registry import tool_registry` 使用
-tool_registry = default_tool_registry
+tool_registry = default_tool_registry()

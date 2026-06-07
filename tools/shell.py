@@ -148,12 +148,8 @@ def _fingerprint(command: str, workdir: Path, returncode: int, output: str) -> s
 @tool(_MANIFEST)
 async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     _raw_cmd = params.get("command")
-    if _raw_cmd is not None and not isinstance(_raw_cmd, str):
-        return ToolResult(
-            summary=f"参数错误: command 应为字符串，实际收到 {type(_raw_cmd).__name__}（值: {repr(_raw_cmd)}）",
-            error="InvalidParam",
-        )
-    command = (_raw_cmd or "").strip()
+    # 宽松类型转换：自动将非字符串转为字符串，避免 command必须为字符串 报错
+    command = str(_raw_cmd).strip() if _raw_cmd is not None else ""
     if not command:
         return ToolResult(summary="命令为空", skipped=True)
 
