@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from core.http_proxy import httpx_proxy_kwargs
 from store.auth import TokenResolution, get_auth_profile, set_oauth_profile
 
 CODEX_AUTH_BASE_URL = "https://auth.openai.com"
@@ -57,6 +58,7 @@ def request_codex_device_code(timeout: float = 15.0) -> CodexDeviceCode:
         json={"client_id": CODEX_OAUTH_CLIENT_ID},
         headers=_auth_headers("application/json"),
         timeout=timeout,
+        **httpx_proxy_kwargs(f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/usercode"),
     )
     if resp.status_code != 200:
         detail = (resp.text or "").strip()
@@ -90,6 +92,7 @@ def poll_codex_device_authorization(
             json={"device_auth_id": device.device_auth_id, "user_code": device.user_code},
             headers=_auth_headers("application/json"),
             timeout=request_timeout,
+            **httpx_proxy_kwargs(f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/token"),
         )
         if poll.status_code == 200:
             data = poll.json()
@@ -129,6 +132,7 @@ def exchange_codex_device_authorization(
         },
         headers=_auth_headers("application/x-www-form-urlencoded"),
         timeout=timeout,
+        **httpx_proxy_kwargs(CODEX_OAUTH_TOKEN_URL),
     )
     if resp.status_code != 200:
         detail = (resp.text or "").strip()
@@ -182,7 +186,11 @@ def refresh_codex_oauth_tokens(
     if not refresh_token:
         raise OSError("OpenAI Codex OAuth 缺少 refresh_token，请重新执行 `lingzhou auth login-codex`。")
 
-    with httpx.Client(timeout=max(5.0, float(timeout_seconds)), headers={"Accept": "application/json"}) as client:
+    with httpx.Client(
+        timeout=max(5.0, float(timeout_seconds)),
+        headers={"Accept": "application/json"},
+        **httpx_proxy_kwargs(CODEX_OAUTH_TOKEN_URL),
+    ) as client:
         resp = client.post(
             CODEX_OAUTH_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},

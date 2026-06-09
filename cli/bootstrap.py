@@ -11,6 +11,7 @@ import typer
 from rich.panel import Panel
 
 from cli.common import DEFAULT_CONFIG_PATH, console, load_cfg, resolve_config_path
+from core.http_proxy import resolve_env_proxy_url
 
 _ENV_VAR_RE = _re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
@@ -123,7 +124,7 @@ def _setup_impl(
         },
     }
 
-    console.print("\n[bold]步骤 1 / 5 — 选择 LLM provider[/bold]")
+    console.print("\n[bold]步骤 1 / 6 — 选择 LLM provider[/bold]")
     for i, p in enumerate(catalog_providers, 1):
         hint = ""
         if p == "bailian":
@@ -162,7 +163,7 @@ def _setup_impl(
         default_api_key_env = typer.prompt("  api_key_env 环境变量名", default="OPENAI_API_KEY")
 
     # ── 2. API Key env var ────────────────────────────────────────────
-    console.print("\n[bold]步骤 2 / 5 — API Key 环境变量[/bold]")
+    console.print("\n[bold]步骤 2 / 6 — API Key 环境变量[/bold]")
     console.print("  [dim]填写存放 API key 的 [bold]环境变量名[/bold]（如 DASHSCOPE_API_KEY），")
     console.print("  [dim]也可直接粘贴 API key，将安全存储到配置文件。Codex OAuth 可保留默认值并执行 lingzhou auth login-codex。[/dim]")
     api_key_env = typer.prompt("  环境变量名或 API key", default=default_api_key_env)
@@ -170,8 +171,14 @@ def _setup_impl(
     if api_key_env and not _is_env_var_name(api_key_env):
         console.print("  [dim]检测到直接输入的 key，将写入配置文件（仅本机使用）。[/dim]")
 
-    # ── 3. 选择模型 ─────────────────────────────────────────────────
-    console.print("\n[bold]步骤 3 / 5 — 选择模型[/bold]")
+    # ── 3. 出站代理 ─────────────────────────────────────────────────
+    console.print("\n[bold]步骤 3 / 6 — 出站代理[/bold]")
+    console.print("  [dim]如需通过代理访问模型服务，填写 HTTP forward proxy URL，例如 http://127.0.0.1:7890。[/dim]")
+    console.print("  [dim]留空时仍会读取 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY 环境变量。[/dim]")
+    proxy_url = typer.prompt("  proxy_url", default=resolve_env_proxy_url(default_base_url) or "")
+
+    # ── 4. 选择模型 ─────────────────────────────────────────────────
+    console.print("\n[bold]步骤 4 / 6 — 选择模型[/bold]")
     catalog_models = list_provider_models(provider_name)
     if catalog_models:
         for i, m in enumerate(catalog_models, 1):
@@ -197,8 +204,8 @@ def _setup_impl(
     else:
         model_id = typer.prompt(f"  {provider_name} 模型 ID")
 
-    # ── 4. thinking 深度 ──────────────────────────────────────────────
-    console.print("\n[bold]步骤 4 / 5 — 思考深度[/bold]")
+    # ── 5. thinking 深度 ──────────────────────────────────────────────
+    console.print("\n[bold]步骤 5 / 6 — 思考深度[/bold]")
     _THINKING_HINTS = {
         "openai":  "  [dim]openai 体系： off=直接输出; minimal/low/medium/high=按比例分配 budget_tokens[/dim]",
         "copilot": "  [dim]copilot 体系： off=不传 reasoning_effort; low/medium/high=对应 reasoning_effort 字符串[/dim]",
@@ -211,8 +218,8 @@ def _setup_impl(
         console.print("[yellow]无效等级，回退到 off[/yellow]")
         thinking = "off"
 
-    # ── 5. 灵魂名称 ──────────────────────────────────────────────────
-    console.print("\n[bold]步骤 5 / 5 — 灵魂名称[/bold]")
+    # ── 6. 灵魂名称 ──────────────────────────────────────────────────
+    console.print("\n[bold]步骤 6 / 6 — 灵魂名称[/bold]")
     soul_name = typer.prompt("  数字生命名称", default="灵舟")
 
     # ── 拼装配置 ──────────────────────────────────────────────────────
@@ -224,6 +231,7 @@ def _setup_impl(
                 "mode": provider_mode,
                 "base_url": default_base_url,
                 "api_key_env": api_key_env,
+                "proxy_url": proxy_url.strip(),
             }
         },
         "model": f"{provider_name}/{model_id}",

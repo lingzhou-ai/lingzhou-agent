@@ -35,6 +35,13 @@ class ProviderDefinition(BaseModel):
         default="",
         description="可选 auth profile id（如 'bailian:default'），用于从 ~/.lingzhou/auth-profiles.json 读取 token",
     )
+    proxy_url: str = Field(
+        default="",
+        description=(
+            "可选 HTTP forward proxy URL（如 http://127.0.0.1:7890）。"
+            "为空时使用标准 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY 环境变量。"
+        ),
+    )
     mode: str = Field(
         default="openai",
         description=(

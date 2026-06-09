@@ -112,6 +112,48 @@ def test_openai_compat_rejects_empty_api_key_env(monkeypatch):
         )
 
 
+def test_provider_proxy_url_is_passed_to_httpx_async_client(monkeypatch):
+    import provider.openai_compat as openai_mod
+    from provider.openai_compat import _build_mode_adapter
+
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        pass
+
+    def _fake_async_client(**kwargs: Any) -> _FakeClient:
+        captured.update(kwargs)
+        return _FakeClient()
+
+    monkeypatch.setattr(openai_mod.httpx, "AsyncClient", _fake_async_client)
+
+    adapter = _build_mode_adapter(
+        mode="openai",
+        base_url="https://api.example.invalid/v1",
+        api_key="test-key",
+        proxy_url="http://proxy.internal:7890",
+        timeout=30.0,
+    )
+    adapter.build_async_client()
+
+    assert captured["proxy"] == "http://proxy.internal:7890"
+    assert captured["trust_env"] is False
+
+
+def test_http_proxy_resolution_uses_https_and_no_proxy():
+    from core.http_proxy import resolve_env_proxy_url
+
+    env = {
+        "HTTP_PROXY": "http://http-proxy.internal:8080",
+        "HTTPS_PROXY": "http://https-proxy.internal:8443",
+        "NO_PROXY": "internal.example.com,localhost",
+    }
+
+    assert resolve_env_proxy_url("https://api.openai.com/v1/responses", env) == "http://https-proxy.internal:8443"
+    assert resolve_env_proxy_url("https://internal.example.com/v1", env) is None
+    assert resolve_env_proxy_url("http://api.openai.com/v1", env) == "http://http-proxy.internal:8080"
+
+
 def test_codex_headers_include_backend_originator():
     from provider.codex_oauth import build_codex_headers
 
@@ -931,7 +973,7 @@ def test_copilot_mode_ignores_empty_cached_token(monkeypatch):
         expires_at_ms = int((time.time() + 3600) * 1000)
 
     class _FakeAsyncClient:
-        def __init__(self, timeout: float = 15.0) -> None:
+        def __init__(self, timeout: float = 15.0, **_: Any) -> None:
             self.timeout = timeout
 
         async def __aenter__(self):
