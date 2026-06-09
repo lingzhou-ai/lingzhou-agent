@@ -66,6 +66,56 @@ def test_codex_oauth_resolution_falls_back_to_env_for_bad_profile(monkeypatch, t
     assert resolved.source == "env:OPENAI_CODEX_ACCESS_TOKEN"
 
 
+def test_codex_device_code_uses_explicit_proxy(monkeypatch):
+    import provider.codex_oauth as codex_mod
+
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "user_code": "ABCD-EFGH",
+                "device_auth_id": "device-auth-id",
+                "interval": 1,
+            }
+
+    def _post(url: str, **kwargs: Any) -> _Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _Response()
+
+    monkeypatch.setattr(codex_mod.httpx, "post", _post)
+
+    device = codex_mod.request_codex_device_code(proxy_url="http://proxy.internal:7890")
+
+    assert device.user_code == "ABCD-EFGH"
+    assert captured["kwargs"]["proxy"] == "http://proxy.internal:7890"
+    assert captured["kwargs"]["trust_env"] is False
+
+
+def test_codex_login_proxy_url_loaded_from_config(tmp_path):
+    from cli.auth import _load_codex_proxy_url
+
+    config_path = tmp_path / "lingzhou.json"
+    config_path.write_text(json.dumps({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key_env": "OPENAI_CODEX_ACCESS_TOKEN",
+                "proxy_url": "http://proxy.internal:7890",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+        "loop": {"workspace_dir": "~/.lingzhou/workspace"},
+    }), encoding="utf-8")
+
+    assert _load_codex_proxy_url(config_path) == "http://proxy.internal:7890"
+
+
 def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
     from store.auth import resolve_copilot_token, set_token_profile
 

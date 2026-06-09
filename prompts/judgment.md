@@ -6,6 +6,9 @@
 ### 活跃任务
 {{task_section}}
 
+### 任务级皮层工作区
+{{cortex_workspace_section}}
+
 ### 近期关键事实
 {{task_facts_section}}
 

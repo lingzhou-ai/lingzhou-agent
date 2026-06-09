@@ -474,6 +474,7 @@ async def _assemble_context(
         runnable_tasks=runnable_tasks,
         similar_tasks=similar_tasks,
         context_facts=context_facts,
+        failures=failures,
     )
     memory_recall_section = _fmt_memory_recall(
         query=search_query or "",
