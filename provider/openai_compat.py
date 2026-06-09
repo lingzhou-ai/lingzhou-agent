@@ -28,6 +28,7 @@ from provider.openai_compat_helpers import (
     _copilot_reasoning_effort,
     _derive_copilot_api_base_url_from_token,
     _extract_responses_text,
+    _extract_responses_stream_data,
     _normalize_copilot_api_base_url,
     _normalize_responses_message_content,
     _raise_for_status_with_body,
@@ -492,6 +493,7 @@ class OpenAICompatProvider:
                 payload["include"] = ["reasoning.encrypted_content"]
         if self._provider_mode == "codex":
             payload["store"] = False
+            payload["stream"] = True
         if self._extra_body:
             payload.update(self._extra_body)
         return payload
@@ -628,7 +630,10 @@ class OpenAICompatProvider:
                 resp = await self._client.post(target, content=json.dumps(payload),
                                                headers=headers or None, timeout=req_timeout)
             _raise_for_status_with_body(resp)
-            data = resp.json()
+            if self._provider_mode == "codex" and payload.get("stream") is True:
+                data = _extract_responses_stream_data(resp.text)
+            else:
+                data = resp.json()
             self._record_usage(data.get("usage"))
             return _extract_responses_text(data)
 

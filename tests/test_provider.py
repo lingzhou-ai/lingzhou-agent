@@ -245,6 +245,7 @@ def test_codex_mode_builds_responses_payload(monkeypatch, tmp_path):
         payload = provider._build_responses_payload([SimpleNamespace(role="user", content="hi")])
         assert payload["model"] == "gpt-5.5"
         assert payload["store"] is False
+        assert payload["stream"] is True
         assert payload["reasoning"]["effort"] == "low"
         assert payload["reasoning"]["summary"] == "auto"
         assert "temperature" not in payload
@@ -879,6 +880,75 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     assert call["payload"]["reasoning"] == {"effort": "high"}
     assert "temperature" not in call["payload"]
     assert "messages" not in call["payload"]
+
+
+def test_codex_responses_stream_parses_sse_output_text(monkeypatch):
+    import httpx
+
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    class _FakeMode:
+        def resolve_url(self, path: str) -> str:
+            return f"https://chatgpt.com/backend-api/codex{path}"
+
+        async def request_headers(self) -> dict[str, str]:
+            return {"Authorization": "Bearer codex-token"}
+
+    class _FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.is_closed = False
+            self.timeout = SimpleNamespace(read=30.0, connect=30.0)
+
+        async def post(self, url, *, content=None, headers=None, timeout=None):
+            self.calls.append({
+                "url": url,
+                "payload": json.loads(content or "{}"),
+                "headers": headers,
+                "timeout": timeout,
+            })
+            body = "\n\n".join([
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"hello"}',
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":" world"}',
+                'event: response.completed\n'
+                'data: {"type":"response.completed","response":{"output_text":"hello world","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}',
+                "data: [DONE]",
+            ])
+            return httpx.Response(
+                200,
+                text=body,
+                request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+            )
+
+    monkeypatch.setattr("provider.openai_compat.lookup_model_ref", lambda model_ref, catalog_path=None: {
+        "api": "responses",
+        "reasoning": True,
+        "request_params": {"unsupported": ["temperature"]},
+    } if model_ref == "openai-codex/gpt-5.4" else None)
+
+    fake_client = _FakeAsyncClient()
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider.model_ref = "openai-codex/gpt-5.4"
+    provider._provider_mode = "codex"
+    provider._model = "gpt-5.4"
+    provider._temperature = 0.7
+    provider._thinking_level = "low"
+    provider._extra_body = {}
+    provider._client = cast("Any", fake_client)
+    provider._mode = _FakeMode()
+    provider.last_usage = {}
+
+    result = asyncio.run(provider.chat([Message(role="user", content="hi")]))
+
+    assert result == "hello world"
+    assert fake_client.calls[0]["payload"]["stream"] is True
+    assert fake_client.calls[0]["payload"]["store"] is False
+    assert provider.last_usage["prompt_tokens"] == 3
+    assert provider.last_usage["completion_tokens"] == 2
+    assert provider.last_usage["total_tokens"] == 5
 
 
 def test_copilot_gpt5_responses_payload_omits_temperature():
