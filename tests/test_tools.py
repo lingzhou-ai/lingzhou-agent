@@ -2377,6 +2377,69 @@ async def _exec_empty_command():
     assert res.error == "EmptyCommand"
 
 
+def test_resource_guard_detects_embedding_oom_preflight():
+    from core.resource_guard import (
+        local_embedding_memory_preflight,
+        looks_like_local_embedding_command,
+        parse_mem_available_mib,
+    )
+
+    assert parse_mem_available_mib("MemAvailable:    1048576 kB\n") == 1024
+    assert looks_like_local_embedding_command("python build_embeddings.py --model BAAI/bge-m3")
+
+    blocked = local_embedding_memory_preflight(
+        command="python build_embeddings.py --model BAAI/bge-m3",
+        min_available_mib=12288,
+        available_mib=2048,
+    )
+
+    assert blocked.matched is True
+    assert blocked.ok is False
+    assert blocked.reason == "insufficient_available_memory_for_local_embedding"
+
+
+def test_exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch))
+
+
+async def _exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+    import core.resource_guard as guard_mod
+    from tools.exec import exec_run
+
+    monkeypatch.setattr(guard_mod, "available_memory_mib", lambda: 1024)
+    ctx = _tool_ctx()
+
+    res = await exec_run(
+        {"command": "python /root/.lingzhou/workspace/build_embeddings.py", "background": True},
+        ctx,
+    )
+
+    assert res.skipped is True
+    assert res.error == "InsufficientMemoryForLocalEmbedding"
+    assert res.metadata["resource_guard"]["available_mib"] == 1024
+
+
+def test_shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch))
+
+
+async def _shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+    import core.resource_guard as guard_mod
+    from tools.shell import shell_run
+
+    monkeypatch.setattr(guard_mod, "available_memory_mib", lambda: 1024)
+    ctx = _tool_ctx()
+
+    res = await shell_run(
+        {"command": "python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"BAAI/bge-m3\")'"},
+        ctx,
+    )
+
+    assert res.skipped is True
+    assert res.error == "InsufficientMemoryForLocalEmbedding"
+    assert res.metadata["resource_guard"]["reason"] == "insufficient_available_memory_for_local_embedding"
+
+
 def test_process_kill():
     """process.kill 可以终止后台进程。"""
     asyncio.run(_process_kill())

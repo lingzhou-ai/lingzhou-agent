@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core.resource_guard import local_embedding_memory_preflight, memory_guard_settings
 from tools.exec_helpers import (
     ProcessInfo,
     ProcessManager,
@@ -113,6 +114,34 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 "pty": use_pty,
             }, ensure_ascii=False),
             skipped=True,
+        )
+
+    guard_enabled, required_mib = memory_guard_settings(getattr(ctx, "config", None))
+    guard = local_embedding_memory_preflight(
+        command=command,
+        min_available_mib=required_mib,
+        guard_enabled=guard_enabled,
+    )
+    if guard.matched and not guard.ok:
+        payload = {
+            "command": command,
+            "workdir": workdir,
+            "background": background,
+            "pty": use_pty,
+            "timeout": timeout,
+            "resource_guard": guard.as_metadata(),
+        }
+        summary = (
+            "资源守卫已阻止本地 embedding 大模型/批量重建命令: "
+            f"available_mib={guard.available_mib} required_mib={guard.required_mib}"
+        )
+        return ToolResult(
+            summary=summary,
+            evidence=json.dumps(payload, ensure_ascii=False),
+            skipped=True,
+            error="InsufficientMemoryForLocalEmbedding",
+            state_delta={"resource_guard": "blocked", "reason": guard.reason},
+            metadata=tool_metadata("exec", summary, **payload),
         )
 
     exec_env = os.environ.copy()

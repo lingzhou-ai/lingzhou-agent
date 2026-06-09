@@ -116,6 +116,21 @@ class MemoryConfig(BaseModel):
             "None=使用系统默认 ~/.cache"
         ),
     )
+    local_embed_min_available_mib: int = Field(
+        default=12288,
+        ge=0,
+        description=(
+            "加载本地 SentenceTransformer 或执行本地 embedding 批量重建前要求的可用内存 MiB；"
+            "0=关闭内存前置检查。bge-m3 等大模型建议保持较高阈值，避免 OOM Killer。"
+        ),
+    )
+    local_embed_command_guard: bool = Field(
+        default=True,
+        description=(
+            "shell.run/exec 执行疑似本地 embedding 大模型或批量重建命令前是否做内存守卫；"
+            "开启后内存不足会跳过执行并返回明确失败原因。"
+        ),
+    )
     chat_crystallize_every: int = Field(
         default=20, ge=1,
         description="chat 结晶间隔：每 N 个同 chat 轮次蒸馏一次 chat_summary 节点写入语义记忆；任务 event 仍独立保留",

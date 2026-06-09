@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from core.resource_guard import local_embedding_memory_preflight, memory_guard_settings
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 _DEFAULT_TIMEOUT = 30.0
@@ -190,6 +191,39 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
             ))
         except Exception:
             pass  # WM 不可用时不阻断
+
+    guard_enabled, required_mib = memory_guard_settings(getattr(ctx, "config", None))
+    guard = local_embedding_memory_preflight(
+        command=command,
+        min_available_mib=required_mib,
+        guard_enabled=guard_enabled,
+    )
+    if guard.matched and not guard.ok:
+        payload = tool_metadata(
+            "shell.run",
+            "shell.run blocked by resource guard",
+            command=command,
+            timeout_sec=timeout,
+            resource_guard=guard.as_metadata(),
+            risky=is_risky,
+            risk_reason=risk_reason,
+        )
+        summary = (
+            "资源守卫已阻止本地 embedding 大模型/批量重建命令: "
+            f"available_mib={guard.available_mib} required_mib={guard.required_mib}"
+        )
+        return ToolResult(
+            summary=summary,
+            evidence=json.dumps(payload, ensure_ascii=False),
+            skipped=True,
+            error="InsufficientMemoryForLocalEmbedding",
+            metadata=payload,
+            state_delta={
+                "resource_guard": "blocked",
+                "reason": guard.reason,
+                "risky": is_risky,
+            },
+        )
 
     workdir_raw = params.get("workdir")
 

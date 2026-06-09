@@ -12,6 +12,7 @@ from core.execution import ExecutionLayer
 from core.judgment import JudgmentLayer
 from core.log_fields import format_log_fields
 from core.perception import PerceptionLayer
+from core.resource_guard import local_embedding_memory_preflight
 from provider import create_provider
 from provider.base import EmbeddingProvider
 
@@ -69,6 +70,27 @@ async def _close_provider_stack(provider: Any, routing_providers: dict[str, Any]
 
 def _refresh_semantic_embed_runtime(loop: CognitionLoop) -> None:
     semantic = loop.semantic  # CognitionLoop 公开属性
+    if loop._cfg.memory.local_embed_model:
+        preflight = local_embedding_memory_preflight(
+            model=loop._cfg.memory.local_embed_model,
+            min_available_mib=loop._cfg.memory.local_embed_min_available_mib,
+            guard_enabled=loop._cfg.memory.local_embed_command_guard,
+        )
+        if not preflight.ok:
+            _log.warning(
+                "[hot-reload] 本地 embedding 模型加载被资源守卫跳过: model=%s available_mib=%s required_mib=%s reason=%s",
+                loop._cfg.memory.local_embed_model,
+                preflight.available_mib,
+                preflight.required_mib,
+                preflight.reason,
+            )
+            semantic._embed_fn = (
+                loop._provider.embed
+                if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider)
+                else None
+            )
+            semantic._embedding_weight = loop._cfg.memory.embedding_weight
+            return
     semantic._embed_fn = loop._provider.embed if loop._cfg.memory.embedding_model and isinstance(loop._provider, EmbeddingProvider) else None
     semantic._embedding_weight = loop._cfg.memory.embedding_weight
 

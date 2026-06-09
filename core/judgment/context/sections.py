@@ -98,10 +98,14 @@ def _fmt_memory_system(
     memory_dir: str,
     workspace_dir: str,
     semantic: SemanticMemory,
+    memory_cfg: Any | None = None,
     max_concurrent_ticks: int,
     max_tick_queue: int,
 ) -> str:
     stats = cast(Any, semantic).stats()
+    local_embed_model = getattr(memory_cfg, "local_embed_model", None) if memory_cfg is not None else None
+    local_embed_guard = bool(getattr(memory_cfg, "local_embed_command_guard", True)) if memory_cfg is not None else True
+    local_embed_min_mib = int(getattr(memory_cfg, "local_embed_min_available_mib", 12288) or 0) if memory_cfg is not None else 12288
     lines = [
         f"runtime_db: {runtime_db}",
         f"memory_dir: {memory_dir}",
@@ -116,12 +120,16 @@ def _fmt_memory_system(
         f"semantic_maintenance_startup_seconds: {float(stats.get('maintenance_last_startup_seconds') or 0.0):.3f}",
         f"semantic_maintenance_background_seconds: {float(stats.get('maintenance_last_background_seconds') or 0.0):.3f}",
         f"embedding_enabled: {'yes' if stats.get('embedding_enabled') else 'no'}",
+        f"local_embed_model: {local_embed_model or 'none'}",
+        f"local_embed_command_guard: {'yes' if local_embed_guard else 'no'}",
+        f"local_embed_min_available_mib: {local_embed_min_mib}",
         f"decay_lambda: {float(stats.get('decay_lambda') or 0.0):.3f}",
         f"tick_dispatch.max_concurrent_ticks: {int(max_concurrent_ticks)}",
         f"tick_dispatch.max_tick_queue: {int(max_tick_queue)}",
     ]
     lines.append("说明: runtime_db 是任务/事实/聊天/运行轨迹主存储；SOUL/IDENTITY/BOOTSTRAP 等 md 是身份与可读镜像层。")
     lines.append("调参提示: 以上 dispatch 上限可通过 config.set 修改 loop.max_concurrent_ticks / loop.max_tick_queue。")
+    lines.append("embedding安全: 不要自行生成 build_embeddings.py 或 sentence_transformers 批量重建脚本；内存不足时优先使用 FTS5、API embedding、按需向量化或更小本地模型。")
     return "\n".join(lines)
 
 
