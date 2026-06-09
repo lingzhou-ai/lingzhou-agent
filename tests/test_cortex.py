@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from core.cortex import build_cortex_workspace, format_cortex_workspace
+from core.cortex import (
+    build_cortex_workspace,
+    build_problem_solving_guard,
+    format_cortex_workspace,
+    format_problem_solving_guard,
+)
 from store.task import Failure, Run, Task
 
 
@@ -129,3 +134,62 @@ def test_cortex_workspace_formats_general_problem_solving_workbench():
     assert "recovery_state=enumerating_alternatives" in text
     assert "next_verification=切换候选节点后执行 git ls-remote" in text
     assert "completion_checks:" in text
+
+
+def test_problem_solving_guard_requires_workbench_on_user_correction():
+    task = Task(
+        id=12,
+        title="处理节点问题",
+        status="in_progress",
+        priority="normal",
+        created_at="2026-06-09T00:00:00+00:00",
+        next_step="切换节点并验证",
+    )
+    workspace = build_cortex_workspace(task=task)
+
+    guard = build_problem_solving_guard(
+        task=task,
+        workspace=workspace,
+        user_message="我指的是代理节点，不是模型节点",
+    )
+    text = format_problem_solving_guard(guard)
+
+    assert guard.active is True
+    assert "user_correction" in guard.signals
+    assert "workbench_incomplete" in guard.signals
+    assert "missing_fields=domain, intent, hypothesis" in text
+    assert "task.amend" in text
+    assert "task.workbench" in text
+
+
+def test_problem_solving_guard_idles_when_workbench_is_complete():
+    task = Task(
+        id=13,
+        title="通用修复",
+        status="in_progress",
+        priority="normal",
+        created_at="2026-06-09T00:00:00+00:00",
+        result_json={
+            "cortex": {
+                "domain": "git",
+                "intent": "retry push",
+                "hypothesis": "transport failure",
+                "capabilities": ["git ls-remote 可用"],
+                "experiments": ["git ls-remote ok"],
+                "next_verification": "git push",
+                "completion_checks": ["remote main updated"],
+            }
+        },
+    )
+    workspace = build_cortex_workspace(task=task)
+
+    guard = build_problem_solving_guard(
+        task=task,
+        workspace=workspace,
+        user_message="继续解决失败",
+        failures=[Failure(id=1, kind="git_push", dismissed=False, created_at="now")],
+    )
+
+    assert guard.active is False
+    assert "visible_failures" in guard.signals
+    assert guard.missing_fields == []

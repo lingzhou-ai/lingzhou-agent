@@ -9,6 +9,9 @@
 ### 任务级皮层工作区
 {{cortex_workspace_section}}
 
+### 通用问题解决守卫
+{{problem_solving_guard_section}}
+
 ### 近期关键事实
 {{task_facts_section}}
 

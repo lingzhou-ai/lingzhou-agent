@@ -3843,6 +3843,10 @@ def test_assemble_context_includes_wm_proposal_sections():
     asyncio.run(_assemble_context_includes_wm_proposal_sections())
 
 
+def test_assemble_context_includes_problem_solving_guard_for_corrections():
+    asyncio.run(_assemble_context_includes_problem_solving_guard_for_corrections())
+
+
 async def _assemble_context_includes_wm_proposal_sections():
     from core.config import Config
     from core.judgment import CognitionFrame, JudgmentLayer
@@ -3912,6 +3916,74 @@ async def _assemble_context_includes_wm_proposal_sections():
             assert "### WM 提案与可执行方向（observation to action）" in text
             assert "create_self_drive_task" in text
             assert "available_directions:" in text
+        finally:
+            await store.close()
+
+
+async def _assemble_context_includes_problem_solving_guard_for_corrections():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "切换节点",
+                goal="切换节点并重新推送",
+                status="in_progress",
+                next_step="切换节点",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=task,
+                user_message="我指的是代理节点，不是模型节点",
+            )
+
+            assert "### 通用问题解决守卫" in text
+            assert "guard=active" in text
+            assert "signals=user_correction" in text
+            assert "task.workbench" in text
+            assert "domain" in text
+            assert "intent" in text
         finally:
             await store.close()
 
