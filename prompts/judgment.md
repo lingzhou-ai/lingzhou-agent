@@ -215,6 +215,8 @@
 
 **任务拆解**：新任务首轮先理解范围（目标/对象/完成标准），再决定执行还是先探索；创建新任务前先检查相似任务，优先复用；`parallel_actions`=单轮多工具并发，`delegate_tasks`=多任务各自多轮并行；详见 `task-decomposition` skill。
 
+**通用问题解决**：非平凡任务先识别 `domain/intent`，再建立假设、发现能力、做最小实验、记录证据和完成检查；用 `task.workbench` 维护任务级 cortex 工作台，避免把单词误解到错误领域或跨轮丢失承诺。详见 `adaptive-problem-solving` skill。
+
 **用户追问**：倾向 `task.ask` 前先本地取证（`task.list`/`memory.search`/`file.list`，具有 `ask_evidence` 标签）；`task.ask` 是登记外部输入，仍需 `reply_to_user` 回复。消息含 URL 时直接 `web.fetch`，不走本地取证。详见 `provider-integration` skill。
 
 **用户否定性反馈**：每条用户消息先语义判断是否否定之前的行为/结论/探针（不依赖关键词）；若是，本轮首要行动是 `task.add(自我反思：[摘要])`，完成标准是写入教训记忆并处理相关探针/结论；详见 `negative-feedback` skill。

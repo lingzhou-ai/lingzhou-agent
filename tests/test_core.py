@@ -700,6 +700,17 @@ def test_judgment_prompt_includes_existing_task_dedup_rules():
     assert "调用 `task.add` 或 `delegate_tasks` 前" in skill_body
 
 
+def test_judgment_prompt_includes_adaptive_problem_solving_rules():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    skill_body = (_proj_root() / "prompts" / "skills" / "adaptive-problem-solving" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "adaptive-problem-solving" in prompt
+    assert "task.workbench" in prompt
+    assert "domain/intent" in prompt
+    assert "通用循环" in skill_body
+    assert "能力发现" in skill_body
+
+
 def test_judgment_prompt_keeps_detailed_rules_in_skills():
     prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
 
@@ -3340,6 +3351,7 @@ def test_tool_registry():
     assert "file.list" in names
     assert "file.edit" in names
     assert "exec" in names
+    assert "task.workbench" in names
     assert "process.write" in names
     assert "skill.list" in names
     assert "skill.search" in names

@@ -980,6 +980,59 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
             await store.close()
 
 
+def test_task_workbench_merges_general_problem_solving_state():
+    asyncio.run(_task_workbench_merges_general_problem_solving_state())
+
+
+async def _task_workbench_merges_general_problem_solving_state():
+    from store.task import TaskStore
+    from tools.workbench import task_workbench
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "workbench.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "general problem solving",
+                goal="verify durable workbench",
+                status="in_progress",
+                result_json={"cortex": {"domain": "git", "evidence": ["existing evidence"]}},
+            )
+            task = await store.get_task_by_id(task_id)
+            ctx = _tool_ctx(task_store=store, active_task=task)
+
+            result = await task_workbench(
+                {
+                    "workbench": {
+                        "intent": "retry push after capability discovery",
+                        "hypothesis": "transport failure is environmental",
+                        "capabilities": [{"name": "git ls-remote", "status": "available"}],
+                        "experiments": [{"target": "github", "status": "pending"}],
+                        "next_verification": "run git ls-remote",
+                        "unknown": "ignored",
+                    }
+                },
+                ctx,
+            )
+
+            assert result.skipped is False
+            assert result.metadata["tool_name"] == "task.workbench"
+            refreshed = await store.get_task_by_id(task_id)
+            assert refreshed is not None
+            cortex = refreshed.result_json["cortex"]
+            assert cortex["domain"] == "git"
+            assert cortex["intent"] == "retry push after capability discovery"
+            assert cortex["hypothesis"] == "transport failure is environmental"
+            assert cortex["evidence"] == ["existing evidence"]
+            assert cortex["capabilities"] == [{"name": "git ls-remote", "status": "available"}]
+            assert cortex["experiments"] == [{"target": "github", "status": "pending"}]
+            assert cortex["next_verification"] == "run git ls-remote"
+            assert "unknown" not in cortex
+        finally:
+            await store.close()
+
+
 def test_subagent_task_store_view_without_virtual_task_does_not_fallback_to_parent_active():
     asyncio.run(_subagent_task_store_view_without_virtual_task_does_not_fallback_to_parent_active())
 

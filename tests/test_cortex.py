@@ -87,3 +87,45 @@ def test_cortex_workspace_prefers_explicit_cortex_result_state():
     assert "显式失败" in text
     assert "显式问题" in text
     assert "派生计划" not in text
+
+
+def test_cortex_workspace_formats_general_problem_solving_workbench():
+    task = Task(
+        id=11,
+        title="通用排障",
+        status="in_progress",
+        priority="normal",
+        created_at="2026-06-09T00:00:00+00:00",
+        result_json={
+            "cortex": {
+                "domain": "network_proxy",
+                "intent": "switch_outbound_node_and_retry_push",
+                "hypothesis": "当前出站节点导致 GitHub TLS 中断",
+                "capabilities": [
+                    {"name": "mihomo external-controller", "status": "available"},
+                ],
+                "experiments": [
+                    {"target": "github.com", "status": "failed", "error": "gnutls_handshake"},
+                ],
+                "recovery_state": "enumerating_alternatives",
+                "next_verification": "切换候选节点后执行 git ls-remote",
+                "completion_checks": [
+                    {"text": "git push 成功", "status": "pending"},
+                ],
+            }
+        },
+    )
+
+    text = format_cortex_workspace(build_cortex_workspace(task=task))
+
+    assert "problem_solving:" in text
+    assert "domain=network_proxy" in text
+    assert "intent=switch_outbound_node_and_retry_push" in text
+    assert "hypothesis=当前出站节点导致 GitHub TLS 中断" in text
+    assert "capability_map:" in text
+    assert "[available] mihomo external-controller" in text
+    assert "experiment_log:" in text
+    assert "[failed] target=github.com error=gnutls_handshake" in text
+    assert "recovery_state=enumerating_alternatives" in text
+    assert "next_verification=切换候选节点后执行 git ls-remote" in text
+    assert "completion_checks:" in text

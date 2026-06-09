@@ -18,11 +18,19 @@ class CortexWorkspace:
     status: str = ""
     current_step: str = ""
     next_step: str = ""
+    domain: str = ""
+    intent: str = ""
+    hypothesis: str = ""
+    recovery_state: str = ""
+    next_verification: str = ""
     plan: list[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
+    experiments: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     progress: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
+    completion_checks: list[str] = field(default_factory=list)
 
 
 def _clip_text(text: str, max_chars: int) -> str:
@@ -54,6 +62,42 @@ def _as_list(value: Any, *, limit: int = 6) -> list[str]:
         if len(result) >= limit:
             break
     return result
+
+
+def _text_from_mapping(item: dict[str, Any]) -> str:
+    text = str(item.get("text") or item.get("content") or item.get("summary") or item.get("step") or item.get("name") or "").strip()
+    if not text:
+        ordered_keys = ("target", "action", "command", "tool", "result", "error")
+        parts = [f"{key}={item[key]}" for key in ordered_keys if str(item.get(key) or "").strip()]
+        text = " ".join(parts)
+    status = str(item.get("status") or "").strip()
+    if text and status:
+        text = f"[{status}] {text}"
+    return text
+
+
+def _structured_list(value: Any, *, limit: int = 6) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = _text_from_mapping(item)
+        else:
+            text = str(item or "").strip()
+        if text:
+            result.append(_clip_for_context(text, 220))
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _text_field(data: dict[str, Any], *names: str) -> str:
+    for name in names:
+        value = str(data.get(name) or "").strip()
+        if value:
+            return _clip_for_context(value, 240)
+    return ""
 
 
 def _plan_from_task(task: Any) -> list[str]:
@@ -130,6 +174,11 @@ def build_cortex_workspace(
     cortex = result_json.get("cortex") if isinstance(result_json, dict) else None
     if not isinstance(cortex, dict):
         cortex = {}
+    problem = result_json.get("problem_solving") if isinstance(result_json, dict) else None
+    if isinstance(problem, dict):
+        merged = dict(problem)
+        merged.update(cortex)
+        cortex = merged
     evidence = _as_list(cortex.get("evidence"), limit=8)
     evidence.extend(_facts_as_evidence(context_facts or [], limit=max(0, 8 - len(evidence))))
     return CortexWorkspace(
@@ -139,11 +188,19 @@ def build_cortex_workspace(
         status=str(getattr(task, "status", "") or "").strip(),
         current_step=str(getattr(task, "current_step", "") or "").strip(),
         next_step=str(getattr(task, "next_step", "") or "").strip(),
+        domain=_text_field(cortex, "domain", "active_domain"),
+        intent=_text_field(cortex, "intent"),
+        hypothesis=_text_field(cortex, "hypothesis", "working_hypothesis"),
+        recovery_state=_text_field(cortex, "recovery_state", "state"),
+        next_verification=_text_field(cortex, "next_verification", "next_experiment", "verification"),
         plan=_as_list(cortex.get("plan"), limit=8) or _plan_from_task(task),
+        capabilities=_structured_list(cortex.get("capabilities"), limit=6),
+        experiments=_structured_list(cortex.get("experiments"), limit=8),
         evidence=evidence[:8],
         progress=_as_list(cortex.get("progress"), limit=6) or _progress_from_runs(recent_runs or []),
         failures=_as_list(cortex.get("failures"), limit=4) or _failure_lines(failures or []),
         open_questions=_as_list(cortex.get("open_questions"), limit=5),
+        completion_checks=_structured_list(cortex.get("completion_checks"), limit=6),
     )
 
 
@@ -163,9 +220,21 @@ def format_cortex_workspace(workspace: CortexWorkspace) -> str:
         f"current_step={_clip_text(workspace.current_step, 180) or '（未指定）'}",
         f"next_step={_clip_text(workspace.next_step, 180) or '（未指定）'}",
     ]
+    if workspace.domain or workspace.intent or workspace.hypothesis or workspace.recovery_state or workspace.next_verification:
+        lines.extend([
+            "problem_solving:",
+            f"- domain={workspace.domain or '（未识别）'}",
+            f"- intent={workspace.intent or '（未识别）'}",
+            f"- hypothesis={workspace.hypothesis or '（未建立）'}",
+            f"- recovery_state={workspace.recovery_state or '（未进入恢复状态）'}",
+            f"- next_verification={workspace.next_verification or '（未指定）'}",
+        ])
     lines.extend(_section("plan_state:", workspace.plan))
+    lines.extend(_section("capability_map:", workspace.capabilities))
+    lines.extend(_section("experiment_log:", workspace.experiments))
     lines.extend(_section("evidence_board:", workspace.evidence))
     lines.extend(_section("recent_progress:", workspace.progress))
     lines.extend(_section("known_failures:", workspace.failures))
     lines.extend(_section("open_questions:", workspace.open_questions))
+    lines.extend(_section("completion_checks:", workspace.completion_checks))
     return "\n".join(lines)
