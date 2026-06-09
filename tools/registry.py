@@ -166,6 +166,7 @@ class ToolEntry:
 # ── 全局注册表（模块级单例）────────────────────────────────────────────────────
 
 _registry: dict[str, ToolEntry] = {}
+tool_registry = None  # 提前占位，避免 discover() 过程中的循环导入
 
 
 def lookup_registered_tool(name: str) -> ToolEntry | None:
