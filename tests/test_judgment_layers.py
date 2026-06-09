@@ -88,6 +88,82 @@ async def test_normalize_judgment_output_unknown_tool_becomes_wait() -> None:
     assert "未知工具" in (out.rationale or "")
 
 
+@pytest.mark.asyncio
+async def test_problem_solving_guard_blocks_non_workbench_actions() -> None:
+    from core.judgment.boundary import normalize_judgment_output
+    from core.judgment.output import JudgmentOutput
+
+    class _Executor:
+        async def _repair_output(self, context_text: str, raw: str) -> JudgmentOutput | None:
+            return None
+
+    class _Registry:
+        def get(self, name: str):
+            return object()
+
+    context = (
+        "### 通用问题解决守卫\n"
+        "guard=active\n"
+        "signals=user_correction, workbench_incomplete\n"
+        "missing_fields=domain, intent\n"
+        "\n### 近期关键事实\n"
+    )
+
+    out = await normalize_judgment_output(
+        _Executor(),
+        JudgmentOutput(
+            decision="act",
+            chosen_action_id="shell.run",
+            params={"command": "git push"},
+            reply_to_user="我继续推送。",
+            rationale="继续旧路径",
+        ),
+        context_text=context,
+        raw="{}",
+        registry=_Registry(),
+    )
+
+    assert out.decision == "wait"
+    assert out.chosen_action_id == ""
+    assert out.params == {}
+    assert out.reply_to_user == ""
+    assert "通用问题解决守卫已触发" in out.rationale
+    assert "task.workbench" in out.rationale
+
+
+@pytest.mark.asyncio
+async def test_problem_solving_guard_allows_workbench_actions() -> None:
+    from core.judgment.boundary import normalize_judgment_output
+    from core.judgment.output import JudgmentOutput
+
+    class _Executor:
+        async def _repair_output(self, context_text: str, raw: str) -> JudgmentOutput | None:
+            return None
+
+    class _Registry:
+        def get(self, name: str):
+            return object()
+
+    context = "### 通用问题解决守卫\nguard=active\n\n### 近期关键事实\n"
+
+    out = await normalize_judgment_output(
+        _Executor(),
+        JudgmentOutput(
+            decision="act",
+            chosen_action_id="task.workbench",
+            params={"workbench": {"domain": "git"}},
+            rationale="先固化工作台",
+        ),
+        context_text=context,
+        raw="{}",
+        registry=_Registry(),
+    )
+
+    assert out.decision == "act"
+    assert out.chosen_action_id == "task.workbench"
+    assert out.params == {"workbench": {"domain": "git"}}
+
+
 def test_judgment_subpackages_importable() -> None:
     for name in ("core.judgment.boundary", "core.judgment.decision", "core.judgment.policy"):
         mod = importlib.import_module(name)
