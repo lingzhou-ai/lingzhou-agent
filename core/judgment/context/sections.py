@@ -1,4 +1,5 @@
 """core/judgment/context/sections.py — WM/记忆/对话等 judgment 上下文 section 格式化。"""
+
 from __future__ import annotations
 
 import json
@@ -7,8 +8,7 @@ import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from .utils import _cache_put, _context_fmt_cache, _estimate_tokens
-from .utils import _clip_for_context
+from .utils import _cache_put, _clip_for_context, _context_fmt_cache, _estimate_tokens
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -178,7 +178,6 @@ def _fmt_tools(manifests: list[ToolManifest]) -> str:
 
 
 def _fmt_config_snapshot(cfg: Config) -> str:
-    ev = cfg.evolution
     lo = cfg.loop
     me = cfg.memory
     th = cfg.thresholds
