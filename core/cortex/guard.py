@@ -7,7 +7,6 @@ from typing import Any
 
 from .workspace import CortexWorkspace
 
-
 _CORRECTION_MARKERS = (
     "不是",
     "不对",
@@ -97,6 +96,8 @@ def build_problem_solving_guard(
         signals.append("visible_failures")
     if _recent_run_failed(recent_runs or []):
         signals.append("recent_run_failed")
+    if workspace.action_first_must_act:
+        signals.append("action_first_required")
 
     missing = _missing_workbench_fields(workspace)
     has_existing_workbench = bool(

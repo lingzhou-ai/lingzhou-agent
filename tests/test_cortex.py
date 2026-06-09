@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from core.cortex import (
+    build_action_first_cortex_patch,
     build_auto_cortex_patch,
     build_cortex_workspace,
     build_problem_solving_guard,
+    extract_action_first_signal,
     format_cortex_workspace,
     format_problem_solving_guard,
 )
@@ -135,6 +137,79 @@ def test_cortex_workspace_formats_general_problem_solving_workbench():
     assert "recovery_state=enumerating_alternatives" in text
     assert "next_verification=切换候选节点后执行 git ls-remote" in text
     assert "completion_checks:" in text
+
+
+def test_action_first_signal_extracts_strong_inputs_and_execute_intent():
+    signal = extract_action_first_signal(
+        "用这个url的配置https://example.com/sub?clash=1，下载后写入 /Users/suge/.config/clash/config.yaml"
+    )
+
+    assert signal.intent == "execute"
+    assert signal.must_act is True
+    assert "strong_input" in signal.markers
+    assert {"kind": "url", "value": "https://example.com/sub?clash=1"} in signal.captured_inputs
+    assert {
+        "kind": "path",
+        "value": "/Users/suge/.config/clash/config.yaml",
+    } in signal.captured_inputs
+    assert "最小可验证动作" in signal.minimum_next_action
+
+
+def test_action_first_signal_keeps_analysis_questions_as_analysis():
+    signal = extract_action_first_signal("为什么 Lingzhou 的动手能力弱，分析一下架构问题")
+
+    assert signal.intent == "analyze"
+    assert signal.must_act is False
+    assert "analysis_marker" in signal.markers
+
+
+def test_action_first_cortex_patch_persists_inputs_without_dropping_existing_state():
+    patch = build_action_first_cortex_patch(
+        existing_cortex={
+            "domain": "network",
+            "captured_inputs": [{"kind": "path", "value": "/tmp/old.yaml"}],
+        },
+        user_message="下载 https://example.com/a.yaml 后测试",
+    )
+
+    cortex = patch["cortex"]
+    assert cortex["domain"] == "network"
+    assert cortex["action_first"]["intent"] == "execute"
+    assert cortex["action_first"]["must_act"] is True
+    assert {"kind": "url", "value": "https://example.com/a.yaml"} in cortex["captured_inputs"]
+    assert {"kind": "path", "value": "/tmp/old.yaml"} in cortex["captured_inputs"]
+
+
+def test_cortex_workspace_formats_action_first_state():
+    task = Task(
+        id=21,
+        title="应用代理配置",
+        status="in_progress",
+        priority="normal",
+        created_at="2026-06-09T00:00:00+00:00",
+        result_json={
+            "cortex": {
+                "action_first": {
+                    "intent": "execute",
+                    "must_act": True,
+                    "markers": ["execute_marker", "strong_input"],
+                    "minimum_next_action": "先下载并校验配置",
+                },
+                "captured_inputs": [
+                    {"kind": "url", "value": "https://example.com/sub?clash=1"},
+                ],
+            }
+        },
+    )
+
+    text = format_cortex_workspace(build_cortex_workspace(task=task))
+
+    assert "action_first:" in text
+    assert "- intent=execute" in text
+    assert "- must_act=yes" in text
+    assert "先下载并校验配置" in text
+    assert "captured_inputs:" in text
+    assert "url=https://example.com/sub?clash=1" in text
 
 
 def test_problem_solving_guard_requires_workbench_on_user_correction():

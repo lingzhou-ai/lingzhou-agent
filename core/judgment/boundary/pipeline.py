@@ -19,6 +19,16 @@ def _problem_solving_guard_active(context_text: str) -> bool:
     return "guard=active" in section
 
 
+def _action_first_must_act(context_text: str) -> bool:
+    marker = "action_first:"
+    marker_index = context_text.find(marker)
+    if marker_index < 0:
+        return False
+    next_section = context_text.find("\n### ", marker_index + len(marker))
+    section = context_text[marker_index:] if next_section < 0 else context_text[marker_index:next_section]
+    return "must_act=yes" in section
+
+
 def _action_allowed_by_problem_solving_guard(output: JudgmentOutput) -> bool:
     if output.decision != "act":
         return False
@@ -37,6 +47,8 @@ def _action_allowed_by_problem_solving_guard(output: JudgmentOutput) -> bool:
 def enforce_problem_solving_guard(output: JudgmentOutput, *, context_text: str) -> JudgmentOutput:
     """Prevent non-workbench actions while the generic problem-solving guard is active."""
     if not _problem_solving_guard_active(context_text):
+        return output
+    if _action_first_must_act(context_text) and output.decision == "act":
         return output
     if _action_allowed_by_problem_solving_guard(output):
         return output

@@ -569,6 +569,42 @@ async def _distinct_user_message_is_queued_into_active_task_inbox():
             await store.close()
 
 
+def test_distinct_execute_user_message_is_persisted_into_action_first_cortex():
+    asyncio.run(_distinct_execute_user_message_is_persisted_into_action_first_cortex())
+
+
+async def _distinct_execute_user_message_is_persisted_into_action_first_cortex():
+    from core.loop.tick import _maybe_steer_active_task_from_user_message
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "steer-action-first.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "处理代理配置",
+                goal="应用用户给出的配置并验证网络链路",
+                next_step="等待用户提供订阅地址",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            await _maybe_steer_active_task_from_user_message(
+                store,
+                task,
+                "用这个url的配置 https://example.com/sub?clash=1，下载后测试",
+            )
+
+            persisted = await store.get_task_by_id(task_id)
+            assert persisted is not None
+            cortex = persisted.result_json["cortex"]
+            assert cortex["action_first"]["intent"] == "execute"
+            assert cortex["action_first"]["must_act"] is True
+            assert {"kind": "url", "value": "https://example.com/sub?clash=1"} in cortex["captured_inputs"]
+        finally:
+            await store.close()
+
+
 def test_invalid_routing_overrides_clear_previous_pending_state():
     asyncio.run(_invalid_routing_overrides_clear_previous_pending_state())
 

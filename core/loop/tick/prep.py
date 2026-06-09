@@ -9,6 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
+from core.cortex import build_action_first_cortex_patch
 from core.immune import extract_constitution_boundaries, load_constitution
 from core.log_fields import tick_scope_fields
 from core.loop.runs.refresh import refresh_running_runs
@@ -16,7 +17,7 @@ from core.loop.task.runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
 )
-from core.metabolic import update_task_data
+from core.metabolic import update_task_data, update_task_result
 from core.perception import (
     EthosValues,
     build_emotion_replay,
@@ -73,6 +74,18 @@ async def _maybe_steer_active_task_from_user_message(
         update["had_user_inbox"] = True
     writer = metabolic if metabolic is not None else task_store
     await update_task_data(writer, active_task.id, update, source="loop/tick/user_inbox")
+    result_json = getattr(active_task, "result_json", {}) or {}
+    existing_cortex = result_json.get("cortex") if isinstance(result_json, dict) else None
+    result_patch = build_action_first_cortex_patch(
+        existing_cortex=existing_cortex if isinstance(existing_cortex, dict) else {},
+        user_message=user_message,
+    )
+    if result_patch:
+        await update_task_result(writer, active_task.id, result_patch, source="loop/tick/action_first")
+        if isinstance(result_json, dict):
+            merged_result = dict(result_json)
+            merged_result.update(result_patch)
+            active_task.result_json = merged_result
     active_task.extras = dict(extras) if isinstance(extras, dict) else {}
     active_task.extras["inbox_messages"] = existing
     if is_self_drive:

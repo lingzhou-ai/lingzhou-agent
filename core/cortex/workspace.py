@@ -31,6 +31,11 @@ class CortexWorkspace:
     failures: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
     completion_checks: list[str] = field(default_factory=list)
+    action_first_intent: str = ""
+    action_first_must_act: bool = False
+    action_first_markers: list[str] = field(default_factory=list)
+    minimum_next_action: str = ""
+    captured_inputs: list[str] = field(default_factory=list)
 
 
 def _clip_text(text: str, max_chars: int) -> str:
@@ -98,6 +103,24 @@ def _text_field(data: dict[str, Any], *names: str) -> str:
         if value:
             return _clip_for_context(value, 240)
     return ""
+
+
+def _captured_inputs(value: Any, *, limit: int = 8) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            kind = str(item.get("kind") or "input").strip()
+            raw_value = str(item.get("value") or "").strip()
+            text = f"{kind}={raw_value}" if raw_value else ""
+        else:
+            text = str(item or "").strip()
+        if text:
+            result.append(_clip_for_context(text, 260))
+        if len(result) >= limit:
+            break
+    return result
 
 
 def _plan_from_task(task: Any) -> list[str]:
@@ -181,6 +204,7 @@ def build_cortex_workspace(
         cortex = merged
     evidence = _as_list(cortex.get("evidence"), limit=8)
     evidence.extend(_facts_as_evidence(context_facts or [], limit=max(0, 8 - len(evidence))))
+    action_first = cortex.get("action_first") if isinstance(cortex.get("action_first"), dict) else {}
     return CortexWorkspace(
         task_id=int(getattr(task, "id", 0) or 0),
         title=str(getattr(task, "title", "") or "").strip(),
@@ -201,6 +225,11 @@ def build_cortex_workspace(
         failures=_as_list(cortex.get("failures"), limit=4) or _failure_lines(failures or []),
         open_questions=_as_list(cortex.get("open_questions"), limit=5),
         completion_checks=_structured_list(cortex.get("completion_checks"), limit=6),
+        action_first_intent=_text_field(action_first, "intent"),
+        action_first_must_act=bool(action_first.get("must_act")),
+        action_first_markers=_as_list(action_first.get("markers"), limit=6),
+        minimum_next_action=_text_field(action_first, "minimum_next_action"),
+        captured_inputs=_captured_inputs(cortex.get("captured_inputs"), limit=8),
     )
 
 
@@ -229,7 +258,23 @@ def format_cortex_workspace(workspace: CortexWorkspace) -> str:
             f"- recovery_state={workspace.recovery_state or '（未进入恢复状态）'}",
             f"- next_verification={workspace.next_verification or '（未指定）'}",
         ])
+    if (
+        workspace.action_first_intent
+        or workspace.action_first_must_act
+        or workspace.minimum_next_action
+        or workspace.captured_inputs
+    ):
+        lines.extend([
+            "action_first:",
+            f"- intent={workspace.action_first_intent or 'unknown'}",
+            f"- must_act={'yes' if workspace.action_first_must_act else 'no'}",
+        ])
+        if workspace.action_first_markers:
+            lines.append(f"- markers={', '.join(workspace.action_first_markers)}")
+        if workspace.minimum_next_action:
+            lines.append(f"- minimum_next_action={workspace.minimum_next_action}")
     lines.extend(_section("plan_state:", workspace.plan))
+    lines.extend(_section("captured_inputs:", workspace.captured_inputs))
     lines.extend(_section("capability_map:", workspace.capabilities))
     lines.extend(_section("experiment_log:", workspace.experiments))
     lines.extend(_section("evidence_board:", workspace.evidence))
