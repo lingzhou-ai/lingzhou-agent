@@ -127,8 +127,8 @@ class MemoryConfig(BaseModel):
     local_embed_command_guard: bool = Field(
         default=True,
         description=(
-            "shell.run/exec 执行疑似本地 embedding 大模型或批量重建命令前是否做内存守卫；"
-            "开启后内存不足会跳过执行并返回明确失败原因。"
+            "shell.run/exec 执行疑似本地 embedding 大模型或批量重建命令前是否启用内存守卫；"
+            "开启后内存不足会给子进程设置内存上限，避免拖垮宿主进程或触发系统级 OOM。"
         ),
     )
     chat_crystallize_every: int = Field(

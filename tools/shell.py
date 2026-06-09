@@ -13,7 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from core.resource_guard import local_embedding_memory_preflight, memory_guard_settings
+from core.resource_guard import (
+    build_memory_limit_preexec,
+    local_embedding_memory_preflight,
+    memory_guard_settings,
+)
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 _DEFAULT_TIMEOUT = 30.0
@@ -198,32 +202,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         min_available_mib=required_mib,
         guard_enabled=guard_enabled,
     )
-    if guard.matched and not guard.ok:
-        payload = tool_metadata(
-            "shell.run",
-            "shell.run blocked by resource guard",
-            command=command,
-            timeout_sec=timeout,
-            resource_guard=guard.as_metadata(),
-            risky=is_risky,
-            risk_reason=risk_reason,
-        )
-        summary = (
-            "资源守卫已阻止本地 embedding 大模型/批量重建命令: "
-            f"available_mib={guard.available_mib} required_mib={guard.required_mib}"
-        )
-        return ToolResult(
-            summary=summary,
-            evidence=json.dumps(payload, ensure_ascii=False),
-            skipped=True,
-            error="InsufficientMemoryForLocalEmbedding",
-            metadata=payload,
-            state_delta={
-                "resource_guard": "blocked",
-                "reason": guard.reason,
-                "risky": is_risky,
-            },
-        )
+    memory_preexec = build_memory_limit_preexec(guard.limit_mib if guard.matched and not guard.ok else None)
 
     workdir_raw = params.get("workdir")
 
@@ -256,6 +235,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         env=safe_env,
         executable=(os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"),
         start_new_session=True,  # 新建进程组，超时时可整组终止
+        preexec_fn=memory_preexec,
     )
 
     timed_out = False
@@ -324,6 +304,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         sandbox_dir=_sandbox_dir,
         risky=is_risky,
         risk_reason=risk_reason,
+        resource_guard=guard.as_metadata() if guard.matched else None,
     )
 
     return ToolResult(
@@ -339,5 +320,6 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
             "timed_out": timed_out,
             "sandbox": use_sandbox,
             "risky": is_risky,
+            "resource_guard": "limited" if guard.matched and guard.limit_mib else ("passed" if guard.matched else ""),
         },
     )

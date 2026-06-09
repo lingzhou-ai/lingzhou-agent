@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import resource
 import subprocess
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,7 @@ class ResourceGuardResult:
     available_mib: int | None
     required_mib: int
     matched: bool = True
+    limit_mib: int | None = None
 
     def as_metadata(self) -> dict[str, Any]:
         return {
@@ -33,6 +35,7 @@ class ResourceGuardResult:
             "available_mib": self.available_mib,
             "required_mib": self.required_mib,
             "matched": self.matched,
+            "limit_mib": self.limit_mib,
         }
 
 
@@ -98,8 +101,36 @@ def local_embedding_memory_preflight(
             actual_available,
             required,
             matched=True,
+            limit_mib=local_embedding_process_limit_mib(actual_available, required),
         )
     return ResourceGuardResult(True, "memory_preflight_passed", actual_available, required, matched=True)
+
+
+def local_embedding_process_limit_mib(available_mib: int | None, required_mib: int) -> int | None:
+    if available_mib is None:
+        return None
+    if available_mib <= 0:
+        return 512
+    reserve_mib = min(2048, max(256, available_mib // 4))
+    cap = max(512, available_mib - reserve_mib)
+    if required_mib > 0:
+        cap = min(cap, required_mib)
+    return max(512, cap)
+
+
+def build_memory_limit_preexec(limit_mib: int | None):
+    if limit_mib is None or limit_mib <= 0 or os.name != "posix":
+        return None
+
+    limit_bytes = int(limit_mib) * 1024 * 1024
+
+    def _apply_limit() -> None:
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+        except (OSError, ValueError):
+            return
+
+    return _apply_limit
 
 
 def memory_guard_settings(config: Any | None) -> tuple[bool, int]:

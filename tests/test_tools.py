@@ -2398,11 +2398,11 @@ def test_resource_guard_detects_embedding_oom_preflight():
     assert blocked.reason == "insufficient_available_memory_for_local_embedding"
 
 
-def test_exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
-    asyncio.run(_exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch))
+def test_exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch))
 
 
-async def _exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+async def _exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
     import core.resource_guard as guard_mod
     from tools.exec import exec_run
 
@@ -2410,20 +2410,21 @@ async def _exec_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
     ctx = _tool_ctx()
 
     res = await exec_run(
-        {"command": "python /root/.lingzhou/workspace/build_embeddings.py", "background": True},
+        {"command": "printf ok # /root/.lingzhou/workspace/build_embeddings.py"},
         ctx,
     )
 
-    assert res.skipped is True
-    assert res.error == "InsufficientMemoryForLocalEmbedding"
+    assert res.skipped is False
+    assert res.error is None
     assert res.metadata["resource_guard"]["available_mib"] == 1024
+    assert res.metadata["resource_guard"]["limit_mib"] == 768
 
 
-def test_shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
-    asyncio.run(_shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch))
+def test_shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch))
 
 
-async def _shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
+async def _shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
     import core.resource_guard as guard_mod
     from tools.shell import shell_run
 
@@ -2431,13 +2432,14 @@ async def _shell_blocks_local_embedding_rebuild_when_memory_low(monkeypatch):
     ctx = _tool_ctx()
 
     res = await shell_run(
-        {"command": "python -c 'from sentence_transformers import SentenceTransformer; SentenceTransformer(\"BAAI/bge-m3\")'"},
+        {"command": "printf ok # sentence_transformers BAAI/bge-m3"},
         ctx,
     )
 
-    assert res.skipped is True
-    assert res.error == "InsufficientMemoryForLocalEmbedding"
+    assert res.skipped is False
+    assert res.error is None
     assert res.metadata["resource_guard"]["reason"] == "insufficient_available_memory_for_local_embedding"
+    assert res.metadata["resource_guard"]["limit_mib"] == 768
 
 
 def test_process_kill():

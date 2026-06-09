@@ -129,7 +129,7 @@ def _fmt_memory_system(
     ]
     lines.append("说明: runtime_db 是任务/事实/聊天/运行轨迹主存储；SOUL/IDENTITY/BOOTSTRAP 等 md 是身份与可读镜像层。")
     lines.append("调参提示: 以上 dispatch 上限可通过 config.set 修改 loop.max_concurrent_ticks / loop.max_tick_queue。")
-    lines.append("embedding安全: 不要自行生成 build_embeddings.py 或 sentence_transformers 批量重建脚本；内存不足时优先使用 FTS5、API embedding、按需向量化或更小本地模型。")
+    lines.append("embedding安全: 不要优先生成 build_embeddings.py 或 sentence_transformers 批量重建脚本；内存不足时优先使用 FTS5、API embedding、按需向量化或更小本地模型；必须执行时工具层会施加子进程内存上限。")
     return "\n".join(lines)
 
 

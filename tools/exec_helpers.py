@@ -363,7 +363,13 @@ def _build_capabilities(workdir: str) -> dict[str, Any]:
     }
 
 
-def _spawn_pty_process(command: str, workdir: str, env: dict[str, str]) -> tuple[subprocess.Popen[Any], int]:
+def _spawn_pty_process(
+    command: str,
+    workdir: str,
+    env: dict[str, str],
+    *,
+    preexec_fn: Any | None = None,
+) -> tuple[subprocess.Popen[Any], int]:
     import pty
 
     master_fd, slave_fd = pty.openpty()
@@ -377,6 +383,7 @@ def _spawn_pty_process(command: str, workdir: str, env: dict[str, str]) -> tuple
         env=env,
         close_fds=True,
         start_new_session=True,  # 让 killpg 能终止整组子进程，避免 orphan
+        preexec_fn=preexec_fn,
     )
     os.close(slave_fd)
     return proc, master_fd

@@ -3448,7 +3448,8 @@ def test_memory_system_section_exposes_local_embedding_guard():
     assert "local_embed_model: BAAI/bge-m3" in text
     assert "local_embed_command_guard: yes" in text
     assert "local_embed_min_available_mib: 12288" in text
-    assert "不要自行生成 build_embeddings.py" in text
+    assert "不要优先生成 build_embeddings.py" in text
+    assert "子进程内存上限" in text
 
 
 async def _assemble_context_semantic_timeout_degrades(monkeypatch, caplog):
