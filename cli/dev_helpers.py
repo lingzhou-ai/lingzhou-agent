@@ -23,6 +23,28 @@ def _provider_name(model_ref: str) -> str:
     return provider
 
 
+def _validate_model_ref(model_ref: str) -> None:
+    """Reject common accidental model refs before they are persisted."""
+    provider, sep, model_id = str(model_ref or "").partition("/")
+    if not provider or not sep or not model_id:
+        raise ValueError(f"模型引用必须是 provider/model-id 格式: {model_ref!r}")
+    if model_id.strip().isdigit():
+        try:
+            from provider.catalog import list_provider_models
+
+            catalog_ids = {
+                str(model.get("id") or "")
+                for model in list_provider_models(provider)
+                if isinstance(model, dict)
+            }
+        except Exception:
+            catalog_ids = set()
+        if model_id not in catalog_ids:
+            raise ValueError(
+                f"模型 ID 不能是编号 {model_id!r}；请使用完整模型名，例如 {provider}/gpt-5.5"
+            )
+
+
 def _normalize_model_target(target: str) -> str:
     return _MODEL_TARGET_ALIASES.get((target or "").strip().lower(), (target or "").strip())
 
@@ -47,6 +69,7 @@ def _apply_model_target_selection(
     target: str,
 ) -> dict[str, Any]:
     normalized = _normalize_model_target(target)
+    _validate_model_ref(new_model)
     if normalized == "primary":
         previous = str(cfg_data.get("model") or current_model)
         cfg_data["model"] = new_model

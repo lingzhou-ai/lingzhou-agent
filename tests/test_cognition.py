@@ -1219,6 +1219,23 @@ def test_dev_model_target_selection_rejects_unknown_target():
         )
 
 
+def test_dev_model_target_selection_rejects_numeric_model_id():
+    from cli.dev import _apply_model_target_selection
+
+    cfg_data = {
+        "model": "bailian/qwen3.6-plus",
+        "routing": {},
+    }
+
+    with pytest.raises(ValueError, match="模型 ID 不能是编号"):
+        _apply_model_target_selection(
+            cfg_data,
+            current_model="bailian/qwen3.6-plus",
+            new_model="openai-codex/4",
+            target="reasoner",
+        )
+
+
 def test_merge_runtime_routing_override_keeps_supported_tiers_only():
     from cli.dev import _merge_runtime_routing_override
 
