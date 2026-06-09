@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from core.http_proxy import httpx_proxy_kwargs
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
@@ -30,13 +30,12 @@ _http_client: httpx.AsyncClient | None = None
 async def _get_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
-        proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
         _http_client = httpx.AsyncClient(
             timeout=HTTP_TIMEOUT,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=3),
             follow_redirects=True,
             headers={"User-Agent": DEFAULT_UA},
-            proxy=proxy,
+            **httpx_proxy_kwargs(),
         )
     return _http_client
 

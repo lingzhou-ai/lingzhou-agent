@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
+from core.http_proxy import httpx_proxy_kwargs
 from provider.base import Message
 from provider.catalog import lookup_model, lookup_model_ref
 from provider.codex_oauth import (
@@ -71,16 +72,21 @@ def _request_timeout_override(client: Any, level: str | None) -> float | None:
 class _ModeAdapter:
     """模式差异的抽象基类。每个具体模式只需覆写差异方法。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float | None):
+    def __init__(self, base_url: str, api_key: str, timeout: float | None, proxy_url: str = ""):
         self.base_url = base_url
         self.api_key = api_key
         self.timeout = timeout
+        self.proxy_url = proxy_url
+
+    def _proxy_kwargs(self) -> dict[str, object]:
+        return httpx_proxy_kwargs(self.base_url, explicit_proxy_url=self.proxy_url)
 
     def build_sync_client(self) -> httpx.Client:
         return httpx.Client(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             timeout=self.timeout,
+            **self._proxy_kwargs(),
         )
 
     def build_async_client(self) -> httpx.AsyncClient:
@@ -89,6 +95,7 @@ class _ModeAdapter:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             timeout=self.timeout,
             limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
+            **self._proxy_kwargs(),
         )
 
     def resolve_url(self, path: str) -> str:
@@ -108,21 +115,26 @@ class _OpenAIMode(_ModeAdapter):
 class _CopilotMode(_ModeAdapter):
     """GitHub Copilot 模式：token exchange + IDE headers + responses API。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float | None):
-        super().__init__(base_url, api_key, timeout)
+    def __init__(self, base_url: str, api_key: str, timeout: float | None, proxy_url: str = ""):
+        super().__init__(base_url, api_key, timeout, proxy_url)
         self._copilot_api_base_url = _normalize_copilot_api_base_url(base_url)
         self._copilot_gh_token: str = api_key
         self._copilot_token: str | None = None
         self._copilot_token_expires: float = 0.0
 
     def build_sync_client(self) -> httpx.Client:
-        return httpx.Client(headers={"Content-Type": "application/json"}, timeout=30.0)
+        return httpx.Client(
+            headers={"Content-Type": "application/json"},
+            timeout=30.0,
+            **self._proxy_kwargs(),
+        )
 
     def build_async_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             headers={"Content-Type": "application/json"},
             timeout=self.timeout,
             limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
+            **self._proxy_kwargs(),
         )
 
     def resolve_url(self, path: str) -> str:
@@ -156,7 +168,7 @@ class _CopilotMode(_ModeAdapter):
                 return self._copilot_token
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as tmp:
+            async with httpx.AsyncClient(timeout=15.0, **self._proxy_kwargs()) as tmp:
                 resp = await tmp.get(
                     COPILOT_TOKEN_URL,
                     headers={
@@ -199,17 +211,25 @@ class _CopilotMode(_ModeAdapter):
 class _CodexMode(_ModeAdapter):
     """OpenAI Codex OAuth 模式：ChatGPT Codex backend + responses API。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float | None, auth_profile_id: str = ""):
-        super().__init__((base_url or DEFAULT_CODEX_API_BASE_URL).rstrip("/"), api_key, timeout)
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout: float | None,
+        auth_profile_id: str = "",
+        proxy_url: str = "",
+    ):
+        super().__init__((base_url or DEFAULT_CODEX_API_BASE_URL).rstrip("/"), api_key, timeout, proxy_url)
         self.auth_profile_id = auth_profile_id
 
     def build_sync_client(self) -> httpx.Client:
-        return httpx.Client(timeout=self.timeout)
+        return httpx.Client(timeout=self.timeout, **self._proxy_kwargs())
 
     def build_async_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             timeout=self.timeout,
             limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
+            **self._proxy_kwargs(),
         )
 
     def resolve_url(self, path: str) -> str:
@@ -235,6 +255,7 @@ def _build_mode_adapter(
     api_key: str = "",
     api_key_env: str | None = None,
     auth_profile_id: str = "",
+    proxy_url: str = "",
     timeout: float | None,
 ) -> _ModeAdapter:
     """根据 provider.mode 创建对应的适配器。
@@ -258,10 +279,16 @@ def _build_mode_adapter(
                 "  export GH_TOKEN=your_token\n"
                 "  export GITHUB_TOKEN=your_token"
             )
-        return _CopilotMode(base_url, resolved_api_key, timeout)
+        return _CopilotMode(base_url, resolved_api_key, timeout, proxy_url)
 
     if mode == "codex":
-        return _CodexMode(base_url or DEFAULT_CODEX_API_BASE_URL, resolved_api_key, timeout, auth_profile_id)
+        return _CodexMode(
+            base_url or DEFAULT_CODEX_API_BASE_URL,
+            resolved_api_key,
+            timeout,
+            auth_profile_id,
+            proxy_url,
+        )
 
     # openai 模式（百炼、DeepSeek 等标准 OpenAI 兼容）
     if not resolved_api_key:
@@ -270,7 +297,7 @@ def _build_mode_adapter(
             f"OpenAI 兼容 provider 的 API key 为空（{missing_hint}）。"
             "请执行 `lingzhou auth bailian` 或设置对应环境变量。"
         )
-    return _OpenAIMode(base_url, resolved_api_key, timeout)
+    return _OpenAIMode(base_url, resolved_api_key, timeout, proxy_url)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -315,6 +342,7 @@ class OpenAICompatProvider:
             base_url=self._base_url,
             api_key=_resolved_key,
             auth_profile_id=provider.auth_profile_id,
+            proxy_url=provider.proxy_url,
             timeout=cfg.timeout,
         )
 

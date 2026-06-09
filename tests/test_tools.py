@@ -2141,6 +2141,47 @@ def test_exec_empty_command():
     """exec 空命令应被拒绝。"""
     asyncio.run(_exec_empty_command())
 
+
+def test_web_fetch_uses_https_proxy_env(monkeypatch):
+    asyncio.run(_web_fetch_uses_https_proxy_env(monkeypatch))
+
+
+async def _web_fetch_uses_https_proxy_env(monkeypatch):
+    import tools.web as web_mod
+
+    class _FakeResponse:
+        status_code = 200
+        text = "<html><body>proxied</body></html>"
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeClient:
+        is_closed = False
+
+        async def request(self, method: str, url: str, **kwargs):
+            return _FakeResponse()
+
+    created: dict[str, Any] = {}
+
+    def _factory(**kwargs: Any):
+        created["kwargs"] = kwargs
+        return _FakeClient()
+
+    monkeypatch.setattr(web_mod.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(web_mod, "_http_client", None)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("http_proxy", raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://https-proxy.internal:8443")
+
+    res = await web_mod.web_fetch({"url": "https://example.com"}, _tool_ctx())
+
+    assert res.error is None
+    assert created["kwargs"]["proxy"] == "http://https-proxy.internal:8443"
+    assert created["kwargs"]["trust_env"] is False
+
+
 async def _exec_empty_command():
     from tools.exec import exec_run
 
