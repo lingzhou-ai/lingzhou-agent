@@ -131,6 +131,24 @@ class MemoryConfig(BaseModel):
             "开启后内存不足会给子进程设置内存上限，避免拖垮宿主进程或触发系统级 OOM。"
         ),
     )
+    embedding_backfill_batch_size: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="memory.embed_backfill 每轮默认处理的节点数；默认 1 表示低内存慢速回填。",
+    )
+    embedding_backfill_sleep_seconds: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=30.0,
+        description="memory.embed_backfill 每条 embedding 写入后的默认暂停秒数，用于降低内存/速率压力。",
+    )
+    embedding_backfill_max_text_chars: int = Field(
+        default=4000,
+        ge=128,
+        le=200000,
+        description="memory.embed_backfill 单个节点送入 embedding 的最大字符数，避免长节点撑爆内存或请求体。",
+    )
     chat_crystallize_every: int = Field(
         default=20, ge=1,
         description="chat 结晶间隔：每 N 个同 chat 轮次蒸馏一次 chat_summary 节点写入语义记忆；任务 event 仍独立保留",

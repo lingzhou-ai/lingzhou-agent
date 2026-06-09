@@ -1,8 +1,10 @@
 """tools/memory.py — 记忆操作工具。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -57,6 +59,34 @@ def _parse_float(val: Any, default: float) -> float:
         return float(s)
     except ValueError:
         return default
+
+
+def _memory_cfg(ctx: ToolContext) -> Any | None:
+    return getattr(getattr(ctx, "config", None), "memory", None)
+
+
+def _embedding_model_name(ctx: ToolContext, explicit: Any = None) -> str:
+    model = _coerce_optional_text(explicit)
+    if model:
+        return model
+    memory_cfg = _memory_cfg(ctx)
+    return _coerce_optional_text(getattr(memory_cfg, "local_embed_model", None)) or _coerce_optional_text(
+        getattr(memory_cfg, "embedding_model", None)
+    )
+
+
+def _coerce_vector(raw: Any) -> list[float] | None:
+    value = raw
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, list) and value and isinstance(value[0], list):
+        value = value[0]
+    if not isinstance(value, list):
+        return None
+    try:
+        return [float(x) for x in value]
+    except (TypeError, ValueError):
+        return None
 
 
 def _disambiguate_semantic_title(ctx: ToolContext, raw_title: str, kind: str, node_id: str) -> str:
@@ -237,6 +267,108 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             retrieval_quality=quality,
         ),
         state_delta={"memory_hits": len(hits), "memory_quality": round(overall, 3)},
+    )
+
+
+@tool(ToolManifest(
+    name="memory.embed_backfill",
+    description=(
+        "低内存慢速回填语义记忆 embedding。按小批次查找尚无 embedding 的节点，"
+        "逐条截断、逐条向量化、逐条写入，可用 max_seconds 控制本轮预算；"
+        "用于替代临时 build_embeddings.py 批量脚本。"
+    ),
+    progress_category="mutation",
+    params=[
+        ToolParam("batch_size", "number", "本轮最多处理节点数，默认 memory.embedding_backfill_batch_size", required=False),
+        ToolParam("sleep_seconds", "number", "每条写入后的暂停秒数，默认 memory.embedding_backfill_sleep_seconds", required=False),
+        ToolParam("max_text_chars", "number", "单节点送入 embedding 的最大字符数，默认 memory.embedding_backfill_max_text_chars", required=False),
+        ToolParam("max_seconds", "number", "本轮最多运行秒数；0 或不传表示不限，仍受 batch_size 限制", required=False),
+        ToolParam("model", "string", "写入 node_embeddings 的 model 标识，默认当前 local/API embedding 配置", required=False),
+        ToolParam("modality", "string", "embedding modality，默认 text", required=False),
+    ],
+))
+async def memory_embed_backfill(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    semantic = getattr(ctx, "semantic", None)
+    if semantic is None:
+        return ToolResult(summary="语义记忆不可用，无法回填 embedding", skipped=True, error="SemanticUnavailable")
+
+    embed_fn = getattr(semantic, "_embed_fn", None)
+    if not callable(embed_fn):
+        return ToolResult(
+            summary="当前未配置可用 embedding 函数，保持 FTS5/关键词检索，不执行回填",
+            skipped=True,
+            error="EmbeddingUnavailable",
+        )
+
+    memory_cfg = _memory_cfg(ctx)
+    batch_size = max(1, min(64, int(params.get("batch_size") or getattr(memory_cfg, "embedding_backfill_batch_size", 1) or 1)))
+    sleep_seconds = max(0.0, float(params.get("sleep_seconds") if params.get("sleep_seconds") is not None else getattr(memory_cfg, "embedding_backfill_sleep_seconds", 0.2)))
+    max_text_chars = max(128, int(params.get("max_text_chars") or getattr(memory_cfg, "embedding_backfill_max_text_chars", 4000) or 4000))
+    max_seconds = max(0.0, float(params.get("max_seconds") or 0.0))
+    modality = _coerce_optional_text(params.get("modality")) or "text"
+    model = _embedding_model_name(ctx, params.get("model"))
+
+    get_unembedded = getattr(semantic, "get_unembedded", None)
+    set_embedding = getattr(semantic, "set_embedding", None)
+    if not callable(get_unembedded) or not callable(set_embedding):
+        return ToolResult(summary="语义记忆不支持 embedding 回填接口", skipped=True, error="EmbeddingBackfillUnsupported")
+
+    started = time.monotonic()
+    rows = list(get_unembedded(modality=modality, model=model, limit=batch_size) or [])
+    processed = 0
+    failed = 0
+    failures: list[dict[str, str]] = []
+    processed_ids: list[str] = []
+
+    for node_id, text in rows:
+        if max_seconds > 0 and time.monotonic() - started >= max_seconds:
+            break
+        clipped_text = str(text or "")[:max_text_chars]
+        if not clipped_text.strip():
+            failed += 1
+            failures.append({"node_id": str(node_id), "error": "empty_text"})
+            continue
+        try:
+            vec = _coerce_vector(embed_fn(clipped_text))
+            if not vec:
+                raise ValueError("embedding vector is empty or invalid")
+            set_embedding(str(node_id), vec, modality=modality, model=model)
+            processed += 1
+            processed_ids.append(str(node_id))
+        except Exception as exc:
+            failed += 1
+            failures.append({"node_id": str(node_id), "error": f"{exc.__class__.__name__}: {exc}"[:240]})
+        if sleep_seconds > 0:
+            await asyncio.sleep(sleep_seconds)
+
+    elapsed = time.monotonic() - started
+    payload = tool_metadata(
+        "memory.embed_backfill",
+        f"memory.embed_backfill processed={processed} failed={failed} elapsed={elapsed:.2f}s",
+        requested=batch_size,
+        fetched=len(rows),
+        processed=processed,
+        failed=failed,
+        elapsed_seconds=round(elapsed, 3),
+        sleep_seconds=sleep_seconds,
+        max_text_chars=max_text_chars,
+        max_seconds=max_seconds,
+        modality=modality,
+        model=model,
+        processed_ids=processed_ids[:20],
+        failures=failures[:5],
+    )
+    summary = (
+        f"embedding 慢速回填完成: processed={processed}, failed={failed}, "
+        f"fetched={len(rows)}, elapsed={elapsed:.2f}s, batch_size={batch_size}"
+    )
+    return ToolResult(
+        summary=summary,
+        evidence=json.dumps(payload, ensure_ascii=False),
+        skipped=processed == 0 and not rows,
+        error="EmbeddingBackfillFailed" if processed == 0 and failed > 0 else None,
+        metadata=payload,
+        state_delta={"embedding_backfill_processed": processed, "embedding_backfill_failed": failed},
     )
 
 

@@ -2442,6 +2442,43 @@ async def _shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
     assert res.metadata["resource_guard"]["limit_mib"] == 768
 
 
+def test_memory_embed_backfill_runs_in_small_batches():
+    asyncio.run(_memory_embed_backfill_runs_in_small_batches())
+
+
+async def _memory_embed_backfill_runs_in_small_batches():
+    from store.semantic import MemoryNode, SemanticMemory
+    from tools.memory import memory_embed_backfill
+
+    calls: list[str] = []
+
+    def _embed(text: str) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0]
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d), decay_lambda=0.0, embed_fn=_embed)
+        semantic.upsert(MemoryNode(id="n1", kind="fact", title="one", body="alpha"))
+        semantic.upsert(MemoryNode(id="n2", kind="fact", title="two", body="beta"))
+        ctx = _tool_ctx(semantic=semantic)
+
+        first = await memory_embed_backfill(
+            {"batch_size": 1, "sleep_seconds": 0, "model": "test-model", "max_text_chars": 16},
+            ctx,
+        )
+        second = await memory_embed_backfill(
+            {"batch_size": 10, "sleep_seconds": 0, "model": "test-model", "max_text_chars": 16},
+            ctx,
+        )
+
+        assert first.error is None
+        assert first.metadata["processed"] == 1
+        assert second.error is None
+        assert second.metadata["processed"] == 1
+        assert len(calls) == 2
+        assert semantic.get_unembedded(modality="text", model="test-model", limit=10) == []
+
+
 def test_process_kill():
     """process.kill 可以终止后台进程。"""
     asyncio.run(_process_kill())
