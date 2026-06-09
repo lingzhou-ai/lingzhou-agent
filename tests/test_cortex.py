@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.cortex import (
+    build_auto_cortex_patch,
     build_cortex_workspace,
     build_problem_solving_guard,
     format_cortex_workspace,
@@ -193,3 +194,46 @@ def test_problem_solving_guard_idles_when_workbench_is_complete():
     assert guard.active is False
     assert "visible_failures" in guard.signals
     assert guard.missing_fields == []
+
+
+def test_auto_cortex_patch_appends_run_outcomes_without_overwriting_intent():
+    patch = build_auto_cortex_patch(
+        existing_cortex={
+            "domain": "git",
+            "intent": "retry push",
+            "hypothesis": "transport failure",
+            "experiments": [{"run_id": "1", "tool": "git", "status": "failed"}],
+        },
+        run_id=2,
+        task_id=13,
+        tool_name="shell.run",
+        status="failed",
+        summary="gnutls_handshake failed",
+        error="TLSFailure",
+        evidence="",
+        progress="",
+        state_delta={"exit_code": 128},
+        artifact_paths=[],
+    )
+
+    cortex = patch["cortex"]
+    assert cortex["domain"] == "git"
+    assert cortex["intent"] == "retry push"
+    assert cortex["hypothesis"] == "transport failure"
+    assert cortex["experiments"][0]["run_id"] == "2"
+    assert cortex["experiments"][0]["status"] == "failed"
+    assert cortex["experiments"][1]["run_id"] == "1"
+    assert "run#2 shell.run failed" in cortex["failures"][0]
+    assert cortex["recovery_state"] == "recovering_from_run_failure"
+    assert "next_verification" in cortex
+
+
+def test_auto_cortex_patch_skips_task_workbench_to_avoid_self_noise():
+    assert build_auto_cortex_patch(
+        existing_cortex={"domain": "git"},
+        run_id=3,
+        task_id=13,
+        tool_name="task.workbench",
+        status="succeeded",
+        summary="工作台已更新",
+    ) == {}

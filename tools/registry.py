@@ -271,5 +271,25 @@ class ToolRegistry:
     def list_manifests_as_dict(self) -> list[dict[str, Any]]:
         return [e.manifest.to_dict() for e in _registry.values()]
 
+
+class _DefaultToolRegistryProxy:
+    """兼容旧的 tool_registry 导入，同时避免模块加载期立即 discover。"""
+
+    def _registry(self) -> ToolRegistry:
+        return default_tool_registry()
+
+    def get(self, name: str) -> ToolEntry | None:
+        return self._registry().get(name)
+
+    def has_capability(self, name: str, capability: str) -> bool:
+        return self._registry().has_capability(name, capability)
+
+    def list_manifests(self) -> list[ToolManifest]:
+        return self._registry().list_manifests()
+
+    def list_manifests_as_dict(self) -> list[dict[str, Any]]:
+        return self._registry().list_manifests_as_dict()
+
+
 # 兼容性别名：供外部 `from tools.registry import tool_registry` 使用
-tool_registry = default_tool_registry()
+tool_registry = _DefaultToolRegistryProxy()

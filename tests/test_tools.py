@@ -635,6 +635,28 @@ def test_tool_registry_discover_skips_hidden_smoke_failed_modules():
         assert registry.get(manifest_name) is not None
 
 
+def test_tool_registry_alias_available_during_tool_discovery():
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        stem = f"alias_import_tool_{time.time_ns()}"
+        manifest_name = f"probe.alias_import.{time.time_ns()}"
+        (root / f"{stem}.py").write_text(
+            "from tools.registry import ToolManifest, ToolResult, tool, tool_registry\n"
+            "assert tool_registry is not None\n"
+            f"@tool(ToolManifest(name={manifest_name!r}, description='alias import probe'))\n"
+            "async def _alias_import_probe(params, ctx):\n"
+            "    return ToolResult(summary='ok')\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        registry.discover(root)
+
+        assert registry.get(manifest_name) is not None
+
+
 def test_tool_registry_discover_rejects_legacy_manifest_kwargs():
     from tools.registry import ToolRegistry
 
@@ -1902,6 +1924,52 @@ async def _subagent_absorb_persists_parent_semantic_node_with_provenance():
 
 def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
     asyncio.run(_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution())
+
+
+def test_subagent_run_accepts_allowed_tools_list(monkeypatch):
+    asyncio.run(_subagent_run_accepts_allowed_tools_list(monkeypatch))
+
+
+async def _subagent_run_accepts_allowed_tools_list(monkeypatch):
+    import core.subagent as subagent_core
+    from core.subagent import SubagentResult
+    from tools.subagent import subagent_run
+
+    captured: dict[str, Any] = {}
+
+    class _FakeRunner:
+        async def run(self) -> SubagentResult:
+            return SubagentResult(
+                subagent_id="sub-list",
+                goal="list allowed tools",
+                ticks_run=1,
+                completed=True,
+                error=None,
+                last_summary="ok",
+                observations=[],
+            )
+
+    def _fake_make_subagent_runner(sub_cfg, *args, **kwargs):
+        captured["allowed_tools"] = sub_cfg.allowed_tools
+        return _FakeRunner()
+
+    monkeypatch.setattr(subagent_core, "make_subagent_runner", _fake_make_subagent_runner)
+
+    ctx = _tool_ctx(wm=SimpleNamespace(add=lambda *args, **kwargs: None))
+    ctx.judgment = object()
+    ctx.execution = object()
+    ctx.registry = object()
+
+    res = await subagent_run(
+        {
+            "goal": "list allowed tools",
+            "allowed_tools": ["task.list", "memory.search"],
+        },
+        ctx,
+    )
+
+    assert res.error is None
+    assert captured["allowed_tools"] == ["task.list", "memory.search"]
 
 
 async def _subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():

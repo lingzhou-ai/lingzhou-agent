@@ -4,6 +4,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.cortex import build_auto_cortex_result_patch
 from core.execution import (
     build_meta_reflection,
     record_meta_reflection_memory,
@@ -201,18 +202,32 @@ async def _refresh_run_via_fact_monitor(
             (error or "-"),
         )
         if run.task_id:
+            task_result_patch = build_task_run_result_patch(
+                run_id=run.id,
+                status=status,
+                worker_type=run.worker_type,
+                tool_name=run.tool_name,
+                session_id=run.session_id,
+                summary=summary,
+                error=error or None,
+            )
+            task_result_patch.update(await build_auto_cortex_result_patch(
+                task_store=task_store,
+                task_id=run.task_id,
+                run_id=run.id,
+                tool_name=run.tool_name,
+                status=status,
+                summary=summary,
+                error=error or None,
+                evidence=str(payload if isinstance(payload, dict) else raw),
+                progress=progress,
+                state_delta=payload if isinstance(payload, dict) else {},
+                artifact_paths=[],
+            ))
             await update_task_result(
                 task_store,
                 run.task_id,
-                build_task_run_result_patch(
-                    run_id=run.id,
-                    status=status,
-                    worker_type=run.worker_type,
-                    tool_name=run.tool_name,
-                    session_id=run.session_id,
-                    summary=summary,
-                    error=error or None,
-                ),
+                task_result_patch,
                 source="loop/runs/refresh/monitor_fact",
             )
         await record_run_outcome_memory(
@@ -336,18 +351,32 @@ async def _refresh_run_via_process_monitor(
         decision_basis="run_monitor_process_finished",
     )
     if run.task_id:
+        task_result_patch = build_task_run_result_patch(
+            run_id=run.id,
+            status=status,
+            worker_type=run.worker_type,
+            tool_name=run.tool_name,
+            session_id=session_id,
+            summary=output_json.get("stdout", "") or f"process {status}",
+            error=output_json.get("error"),
+        )
+        task_result_patch.update(await build_auto_cortex_result_patch(
+            task_store=task_store,
+            task_id=run.task_id,
+            run_id=run.id,
+            tool_name=run.tool_name,
+            status=status,
+            summary=output_json.get("stdout", "") or f"process {status}",
+            error=str(output_json.get("error") or ""),
+            evidence=((info.stderr or "") + "\n" + (info.error or "")).strip(),
+            progress=(info.stdout or info.stderr or info.error or status).strip(),
+            state_delta=output_json,
+            artifact_paths=[],
+        ))
         await update_task_result(
             task_store,
             run.task_id,
-            build_task_run_result_patch(
-                run_id=run.id,
-                status=status,
-                worker_type=run.worker_type,
-                tool_name=run.tool_name,
-                session_id=session_id,
-                summary=output_json.get("stdout", "") or f"process {status}",
-                error=output_json.get("error"),
-            ),
+            task_result_patch,
             source="loop/runs/refresh/monitor_process",
         )
     await record_run_outcome_memory(
