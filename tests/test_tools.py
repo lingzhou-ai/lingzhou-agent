@@ -153,6 +153,10 @@ def test_task_complete_blocks_action_first_tasks_until_verifiable_success():
     asyncio.run(_task_complete_blocks_action_first_tasks_until_verifiable_success())
 
 
+def test_task_complete_blocks_self_drive_growth_without_evidence():
+    asyncio.run(_task_complete_blocks_self_drive_growth_without_evidence())
+
+
 async def _task_complete_blocks_action_first_tasks_until_verifiable_success():
     from store.task import TaskStore
     from tools.task import task_complete
@@ -205,6 +209,72 @@ async def _task_complete_blocks_action_first_tasks_until_verifiable_success():
                 status="succeeded",
                 tool_name="web.fetch",
                 log_text="fetched ok",
+            )
+            completed = await task_complete({"task_id": task_id}, ctx)
+            assert completed.error is None
+            assert completed.skipped is False
+            assert completed.state_delta["task_status"] == "done"
+        finally:
+            await store.close()
+
+
+async def _task_complete_blocks_self_drive_growth_without_evidence():
+    from store.task import TaskStore
+    from tools.task import task_complete
+
+    class _Registry:
+        def get(self, name: str):
+            return None
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "self-drive-growth-complete.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "自驱成长探索",
+                goal="持续推进低成本成长闭环",
+                source="self_drive",
+                status="in_progress",
+                result_json={
+                    "cortex": {
+                        "intent": "self_drive_growth",
+                        "domain": "self_evolution",
+                        "evidence": [],
+                    }
+                },
+            )
+            ctx = _tool_ctx(task_store=store, episodic=SimpleNamespace(load_for_context=lambda *args, **kwargs: ""))
+            ctx.registry = _Registry()
+
+            no_probe = await task_complete({"task_id": task_id}, ctx)
+            assert no_probe.skipped is True
+            assert no_probe.error == "SelfDriveGrowthIncomplete"
+            assert "非 task 工具取证" in no_probe.summary
+
+            await store.add_run(
+                task_id=task_id,
+                run_type="tool_chain",
+                worker_type="reasoner",
+                status="succeeded",
+                tool_name="memory.search",
+                log_text="searched ok",
+            )
+            no_evidence = await task_complete({"task_id": task_id}, ctx)
+            assert no_evidence.skipped is True
+            assert no_evidence.error == "SelfDriveGrowthIncomplete"
+            assert "成长证据" in no_evidence.summary
+
+            await store.update_status(
+                task_id,
+                "in_progress",
+                result_json={
+                    "cortex": {
+                        "intent": "self_drive_growth",
+                        "domain": "self_evolution",
+                        "evidence": ["memory.search confirmed one repeated wait pattern"],
+                    }
+                },
             )
             completed = await task_complete({"task_id": task_id}, ctx)
             assert completed.error is None

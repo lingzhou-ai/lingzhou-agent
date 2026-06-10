@@ -48,6 +48,39 @@ def _decision_basis(*parts: Any) -> str:
     return " ".join(text.split())[:240]
 
 
+def _is_self_drive_growth_task(task: Any) -> bool:
+    if getattr(task, "source", None) != "self_drive":
+        return False
+    result_json = getattr(task, "result_json", None)
+    cortex = result_json.get("cortex") if isinstance(result_json, dict) else None
+    return isinstance(cortex, dict) and str(cortex.get("intent") or "") == "self_drive_growth"
+
+
+def _self_drive_growth_completion_blockers(task: Any, recent_runs: list[Any]) -> list[str]:
+    if not _is_self_drive_growth_task(task):
+        return []
+
+    blockers: list[str] = []
+    non_task_success = [
+        run for run in recent_runs
+        if str(getattr(run, "status", "") or "") == "succeeded"
+        and str(getattr(run, "tool_name", "") or "")
+        and not str(getattr(run, "tool_name", "") or "").startswith("task.")
+    ]
+    if not non_task_success:
+        blockers.append("尚未执行非 task 工具取证，不能用“维持现状/成本高”直接完成自驱成长任务。")
+
+    result_json = getattr(task, "result_json", None)
+    cortex = result_json.get("cortex") if isinstance(result_json, dict) else {}
+    evidence = cortex.get("evidence") if isinstance(cortex, dict) else None
+    has_evidence = isinstance(evidence, list) and any(str(item or "").strip() for item in evidence)
+    has_current_step = bool(str(getattr(task, "current_step", "") or "").strip())
+    summary = str(result_json.get("summary") or "").strip() if isinstance(result_json, dict) else ""
+    if not (has_evidence or has_current_step or summary):
+        blockers.append("尚未把成长证据写入 task.workbench/current_step/result summary。")
+    return blockers
+
+
 async def _resolve_active_task(ctx: ToolContext):
     task = await ctx.get_active_task()
     if task is not None:
@@ -299,6 +332,22 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 ),
             )
         recent_runs = await ctx.task_store.list_runs(task_id=task.id, limit=12)
+        self_drive_growth_blockers = _self_drive_growth_completion_blockers(task, recent_runs)
+        if self_drive_growth_blockers:
+            return ToolResult(
+                summary=(
+                    f"任务 [{task.id}] 暂不允许完成：自驱成长任务还没有形成最小成长证据。"
+                    + " ".join(self_drive_growth_blockers)
+                ),
+                error="SelfDriveGrowthIncomplete",
+                skipped=True,
+                metadata=_task_metadata(
+                    task,
+                    tool_name="task.complete",
+                    log_summary=f"task.complete rejected SelfDriveGrowthIncomplete id={task.id}",
+                    blockers=self_drive_growth_blockers,
+                ),
+            )
         action_first_blockers = action_first_completion_blockers(task=task, recent_runs=recent_runs)
         if action_first_blockers:
             return ToolResult(
