@@ -62,11 +62,14 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
     dispatcher = getattr(loop, "_tick_dispatcher", None)
     if dispatcher is not None and dispatcher.enabled:
         has_work = dispatcher.has_running() or dispatcher.has_pending()
+        after_task = await resolve_focus_task(loop)
         if has_work:
             gap = max(float(cfg.loop.min_act_gap) / 1000.0, 0.2)
-        else:
+        elif after_task is not None:
             gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor
-        await _wait_for_event_impl(loop, gap, await resolve_focus_task(loop))
+        else:
+            gap = cfg.loop.max_idle_gap / 1000.0 * _arousal_factor
+        await _wait_for_event_impl(loop, gap, after_task)
         await _maybe_hot_reload_provider_impl(loop)
         return
 

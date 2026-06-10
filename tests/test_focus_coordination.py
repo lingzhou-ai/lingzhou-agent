@@ -282,6 +282,10 @@ def test_wait_after_cycle_uses_focus_task_instead_of_global_active():
     asyncio.run(_wait_after_cycle_uses_focus_task_instead_of_global_active())
 
 
+def test_wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task():
+    asyncio.run(_wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task())
+
+
 def test_prepare_active_task_ignores_self_drive_for_user_message():
     asyncio.run(_prepare_active_task_ignores_self_drive_for_user_message())
 
@@ -381,6 +385,58 @@ async def _wait_after_cycle_uses_focus_task_instead_of_global_active():
             await store.close()
 
         assert seen_before_task == [focus_id]
+
+
+async def _wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task():
+    from core.loop.cycle.driver import _wait_after_cycle_impl
+    from store.task import TaskStore
+
+    class _Dispatcher:
+        enabled = True
+
+        def has_running(self) -> bool:
+            return False
+
+        def has_pending(self) -> bool:
+            return False
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "dispatcher-idle-gap.db")
+        await store.open()
+        seen: list[tuple[float, int | None]] = []
+
+        async def _capture_wait(loop: object, max_wait: float, before_task: object) -> None:
+            seen.append((max_wait, getattr(before_task, "id", None)))
+
+        from core.loop.cycle import driver as driver_module
+
+        original_wait = driver_module._wait_for_event_impl
+        driver_module._wait_for_event_impl = _capture_wait  # type: ignore[assignment]
+        try:
+            loop = SimpleNamespace(
+                _cfg=SimpleNamespace(
+                    loop=SimpleNamespace(
+                        arousal_min_factor=0.8,
+                        arousal_sensitivity=0.0,
+                        arousal_neutral=0.5,
+                        active_idle_gap=500,
+                        min_act_gap=100,
+                        idle_with_task_bounds=[100, 30000],
+                        max_idle_gap=60000,
+                        wake_poll_interval=100,
+                        wake_on_task_change=True,
+                    )
+                ),
+                _emotion=SimpleNamespace(arousal=0.5),
+                _tick_dispatcher=_Dispatcher(),
+                _task_store=store,
+            )
+            await _wait_after_cycle_impl(loop)
+        finally:
+            driver_module._wait_for_event_impl = original_wait  # type: ignore[assignment]
+            await store.close()
+
+        assert seen == [(60.0, None)]
 
 
 async def _prepare_active_task_ignores_self_drive_for_user_message():
