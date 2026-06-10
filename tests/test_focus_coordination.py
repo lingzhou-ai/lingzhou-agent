@@ -161,6 +161,10 @@ def test_finalize_focus_task_parks_user_facing_pause_into_waiting():
     asyncio.run(_finalize_focus_task_parks_user_facing_pause_into_waiting())
 
 
+def test_finalize_focus_task_keeps_wait_with_next_step_runnable():
+    asyncio.run(_finalize_focus_task_keeps_wait_with_next_step_runnable())
+
+
 async def _finalize_focus_task_parks_user_facing_pause_into_waiting():
     from core.judgment import JudgmentOutput
     from core.loop.cycle.focus import claim_focus_task, finalize_focus_task
@@ -202,6 +206,56 @@ async def _finalize_focus_task_parks_user_facing_pause_into_waiting():
         assert refreshed.status == "waiting"
         assert refreshed.wait_kind == "external"
         assert refreshed.wait_key == "chat:test"
+
+        current_focus, current_exists = await store.get_fact("focus:current_task_id")
+        chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")
+        assert current_exists is True
+        assert current_focus == str(task_id)
+        assert chat_exists is True
+        assert chat_focus == str(task_id)
+        await store.close()
+
+
+async def _finalize_focus_task_keeps_wait_with_next_step_runnable():
+    from core.judgment import JudgmentOutput
+    from core.loop.cycle.focus import claim_focus_task, finalize_focus_task
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "focus-finalize-runnable.db")
+        await store.open()
+        task_id = await store.add_task(
+            "自我升级任务",
+            goal="回复用户后继续内部推进",
+            status="in_progress",
+            next_step="查询 open tasks 与最近 runs",
+        )
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        await store.set_fact(f"task:{task.id}:chat_id", "chat:test", scope="task")
+
+        loop = SimpleNamespace(_task_store=store)
+        await claim_focus_task(loop, task, chat_id="chat:test", clear_current=True)
+        action = JudgmentOutput(
+            decision="wait",
+            reply_to_user="我会继续查询 open tasks 与最近 runs。",
+            next_step="查询 open tasks 与最近 10 条 runs，并写入 task.workbench",
+        )
+
+        finalized = await finalize_focus_task(
+            loop,
+            action=action,
+            active_task=task,
+            chat_id=None,
+            user_message="",
+        )
+
+        assert finalized is not None
+        assert finalized.status == "in_progress"
+        refreshed = await store.get_task_by_id(task_id)
+        assert refreshed is not None
+        assert refreshed.status == "in_progress"
+        assert refreshed.wait_kind == ""
 
         current_focus, current_exists = await store.get_fact("focus:current_task_id")
         chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")

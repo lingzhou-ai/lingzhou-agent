@@ -414,10 +414,14 @@ async def finalize_focus_task(
         return None
 
     resolved_chat_id = _normalize_chat_id(chat_id) or await resolve_task_chat_id(loop, active_task)
+    planned_next_step = str(action.next_step or "").strip()
     should_wait_for_user = (
-        action.decision in {"pause", "wait"}
-        and _task_is_runnable(active_task)
+        _task_is_runnable(active_task)
         and bool(resolved_chat_id or str(user_message or "").strip() or str(action.reply_to_user or "").strip())
+        and (
+            action.decision == "pause"
+            or (action.decision == "wait" and not planned_next_step)
+        )
     )
     if should_wait_for_user:
         next_step = str(action.next_step or getattr(active_task, "next_step", "") or "").strip() or None
