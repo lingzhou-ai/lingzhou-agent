@@ -1275,6 +1275,61 @@ def test_gateway_provider_preflight_uses_default_auth_profile(monkeypatch, tmp_p
     assert gateway_mod._gateway_provider_preflight_error(cfg) is None
 
 
+def test_gateway_provider_preflight_accepts_codex_oauth_profile(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from provider.codex_oauth import save_codex_oauth_tokens
+    from store import auth as auth_store
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    save_codex_oauth_tokens(
+        tokens={"access_token": "codex-access-token", "refresh_token": "codex-refresh-token"}
+    )
+    cfg = Config.model_validate({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+    })
+
+    assert cfg.providers["openai-codex"].auth_profile_id == "openai-codex:default"
+    assert gateway_mod._gateway_provider_preflight_error(cfg) is None
+
+
+def test_gateway_provider_preflight_reports_missing_codex_oauth(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from store import auth as auth_store
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "missing-auth-profiles.json")
+    cfg = Config.model_validate({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+    })
+
+    error = gateway_mod._gateway_provider_preflight_error(cfg)
+
+    assert error is not None
+    assert "provider 'openai-codex' 缺少 Codex OAuth token" in error
+    assert "lingzhou auth login-codex" in error
+
+
 def test_gateway_provider_preflight_does_not_require_fallback_provider_key(monkeypatch, tmp_path):
     from cli import gateway as gateway_mod
     from core.config import Config

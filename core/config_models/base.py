@@ -89,6 +89,11 @@ class ProviderDefinition(BaseModel):
                     token = str(profile.get("token", "")).strip()
                     if token:
                         return token
+                    tokens = profile.get("tokens")
+                    if isinstance(tokens, dict):
+                        access_token = str(tokens.get("access_token", "")).strip()
+                        if access_token:
+                            return access_token
             except Exception:
                 pass
 
@@ -97,6 +102,13 @@ class ProviderDefinition(BaseModel):
                 f"未找到 {self.api_key_env!r} 的 GitHub token。\n"
                 "请执行以下任一操作：\n"
                 "  lingzhou auth login-copilot\n"
+                f"  export {self.api_key_env}=your_token"
+            )
+        if self.mode == "codex":
+            raise OSError(
+                f"未找到 {self.api_key_env!r} 或 Codex OAuth profile。\n"
+                "请执行以下任一操作：\n"
+                "  lingzhou auth login-codex\n"
                 f"  export {self.api_key_env}=your_token"
             )
 

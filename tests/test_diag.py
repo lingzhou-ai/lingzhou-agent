@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -78,6 +79,28 @@ def test_dev_doctor_accepts_auth_profile_api_key(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "API key (DEEPSEEK_API_KEY): 来自 auth profile" in result.stdout
     assert "API key (DEEPSEEK_API_KEY): 未设置" not in result.stdout
+
+
+def test_doctor_resolves_oauth_profile_token(monkeypatch, tmp_path):
+    import store.auth as auth_mod
+    from cli.diag import _resolve_openai_provider_api_key
+    from store.auth import set_oauth_profile
+
+    auth_path = tmp_path / "auth-profiles.json"
+    set_oauth_profile(
+        profile_id="openai-codex:default",
+        provider="openai-codex",
+        tokens={"access_token": "codex-access-token", "refresh_token": "codex-refresh-token"},
+        path=auth_path,
+    )
+    monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", auth_path)
+
+    token, source = _resolve_openai_provider_api_key(
+        SimpleNamespace(api_key_env="OPENAI_API_KEY", auth_profile_id="openai-codex:default")
+    )
+
+    assert token == "codex-access-token"
+    assert source == "auth-profile:openai-codex:default"
 
 
 def test_dev_doctor_accepts_literal_api_key(monkeypatch, tmp_path):

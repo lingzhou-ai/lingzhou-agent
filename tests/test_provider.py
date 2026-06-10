@@ -42,6 +42,31 @@ def test_codex_oauth_profile_roundtrip(tmp_path):
     assert resolved.profile_id == "openai-codex:default"
 
 
+def test_provider_definition_api_key_accepts_oauth_profile(monkeypatch, tmp_path):
+    from core.config_models.base import ProviderDefinition
+    from store.auth import set_oauth_profile
+    import store.auth as auth_mod
+
+    auth_path = tmp_path / "auth-profiles.json"
+    set_oauth_profile(
+        profile_id="openai-codex:default",
+        provider="openai-codex",
+        tokens={"access_token": "codex-access-token", "refresh_token": "codex-refresh-token"},
+        path=auth_path,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", auth_path)
+    provider = ProviderDefinition(
+        type="openai_compat",
+        mode="codex",
+        base_url="https://chatgpt.com/backend-api/codex/responses",
+        api_key_env="OPENAI_API_KEY",
+        auth_profile_id="openai-codex:default",
+    )
+
+    assert provider.api_key == "codex-access-token"
+
+
 def test_codex_oauth_resolution_falls_back_to_env_for_bad_profile(monkeypatch, tmp_path):
     from provider.codex_oauth import resolve_codex_oauth_token
     from store.auth import save_auth_profiles
@@ -555,6 +580,21 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
 
 def test_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
     asyncio.run(_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path))
+
+
+def test_routing_overrides_reject_numeric_model_refs():
+    from core.loop.routing_overrides import normalize_routing_overrides
+
+    overrides = normalize_routing_overrides({
+        "reader": "openai-codex/4",
+        "reasoner": "openai-codex/gpt-5.5",
+        "repair": "bailian/qwen3.6-plus",
+    })
+
+    assert overrides == {
+        "reasoner": "openai-codex/gpt-5.5",
+        "repair": "bailian/qwen3.6-plus",
+    }
 
 
 async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):

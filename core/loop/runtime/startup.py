@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from core.loop.routing_overrides import normalize_routing_overrides
 from core.metabolic import add_run, set_soul_fact
 from core.persona.self_model import SelfModel
 from provider import create_provider_with_model
@@ -266,14 +267,9 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
     if overrides_found and overrides_json:
         try:
             overrides = json.loads(overrides_json)
-            if isinstance(overrides, dict) and overrides:
-                loop._pending_routing_overrides = {
-                    key: value
-                    for key, value in overrides.items()
-                    if key in {"reader", "reasoner", "repair"} and isinstance(value, str) and value
-                } or None
-                if loop._pending_routing_overrides:
-                    _log.info("[routing] 从 DB 恢复 routing_overrides: %s", loop._pending_routing_overrides)
+            loop._pending_routing_overrides = normalize_routing_overrides(overrides)
+            if loop._pending_routing_overrides:
+                _log.info("[routing] 从 DB 恢复 routing_overrides: %s", loop._pending_routing_overrides)
         except Exception:
             pass
 

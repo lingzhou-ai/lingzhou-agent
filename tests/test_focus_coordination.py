@@ -286,6 +286,10 @@ def test_prepare_active_task_ignores_self_drive_for_user_message():
     asyncio.run(_prepare_active_task_ignores_self_drive_for_user_message())
 
 
+def test_prepare_active_task_creates_action_first_task_for_executable_user_message():
+    asyncio.run(_prepare_active_task_creates_action_first_task_for_executable_user_message())
+
+
 async def _adopt_result_task_picks_task_created_by_task_add():
     from core.judgment import JudgmentOutput
     from core.loop.cycle.focus import adopt_result_task
@@ -442,3 +446,52 @@ async def _prepare_active_task_ignores_self_drive_for_user_message():
     assert active is None
     assert seen_claims == [None]
     assert self_drive_task.extras == {}
+
+
+async def _prepare_active_task_creates_action_first_task_for_executable_user_message():
+    from core.loop.tick import prep as prep_module
+    from memory.working import WorkingMemory
+    from store.task import TaskStore
+
+    async def _prepare_focus_task(loop, *, user_message, chat_id):
+        return None
+
+    async def _noop_ingest(*args, **kwargs):
+        return None
+
+    async def _consume_hints(task_store, active_task, wm, metabolic=None):
+        return active_task
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "action-first-focus.db")
+        await store.open()
+        original_prepare = prep_module.prepare_focus_task
+        original_ingest = prep_module._ingest_actionable_meta_reflections
+        original_hints = prep_module._consume_task_runtime_hints
+        try:
+            prep_module.prepare_focus_task = _prepare_focus_task  # type: ignore[assignment]
+            prep_module._ingest_actionable_meta_reflections = _noop_ingest  # type: ignore[assignment]
+            prep_module._consume_task_runtime_hints = _consume_hints  # type: ignore[assignment]
+
+            loop = SimpleNamespace(
+                _task_store=store,
+                _wm=WorkingMemory(),
+                _metabolic=None,
+            )
+            active = await prep_module._prepare_active_task_for_tick(
+                loop,
+                user_message="请你下载 https://example.com/config.yaml 并验证",
+                chat_id="chat:action-first",
+            )
+        finally:
+            prep_module.prepare_focus_task = original_prepare  # type: ignore[assignment]
+            prep_module._ingest_actionable_meta_reflections = original_ingest  # type: ignore[assignment]
+            prep_module._consume_task_runtime_hints = original_hints  # type: ignore[assignment]
+            await store.close()
+
+    assert active is not None
+    assert active.source == "external"
+    assert active.next_step
+    cortex = active.result_json["cortex"]
+    assert cortex["action_first"]["must_act"] is True
+    assert {"kind": "url", "value": "https://example.com/config.yaml"} in cortex["captured_inputs"]

@@ -126,6 +126,22 @@ def _gateway_provider_preflight_error(cfg: Any) -> str | None:
                 )
             continue
 
+        if getattr(provider, "mode", "") == "codex":
+            from provider.codex_oauth import resolve_codex_oauth_token
+
+            auth_profile_id = str(getattr(provider, "auth_profile_id", "") or "").strip()
+            resolved = (
+                resolve_codex_oauth_token(profile_id=auth_profile_id)
+                if auth_profile_id
+                else resolve_codex_oauth_token()
+            )
+            if not resolved or not resolved.token:
+                errors.append(
+                    f"provider {provider_name!r} 缺少 Codex OAuth token。"
+                    "请运行: lingzhou auth login-codex"
+                )
+            continue
+
         try:
             _ = provider.api_key
         except OSError as exc:

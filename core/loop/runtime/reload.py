@@ -10,6 +10,7 @@ from core.config import Config
 from core.evolution import EvolutionEngine
 from core.execution import ExecutionLayer
 from core.judgment import JudgmentLayer
+from core.loop.routing_overrides import normalize_routing_overrides
 from core.log_fields import format_log_fields
 from core.perception import PerceptionLayer
 from core.resource_guard import local_embedding_memory_preflight
@@ -110,12 +111,7 @@ async def _refresh_runtime_routing_overrides(loop: CognitionLoop) -> None:
     if found and raw:
         try:
             payload = json.loads(raw)
-            if isinstance(payload, dict):
-                refreshed = {
-                    key: value
-                    for key, value in payload.items()
-                    if key in {"reader", "reasoner", "repair"} and isinstance(value, str) and value
-                } or None
+            refreshed = normalize_routing_overrides(payload)
         except Exception as exc:
             _log.warning("[hot-reload] DB routing_overrides 解析失败,已清空内存态: %s", exc)
 
