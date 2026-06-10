@@ -3415,6 +3415,43 @@ def test_assemble_context_semantic_timeout_degrades(monkeypatch, caplog):
     asyncio.run(_assemble_context_semantic_timeout_degrades(monkeypatch, caplog))
 
 
+def test_memory_system_section_exposes_local_embedding_guard():
+    from types import SimpleNamespace
+
+    from core.judgment.context.sections import _fmt_memory_system
+
+    class _Semantic:
+        def stats(self):
+            return {
+                "db_path": "/tmp/semantic.db",
+                "nodes_dir": "/tmp/nodes",
+                "nodes": 1,
+                "fts5_ok": True,
+                "maintenance_state": "ready",
+                "embedding_enabled": False,
+            }
+
+    text = _fmt_memory_system(
+        runtime_db="/tmp/runtime.db",
+        memory_dir="/tmp/memory",
+        workspace_dir="/tmp/workspace",
+        semantic=_Semantic(),
+        memory_cfg=SimpleNamespace(
+            local_embed_model="BAAI/bge-m3",
+            local_embed_command_guard=True,
+            local_embed_min_available_mib=12288,
+        ),
+        max_concurrent_ticks=1,
+        max_tick_queue=2,
+    )
+
+    assert "local_embed_model: BAAI/bge-m3" in text
+    assert "local_embed_command_guard: yes" in text
+    assert "local_embed_min_available_mib: 12288" in text
+    assert "不要优先生成 build_embeddings.py" in text
+    assert "子进程内存上限" in text
+
+
 async def _assemble_context_semantic_timeout_degrades(monkeypatch, caplog):
     from core.config import Config
     from core.judgment import CognitionFrame, JudgmentLayer
@@ -3843,6 +3880,10 @@ def test_assemble_context_includes_wm_proposal_sections():
     asyncio.run(_assemble_context_includes_wm_proposal_sections())
 
 
+def test_assemble_context_includes_problem_solving_guard_for_corrections():
+    asyncio.run(_assemble_context_includes_problem_solving_guard_for_corrections())
+
+
 async def _assemble_context_includes_wm_proposal_sections():
     from core.config import Config
     from core.judgment import CognitionFrame, JudgmentLayer
@@ -3912,6 +3953,74 @@ async def _assemble_context_includes_wm_proposal_sections():
             assert "### WM 提案与可执行方向（observation to action）" in text
             assert "create_self_drive_task" in text
             assert "available_directions:" in text
+        finally:
+            await store.close()
+
+
+async def _assemble_context_includes_problem_solving_guard_for_corrections():
+    from core.config import Config
+    from core.judgment import CognitionFrame, JudgmentLayer
+    from core.perception import EmotionState
+    from memory.working import WorkingMemory
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "切换节点",
+                goal="切换节点并重新推送",
+                status="in_progress",
+                next_step="切换节点",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+            text = await layer._assembler._assemble_context(
+                CognitionFrame(
+                    percept=cast("Any", SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                    wm=WorkingMemory(capacity=20),
+                    task_store=store,
+                    episodic=EpisodicMemory(Path(d) / "memory"),
+                    semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                    emotion=EmotionState.from_config(cfg),
+                ),
+                active_task=task,
+                user_message="我指的是代理节点，不是模型节点",
+            )
+
+            assert "### 通用问题解决守卫" in text
+            assert "guard=active" in text
+            assert "signals=user_correction" in text
+            assert "task.workbench" in text
+            assert "domain" in text
+            assert "intent" in text
         finally:
             await store.close()
 

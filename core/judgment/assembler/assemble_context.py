@@ -474,6 +474,8 @@ async def _assemble_context(
         runnable_tasks=runnable_tasks,
         similar_tasks=similar_tasks,
         context_facts=context_facts,
+        failures=failures,
+        user_message=user_message,
     )
     memory_recall_section = _fmt_memory_recall(
         query=search_query or "",
@@ -499,7 +501,7 @@ async def _assemble_context(
         chat_memories=chat_memories,
         memories=memories,
         memory_recall_section=memory_recall_section,
-        memory_system_section=_fmt_memory_system(runtime_db=str(assembler._cfg.db_path), memory_dir=str(assembler._cfg.memory_dir), workspace_dir=str(assembler._cfg.workspace_dir), semantic=semantic, max_concurrent_ticks=assembler._cfg.loop.max_concurrent_ticks, max_tick_queue=assembler._cfg.loop.max_tick_queue),
+        memory_system_section=_fmt_memory_system(runtime_db=str(assembler._cfg.db_path), memory_dir=str(assembler._cfg.memory_dir), workspace_dir=str(assembler._cfg.workspace_dir), semantic=semantic, memory_cfg=assembler._cfg.memory, max_concurrent_ticks=assembler._cfg.loop.max_concurrent_ticks, max_tick_queue=assembler._cfg.loop.max_tick_queue),
         daily_continuity_text=daily_continuity_text,
         entity_section=refs["entity_section"],
         soul_section=soul_section,

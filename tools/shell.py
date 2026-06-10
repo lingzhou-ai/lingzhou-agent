@@ -13,6 +13,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from core.resource_guard import (
+    build_memory_limit_preexec,
+    local_embedding_memory_preflight,
+    memory_guard_settings,
+)
 from tools.registry import ToolContext, ToolManifest, ToolParam, ToolResult, tool, tool_metadata
 
 _DEFAULT_TIMEOUT = 30.0
@@ -191,6 +196,14 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         except Exception:
             pass  # WM 不可用时不阻断
 
+    guard_enabled, required_mib = memory_guard_settings(getattr(ctx, "config", None))
+    guard = local_embedding_memory_preflight(
+        command=command,
+        min_available_mib=required_mib,
+        guard_enabled=guard_enabled,
+    )
+    memory_preexec = build_memory_limit_preexec(guard.limit_mib if guard.matched and not guard.ok else None)
+
     workdir_raw = params.get("workdir")
 
     # ── 沙箱模式：临时目录 + 受限 PATH ────────────────────────────────────────
@@ -222,6 +235,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         env=safe_env,
         executable=(os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"),
         start_new_session=True,  # 新建进程组，超时时可整组终止
+        preexec_fn=memory_preexec,
     )
 
     timed_out = False
@@ -290,6 +304,7 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
         sandbox_dir=_sandbox_dir,
         risky=is_risky,
         risk_reason=risk_reason,
+        resource_guard=guard.as_metadata() if guard.matched else None,
     )
 
     return ToolResult(
@@ -305,5 +320,6 @@ async def _shell_run_impl(params: dict[str, Any], ctx: ToolContext, command: str
             "timed_out": timed_out,
             "sandbox": use_sandbox,
             "risky": is_risky,
+            "resource_guard": "limited" if guard.matched and guard.limit_mib else ("passed" if guard.matched else ""),
         },
     )

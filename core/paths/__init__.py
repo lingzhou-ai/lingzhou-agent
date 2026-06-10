@@ -1,4 +1,5 @@
 """core.paths — 灵舟路径工具。统一 workspace 和 data 目录引用。"""
+from __future__ import annotations
 
 import os
 import tempfile

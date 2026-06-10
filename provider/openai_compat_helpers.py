@@ -1,6 +1,7 @@
 """provider/openai_compat_helpers.py — OpenAI compat provider 的辅助常量与纯函数。"""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -59,6 +60,43 @@ def _extract_responses_text(data: dict[str, Any]) -> str:
                 if isinstance(text, str) and text:
                     text_parts.append(text)
     return "\n".join(text_parts).strip()
+
+
+def _extract_responses_stream_data(text: str) -> dict[str, Any]:
+    """Parse responses API SSE text into a response-like dict."""
+    deltas: list[str] = []
+    completed: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "error":
+            error = event.get("error") or event
+            message = error.get("message") if isinstance(error, dict) else None
+            raise RuntimeError(str(message or error))
+        if isinstance(event.get("delta"), str) and event.get("type") == "response.output_text.delta":
+            deltas.append(str(event["delta"]))
+        response = event.get("response")
+        if isinstance(response, dict):
+            if event.get("type") == "response.completed":
+                completed = response
+            if isinstance(response.get("usage"), dict):
+                usage = response["usage"]
+    if completed is not None:
+        output_text = _extract_responses_text(completed)
+        if output_text:
+            return {"output_text": output_text, "usage": completed.get("usage") or usage}
+    return {"output_text": "".join(deltas).strip(), "usage": usage}
 
 
 def _normalize_responses_content_part(part: dict[str, Any]) -> dict[str, Any]:

@@ -79,7 +79,10 @@ async def subagent_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     max_ticks = int(params.get("max_ticks") or 6)
     max_ticks = max(1, min(max_ticks, 20))
 
-    allowed_raw = (params.get("allowed_tools") or "").strip()
+    allowed_raw = params.get("allowed_tools")
+    if isinstance(allowed_raw, list):
+        allowed_raw = ",".join(str(t) for t in allowed_raw)
+    allowed_raw = (allowed_raw or "").strip()
     allowed_tools: list[str] | None = (
         [t.strip() for t in allowed_raw.split(",") if t.strip()]
         if allowed_raw else None

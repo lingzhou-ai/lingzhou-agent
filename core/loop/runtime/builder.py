@@ -18,6 +18,7 @@ from core.metabolic import MetabolicEngine
 from core.perception import EmotionState
 from core.persona import IdentityBootstrapManager
 from core.probe import ProbeManager
+from core.resource_guard import local_embedding_memory_preflight
 from memory.working import WorkingMemory
 from provider import create_provider
 from provider.base import EmbeddingProvider
@@ -165,6 +166,24 @@ def build_runtime_context(cfg: Config, owner: Any) -> RuntimeContext:
 
 def _build_embedding_fn(cfg: Config, provider: Any) -> Callable[..., Any] | None:
     if cfg.memory.local_embed_model:
+        preflight = local_embedding_memory_preflight(
+            model=cfg.memory.local_embed_model,
+            min_available_mib=cfg.memory.local_embed_min_available_mib,
+            guard_enabled=cfg.memory.local_embed_command_guard,
+        )
+        if not preflight.ok:
+            _log.warning(
+                "[loop] 本地 embedding 模型加载被资源守卫跳过: model=%s available_mib=%s required_mib=%s reason=%s",
+                cfg.memory.local_embed_model,
+                preflight.available_mib,
+                preflight.required_mib,
+                preflight.reason,
+            )
+            return (
+                provider.embed
+                if cfg.memory.embedding_model and isinstance(provider, EmbeddingProvider)
+                else None
+            )
         try:
             import importlib
             import os as _os

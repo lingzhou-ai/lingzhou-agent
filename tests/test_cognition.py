@@ -179,8 +179,12 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
-def test_self_drive_signal_does_not_auto_create_task():
-    asyncio.run(_self_drive_signal_does_not_auto_create_task())
+def test_self_drive_signal_auto_creates_lightweight_growth_task():
+    asyncio.run(_self_drive_signal_auto_creates_lightweight_growth_task())
+
+
+def test_self_drive_signal_does_not_duplicate_pending_growth_task():
+    asyncio.run(_self_drive_signal_does_not_duplicate_pending_growth_task())
 
 
 def test_self_drive_feedback_receives_tick_event():
@@ -302,7 +306,7 @@ def test_runtime_lifecycle_marks_clean_exit(tmp_path):
     assert snapshot["exit_type"] == "clean"
 
 
-async def _self_drive_signal_does_not_auto_create_task():
+async def _self_drive_signal_auto_creates_lightweight_growth_task():
     os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
     os.environ.setdefault("GITHUB_TOKEN", "test-token")
     from core.config import Config
@@ -324,7 +328,14 @@ async def _self_drive_signal_does_not_auto_create_task():
             await loop._emit_self_drive_signal()
 
             tasks = await loop.task_store.list_tasks(limit=20)
-            assert tasks == []
+            self_drive_tasks = [task for task in tasks if task.source == "self_drive"]
+            assert len(self_drive_tasks) == 1
+            task = self_drive_tasks[0]
+            assert task.status == "pending"
+            assert task.next_step
+            assert task.model_tier == "reasoner"
+            assert task.result_json["cortex"]["intent"] == "self_drive_growth"
+            assert task.extras["evidence_needed"]
 
             wm_items = loop._wm.get_top(10)
             self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
@@ -332,6 +343,7 @@ async def _self_drive_signal_does_not_auto_create_task():
             content = self_drive_items[0]["content"]
             assert "[自驱事件]" in content
             assert "scope: observation" in content
+            assert f"created_self_drive_task: {task.id}" in content
             assert "proposal:" in content
             assert "candidate_question:" in content
             assert "candidate_evidence_needed:" in content
@@ -339,7 +351,46 @@ async def _self_drive_signal_does_not_auto_create_task():
             assert "open_questions:" in content
             assert "available_directions:" in content
             assert "task.add" not in content
-            assert "source=self_drive" not in content
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
+async def _self_drive_signal_does_not_duplicate_pending_growth_task():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            existing_id = await loop.task_store.add_task(
+                "已有自驱成长任务",
+                goal="避免重复创建",
+                source="self_drive",
+                status="pending",
+                next_step="继续已有成长任务",
+            )
+            loop._behavior._wait_streak = cfg.thresholds.curiosity_idle_min_cycles
+
+            await loop._emit_self_drive_signal()
+
+            tasks = await loop.task_store.list_tasks(limit=20)
+            self_drive_tasks = [task for task in tasks if task.source == "self_drive"]
+            assert [task.id for task in self_drive_tasks] == [existing_id]
+
+            wm_items = loop._wm.get_top(10)
+            self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
+            assert self_drive_items == []
         finally:
             await loop.task_store.close()
             await loop.provider.close()
@@ -565,6 +616,42 @@ async def _distinct_user_message_is_queued_into_active_task_inbox():
             persisted = await store.get_task_by_id(task_id)
             assert persisted is not None
             assert persisted.extras["inbox_messages"] == updated.extras["inbox_messages"]
+        finally:
+            await store.close()
+
+
+def test_distinct_execute_user_message_is_persisted_into_action_first_cortex():
+    asyncio.run(_distinct_execute_user_message_is_persisted_into_action_first_cortex())
+
+
+async def _distinct_execute_user_message_is_persisted_into_action_first_cortex():
+    from core.loop.tick import _maybe_steer_active_task_from_user_message
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "steer-action-first.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "处理代理配置",
+                goal="应用用户给出的配置并验证网络链路",
+                next_step="等待用户提供订阅地址",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            await _maybe_steer_active_task_from_user_message(
+                store,
+                task,
+                "用这个url的配置 https://example.com/sub?clash=1，下载后测试",
+            )
+
+            persisted = await store.get_task_by_id(task_id)
+            assert persisted is not None
+            cortex = persisted.result_json["cortex"]
+            assert cortex["action_first"]["intent"] == "execute"
+            assert cortex["action_first"]["must_act"] is True
+            assert {"kind": "url", "value": "https://example.com/sub?clash=1"} in cortex["captured_inputs"]
         finally:
             await store.close()
 
@@ -1180,6 +1267,23 @@ def test_dev_model_target_selection_rejects_unknown_target():
             current_model="bailian/qwen3.6-plus",
             new_model="copilot/gpt-5.4-mini",
             target="complex",
+        )
+
+
+def test_dev_model_target_selection_rejects_numeric_model_id():
+    from cli.dev import _apply_model_target_selection
+
+    cfg_data = {
+        "model": "bailian/qwen3.6-plus",
+        "routing": {},
+    }
+
+    with pytest.raises(ValueError, match="模型 ID 不能是编号"):
+        _apply_model_target_selection(
+            cfg_data,
+            current_model="bailian/qwen3.6-plus",
+            new_model="openai-codex/4",
+            target="reasoner",
         )
 
 

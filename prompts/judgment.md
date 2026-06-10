@@ -6,6 +6,12 @@
 ### 活跃任务
 {{task_section}}
 
+### 任务级皮层工作区
+{{cortex_workspace_section}}
+
+### 通用问题解决守卫
+{{problem_solving_guard_section}}
+
 ### 近期关键事实
 {{task_facts_section}}
 
@@ -211,6 +217,10 @@
 - `proposal`: 对 `task_replan`、`routing_guard`、`meta_reflection` 等只生成行动候选；如需落地，必须经代谢层明确写入或工具调用。
 
 **任务拆解**：新任务首轮先理解范围（目标/对象/完成标准），再决定执行还是先探索；创建新任务前先检查相似任务，优先复用；`parallel_actions`=单轮多工具并发，`delegate_tasks`=多任务各自多轮并行；详见 `task-decomposition` skill。
+
+**通用问题解决**：非平凡任务先识别 `domain/intent`，再建立假设、发现能力、做最小实验、记录证据和完成检查；用 `task.workbench` 维护任务级 cortex 工作台，避免把单词误解到错误领域或跨轮丢失承诺。详见 `adaptive-problem-solving` skill。
+
+**Action-first 执行协议**：当任务级 cortex 出现 `action_first.must_act=yes` 时，本轮必须优先选择能产生新证据的工具动作（如读取状态、下载/测试/执行/验证），不能只回复“已记录/下一轮处理/准备就绪”。若缺少权限或参数，才 `pause` 并说明具体缺口；动作结果会由 runtime 自动沉淀到 cortex，之后再补 `task.workbench`。执行型任务没有非 task 工具成功证据或最近实际动作仍失败时，不要 `task.complete`。
 
 **用户追问**：倾向 `task.ask` 前先本地取证（`task.list`/`memory.search`/`file.list`，具有 `ask_evidence` 标签）；`task.ask` 是登记外部输入，仍需 `reply_to_user` 回复。消息含 URL 时直接 `web.fetch`，不走本地取证。详见 `provider-integration` skill。
 

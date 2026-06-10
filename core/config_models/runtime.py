@@ -116,6 +116,39 @@ class MemoryConfig(BaseModel):
             "None=使用系统默认 ~/.cache"
         ),
     )
+    local_embed_min_available_mib: int = Field(
+        default=12288,
+        ge=0,
+        description=(
+            "加载本地 SentenceTransformer 或执行本地 embedding 批量重建前要求的可用内存 MiB；"
+            "0=关闭内存前置检查。bge-m3 等大模型建议保持较高阈值，避免 OOM Killer。"
+        ),
+    )
+    local_embed_command_guard: bool = Field(
+        default=True,
+        description=(
+            "shell.run/exec 执行疑似本地 embedding 大模型或批量重建命令前是否启用内存守卫；"
+            "开启后内存不足会给子进程设置内存上限，避免拖垮宿主进程或触发系统级 OOM。"
+        ),
+    )
+    embedding_backfill_batch_size: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="memory.embed_backfill 每轮默认处理的节点数；默认 1 表示低内存慢速回填。",
+    )
+    embedding_backfill_sleep_seconds: float = Field(
+        default=0.2,
+        ge=0.0,
+        le=30.0,
+        description="memory.embed_backfill 每条 embedding 写入后的默认暂停秒数，用于降低内存/速率压力。",
+    )
+    embedding_backfill_max_text_chars: int = Field(
+        default=4000,
+        ge=128,
+        le=200000,
+        description="memory.embed_backfill 单个节点送入 embedding 的最大字符数，避免长节点撑爆内存或请求体。",
+    )
     chat_crystallize_every: int = Field(
         default=20, ge=1,
         description="chat 结晶间隔：每 N 个同 chat 轮次蒸馏一次 chat_summary 节点写入语义记忆；任务 event 仍独立保留",

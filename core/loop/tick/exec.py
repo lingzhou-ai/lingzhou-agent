@@ -6,6 +6,7 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from core.loop.routing_overrides import normalize_routing_overrides, routing_overrides_meta
 from core.metabolic import add_run, set_soul_fact, submit_fact, update_task_data
 from store.episodic import EpisodicMemory
 from tools.registry import ToolResult
@@ -13,7 +14,6 @@ from tools.registry import ToolResult
 from ..cycle.chat import _bind_chat_id
 from ..cycle.focus import adopt_result_task, finalize_focus_task, resolve_focus_task
 from ..shared.common import (
-    _HINT_TIERS,
     _JUDGMENT_TIERS,
     _next_initial_tier_hint,
     _next_thinking_override,
@@ -255,6 +255,7 @@ async def _apply_tick_model_strategy(
 
     raw_overrides = strategy.get("routing_overrides")
     if isinstance(raw_overrides, dict):
+        basis = _decision_basis(action, "model strategy routing overrides")
         if not raw_overrides:
             loop._pending_routing_overrides = None
             await submit_fact(
@@ -263,13 +264,21 @@ async def _apply_tick_model_strategy(
                 value="",
                 scope="system",
                 source="loop/tick/routing",
-                decision_basis=_decision_basis(action, "model strategy cleared routing overrides"),
+                decision_basis=basis,
+            )
+            await submit_fact(
+                loop,
+                key="pref:routing_overrides_meta",
+                value=json.dumps(
+                    routing_overrides_meta(source="loop/tick/routing.clear", decision_basis=basis),
+                    ensure_ascii=False,
+                ),
+                scope="system",
+                source="loop/tick/routing",
+                decision_basis=basis,
             )
         else:
-            valid = {
-                key: value for key, value in raw_overrides.items()
-                if key in _HINT_TIERS and isinstance(value, str) and value
-            }
+            valid = normalize_routing_overrides(raw_overrides)
             if valid:
                 loop._pending_routing_overrides = valid
                 await submit_fact(
@@ -278,7 +287,18 @@ async def _apply_tick_model_strategy(
                     value=json.dumps(valid),
                     scope="system",
                     source="loop/tick/routing",
-                    decision_basis=_decision_basis(action, "model strategy set routing overrides"),
+                    decision_basis=basis,
+                )
+                await submit_fact(
+                    loop,
+                    key="pref:routing_overrides_meta",
+                    value=json.dumps(
+                        routing_overrides_meta(source="loop/tick/routing.set", decision_basis=basis),
+                        ensure_ascii=False,
+                    ),
+                    scope="system",
+                    source="loop/tick/routing",
+                    decision_basis=basis,
                 )
             else:
                 loop._pending_routing_overrides = None
@@ -288,7 +308,18 @@ async def _apply_tick_model_strategy(
                     value="",
                     scope="system",
                     source="loop/tick/routing",
-                    decision_basis=_decision_basis(action, "model strategy contained no valid routing overrides"),
+                    decision_basis=basis,
+                )
+                await submit_fact(
+                    loop,
+                    key="pref:routing_overrides_meta",
+                    value=json.dumps(
+                        routing_overrides_meta(source="loop/tick/routing.invalid", decision_basis=basis),
+                        ensure_ascii=False,
+                    ),
+                    scope="system",
+                    source="loop/tick/routing",
+                    decision_basis=basis,
                 )
 
     loop._pending_thinking_override = _next_thinking_override(strategy)

@@ -265,7 +265,32 @@ def auth_login_copilot(
     _login_copilot_impl(config, force, method=method, oauth_client_id=oauth_client_id)
 
 
-def _login_codex_device_impl(force: bool) -> None:
+def _load_codex_proxy_url(config: Path) -> str:
+    try:
+        cfg = load_cfg(config)
+    except Exception:
+        return ""
+
+    candidates = []
+    named = cfg.providers.get("openai-codex")
+    if named is not None:
+        candidates.append(named)
+    try:
+        candidates.append(cfg.active_provider)
+    except Exception:
+        pass
+    candidates.extend(provider for provider in cfg.providers.values() if getattr(provider, "mode", "") == "codex")
+
+    for provider in candidates:
+        if getattr(provider, "mode", "") != "codex":
+            continue
+        proxy_url = str(getattr(provider, "proxy_url", "") or "").strip()
+        if proxy_url:
+            return proxy_url
+    return ""
+
+
+def _login_codex_device_impl(config: Path, force: bool) -> None:
     """OpenAI Codex device/browser OAuth，流程与 OpenClaw 的 device auth 集成一致。"""
     existing = get_auth_profile(CODEX_PROFILE_ID)
     if existing and not force:
@@ -277,8 +302,12 @@ def _login_codex_device_impl(force: bool) -> None:
             console.print(f"  token:   [dim]{mask_secret(token)}[/dim]")
             raise typer.Exit(0)
 
+    proxy_url = _load_codex_proxy_url(config)
+    if proxy_url:
+        console.print(f"[dim]OpenAI Codex 授权将使用代理: {proxy_url}[/dim]")
+
     try:
-        device = request_codex_device_code()
+        device = request_codex_device_code(proxy_url=proxy_url)
     except Exception as exc:
         console.print(f"[red]OpenAI device code 请求失败: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -302,6 +331,7 @@ def _login_codex_device_impl(force: bool) -> None:
         authorization = poll_codex_device_authorization(
             device,
             on_waiting=lambda: console.print("  [dim]等待确认...[/dim]", end="\r"),
+            proxy_url=proxy_url,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]授权已取消[/yellow]")
@@ -314,7 +344,7 @@ def _login_codex_device_impl(force: bool) -> None:
         raise typer.Exit(1) from exc
 
     try:
-        tokens = exchange_codex_device_authorization(authorization)
+        tokens = exchange_codex_device_authorization(authorization, proxy_url=proxy_url)
     except Exception as exc:
         console.print(f"\n[red]OpenAI token exchange 失败: {exc}[/red]")
         raise typer.Exit(1)
@@ -331,10 +361,11 @@ def _login_codex_device_impl(force: bool) -> None:
 
 @auth_app.command("login-codex")
 def auth_login_codex(
+    config: Annotated[Path, typer.Option("--config", "-c", help="配置文件路径，用于读取 openai-codex.proxy_url")] = DEFAULT_CONFIG_PATH,
     force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
 ) -> None:
     """专用 OpenAI Codex 登录命令（浏览器/device OAuth，保存到 openai-codex profile）。"""
-    _login_codex_device_impl(force)
+    _login_codex_device_impl(config, force)
 
 
 @auth_app.command("set-token")

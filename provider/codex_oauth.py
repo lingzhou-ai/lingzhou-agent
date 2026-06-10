@@ -52,13 +52,14 @@ def _auth_headers(content_type: str) -> dict[str, str]:
     }
 
 
-def request_codex_device_code(timeout: float = 15.0) -> CodexDeviceCode:
+def request_codex_device_code(timeout: float = 15.0, *, proxy_url: str = "") -> CodexDeviceCode:
+    url = f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/usercode"
     resp = httpx.post(
-        f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/usercode",
+        url,
         json={"client_id": CODEX_OAUTH_CLIENT_ID},
         headers=_auth_headers("application/json"),
         timeout=timeout,
-        **httpx_proxy_kwargs(f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/usercode"),
+        **httpx_proxy_kwargs(url, explicit_proxy_url=proxy_url),
     )
     if resp.status_code != 200:
         detail = (resp.text or "").strip()
@@ -83,16 +84,18 @@ def poll_codex_device_authorization(
     timeout_seconds: int = CODEX_DEVICE_AUTH_TIMEOUT_SECONDS,
     request_timeout: float = 15.0,
     on_waiting: Any = None,
+    proxy_url: str = "",
 ) -> CodexDeviceAuthorization:
     deadline = time.time() + timeout_seconds
+    url = f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/token"
     while time.time() < deadline:
         time.sleep(device.interval_s)
         poll = httpx.post(
-            f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/token",
+            url,
             json={"device_auth_id": device.device_auth_id, "user_code": device.user_code},
             headers=_auth_headers("application/json"),
             timeout=request_timeout,
-            **httpx_proxy_kwargs(f"{CODEX_AUTH_BASE_URL}/api/accounts/deviceauth/token"),
+            **httpx_proxy_kwargs(url, explicit_proxy_url=proxy_url),
         )
         if poll.status_code == 200:
             data = poll.json()
@@ -120,6 +123,7 @@ def exchange_codex_device_authorization(
     authorization: CodexDeviceAuthorization,
     *,
     timeout: float = 15.0,
+    proxy_url: str = "",
 ) -> dict[str, Any]:
     resp = httpx.post(
         CODEX_OAUTH_TOKEN_URL,
@@ -132,7 +136,7 @@ def exchange_codex_device_authorization(
         },
         headers=_auth_headers("application/x-www-form-urlencoded"),
         timeout=timeout,
-        **httpx_proxy_kwargs(CODEX_OAUTH_TOKEN_URL),
+        **httpx_proxy_kwargs(CODEX_OAUTH_TOKEN_URL, explicit_proxy_url=proxy_url),
     )
     if resp.status_code != 200:
         detail = (resp.text or "").strip()

@@ -59,6 +59,11 @@ def _resolve_openai_provider_api_key(provider: object) -> tuple[str | None, str 
             profile_token = str(profile.get("token", "")).strip()
             if profile_token:
                 return profile_token, f"auth-profile:{profile_id}"
+            tokens = profile.get("tokens")
+            if isinstance(tokens, dict):
+                access_token = str(tokens.get("access_token", "")).strip()
+                if access_token:
+                    return access_token, f"auth-profile:{profile_id}"
 
     return None, None
 

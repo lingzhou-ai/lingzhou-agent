@@ -149,6 +149,141 @@ async def _task_tools_do_not_reenter_terminal_tasks():
             await store.close()
 
 
+def test_task_complete_blocks_action_first_tasks_until_verifiable_success():
+    asyncio.run(_task_complete_blocks_action_first_tasks_until_verifiable_success())
+
+
+def test_task_complete_blocks_self_drive_growth_without_evidence():
+    asyncio.run(_task_complete_blocks_self_drive_growth_without_evidence())
+
+
+async def _task_complete_blocks_action_first_tasks_until_verifiable_success():
+    from store.task import TaskStore
+    from tools.task import task_complete
+
+    class _Registry:
+        def get(self, name: str):
+            return None
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "action-first-complete.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "下载并应用配置",
+                goal="用户给了 URL，需要下载、验证并应用",
+                status="in_progress",
+                result_json={
+                    "cortex": {
+                        "action_first": {"intent": "execute", "must_act": True},
+                        "captured_inputs": [{"kind": "url", "value": "https://example.com/sub"}],
+                    }
+                },
+            )
+            ctx = _tool_ctx(task_store=store, episodic=SimpleNamespace(load_for_context=lambda *args, **kwargs: ""))
+            ctx.registry = _Registry()
+
+            no_evidence = await task_complete({"task_id": task_id}, ctx)
+            assert no_evidence.skipped is True
+            assert no_evidence.error == "ActionFirstCompletionBlocked"
+            assert "缺少执行型证据" in no_evidence.summary
+
+            await store.add_run(
+                task_id=task_id,
+                run_type="tool_chain",
+                worker_type="reasoner",
+                status="failed",
+                tool_name="web.fetch",
+                error_text="Timeout",
+            )
+            failed_latest = await task_complete({"task_id": task_id}, ctx)
+            assert failed_latest.skipped is True
+            assert failed_latest.error == "ActionFirstCompletionBlocked"
+            assert "失败" in failed_latest.summary
+
+            await store.add_run(
+                task_id=task_id,
+                run_type="tool_chain",
+                worker_type="reasoner",
+                status="succeeded",
+                tool_name="web.fetch",
+                log_text="fetched ok",
+            )
+            completed = await task_complete({"task_id": task_id}, ctx)
+            assert completed.error is None
+            assert completed.skipped is False
+            assert completed.state_delta["task_status"] == "done"
+        finally:
+            await store.close()
+
+
+async def _task_complete_blocks_self_drive_growth_without_evidence():
+    from store.task import TaskStore
+    from tools.task import task_complete
+
+    class _Registry:
+        def get(self, name: str):
+            return None
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "self-drive-growth-complete.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "自驱成长探索",
+                goal="持续推进低成本成长闭环",
+                source="self_drive",
+                status="in_progress",
+                result_json={
+                    "cortex": {
+                        "intent": "self_drive_growth",
+                        "domain": "self_evolution",
+                        "evidence": [],
+                    }
+                },
+            )
+            ctx = _tool_ctx(task_store=store, episodic=SimpleNamespace(load_for_context=lambda *args, **kwargs: ""))
+            ctx.registry = _Registry()
+
+            no_probe = await task_complete({"task_id": task_id}, ctx)
+            assert no_probe.skipped is True
+            assert no_probe.error == "SelfDriveGrowthIncomplete"
+            assert "非 task 工具取证" in no_probe.summary
+
+            await store.add_run(
+                task_id=task_id,
+                run_type="tool_chain",
+                worker_type="reasoner",
+                status="succeeded",
+                tool_name="memory.search",
+                log_text="searched ok",
+            )
+            no_evidence = await task_complete({"task_id": task_id}, ctx)
+            assert no_evidence.skipped is True
+            assert no_evidence.error == "SelfDriveGrowthIncomplete"
+            assert "成长证据" in no_evidence.summary
+
+            await store.update_status(
+                task_id,
+                "in_progress",
+                result_json={
+                    "cortex": {
+                        "intent": "self_drive_growth",
+                        "domain": "self_evolution",
+                        "evidence": ["memory.search confirmed one repeated wait pattern"],
+                    }
+                },
+            )
+            completed = await task_complete({"task_id": task_id}, ctx)
+            assert completed.error is None
+            assert completed.skipped is False
+            assert completed.state_delta["task_status"] == "done"
+        finally:
+            await store.close()
+
+
 def test_task_tools_prefer_ctx_focus_task_over_global_active():
     asyncio.run(_task_tools_prefer_ctx_focus_task_over_global_active())
 
@@ -635,6 +770,28 @@ def test_tool_registry_discover_skips_hidden_smoke_failed_modules():
         assert registry.get(manifest_name) is not None
 
 
+def test_tool_registry_alias_available_during_tool_discovery():
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        stem = f"alias_import_tool_{time.time_ns()}"
+        manifest_name = f"probe.alias_import.{time.time_ns()}"
+        (root / f"{stem}.py").write_text(
+            "from tools.registry import ToolManifest, ToolResult, tool, tool_registry\n"
+            "assert tool_registry is not None\n"
+            f"@tool(ToolManifest(name={manifest_name!r}, description='alias import probe'))\n"
+            "async def _alias_import_probe(params, ctx):\n"
+            "    return ToolResult(summary='ok')\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        registry.discover(root)
+
+        assert registry.get(manifest_name) is not None
+
+
 def test_tool_registry_discover_rejects_legacy_manifest_kwargs():
     from tools.registry import ToolRegistry
 
@@ -976,6 +1133,59 @@ async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
             assert any(item.id == "local-r1" and item.run_id == run_id for item in reflections)
             filtered = await view.list_meta_reflections(limit=5, loop_level="single")
             assert any(item.id == "local-r1" for item in filtered)
+        finally:
+            await store.close()
+
+
+def test_task_workbench_merges_general_problem_solving_state():
+    asyncio.run(_task_workbench_merges_general_problem_solving_state())
+
+
+async def _task_workbench_merges_general_problem_solving_state():
+    from store.task import TaskStore
+    from tools.workbench import task_workbench
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "workbench.db")
+        await store.open()
+        try:
+            task_id = await store.add_task(
+                "general problem solving",
+                goal="verify durable workbench",
+                status="in_progress",
+                result_json={"cortex": {"domain": "git", "evidence": ["existing evidence"]}},
+            )
+            task = await store.get_task_by_id(task_id)
+            ctx = _tool_ctx(task_store=store, active_task=task)
+
+            result = await task_workbench(
+                {
+                    "workbench": {
+                        "intent": "retry push after capability discovery",
+                        "hypothesis": "transport failure is environmental",
+                        "capabilities": [{"name": "git ls-remote", "status": "available"}],
+                        "experiments": [{"target": "github", "status": "pending"}],
+                        "next_verification": "run git ls-remote",
+                        "unknown": "ignored",
+                    }
+                },
+                ctx,
+            )
+
+            assert result.skipped is False
+            assert result.metadata["tool_name"] == "task.workbench"
+            refreshed = await store.get_task_by_id(task_id)
+            assert refreshed is not None
+            cortex = refreshed.result_json["cortex"]
+            assert cortex["domain"] == "git"
+            assert cortex["intent"] == "retry push after capability discovery"
+            assert cortex["hypothesis"] == "transport failure is environmental"
+            assert cortex["evidence"] == ["existing evidence"]
+            assert cortex["capabilities"] == [{"name": "git ls-remote", "status": "available"}]
+            assert cortex["experiments"] == [{"target": "github", "status": "pending"}]
+            assert cortex["next_verification"] == "run git ls-remote"
+            assert "unknown" not in cortex
         finally:
             await store.close()
 
@@ -1851,6 +2061,52 @@ def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent
     asyncio.run(_subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution())
 
 
+def test_subagent_run_accepts_allowed_tools_list(monkeypatch):
+    asyncio.run(_subagent_run_accepts_allowed_tools_list(monkeypatch))
+
+
+async def _subagent_run_accepts_allowed_tools_list(monkeypatch):
+    import core.subagent as subagent_core
+    from core.subagent import SubagentResult
+    from tools.subagent import subagent_run
+
+    captured: dict[str, Any] = {}
+
+    class _FakeRunner:
+        async def run(self) -> SubagentResult:
+            return SubagentResult(
+                subagent_id="sub-list",
+                goal="list allowed tools",
+                ticks_run=1,
+                completed=True,
+                error=None,
+                last_summary="ok",
+                observations=[],
+            )
+
+    def _fake_make_subagent_runner(sub_cfg, *args, **kwargs):
+        captured["allowed_tools"] = sub_cfg.allowed_tools
+        return _FakeRunner()
+
+    monkeypatch.setattr(subagent_core, "make_subagent_runner", _fake_make_subagent_runner)
+
+    ctx = _tool_ctx(wm=SimpleNamespace(add=lambda *args, **kwargs: None))
+    ctx.judgment = object()
+    ctx.execution = object()
+    ctx.registry = object()
+
+    res = await subagent_run(
+        {
+            "goal": "list allowed tools",
+            "allowed_tools": ["task.list", "memory.search"],
+        },
+        ctx,
+    )
+
+    assert res.error is None
+    assert captured["allowed_tools"] == ["task.list", "memory.search"]
+
+
 async def _subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
@@ -2189,6 +2445,108 @@ async def _exec_empty_command():
     res = await exec_run({"command": ""}, ctx)
     assert res.skipped is True
     assert res.error == "EmptyCommand"
+
+
+def test_resource_guard_detects_embedding_oom_preflight():
+    from core.resource_guard import (
+        local_embedding_memory_preflight,
+        looks_like_local_embedding_command,
+        parse_mem_available_mib,
+    )
+
+    assert parse_mem_available_mib("MemAvailable:    1048576 kB\n") == 1024
+    assert looks_like_local_embedding_command("python build_embeddings.py --model BAAI/bge-m3")
+
+    blocked = local_embedding_memory_preflight(
+        command="python build_embeddings.py --model BAAI/bge-m3",
+        min_available_mib=12288,
+        available_mib=2048,
+    )
+
+    assert blocked.matched is True
+    assert blocked.ok is False
+    assert blocked.reason == "insufficient_available_memory_for_local_embedding"
+
+
+def test_exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch))
+
+
+async def _exec_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    import core.resource_guard as guard_mod
+    from tools.exec import exec_run
+
+    monkeypatch.setattr(guard_mod, "available_memory_mib", lambda: 1024)
+    ctx = _tool_ctx()
+
+    res = await exec_run(
+        {"command": "printf ok # /root/.lingzhou/workspace/build_embeddings.py"},
+        ctx,
+    )
+
+    assert res.skipped is False
+    assert res.error is None
+    assert res.metadata["resource_guard"]["available_mib"] == 1024
+    assert res.metadata["resource_guard"]["limit_mib"] == 768
+
+
+def test_shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    asyncio.run(_shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch))
+
+
+async def _shell_limits_local_embedding_rebuild_when_memory_low(monkeypatch):
+    import core.resource_guard as guard_mod
+    from tools.shell import shell_run
+
+    monkeypatch.setattr(guard_mod, "available_memory_mib", lambda: 1024)
+    ctx = _tool_ctx()
+
+    res = await shell_run(
+        {"command": "printf ok # sentence_transformers BAAI/bge-m3"},
+        ctx,
+    )
+
+    assert res.skipped is False
+    assert res.error is None
+    assert res.metadata["resource_guard"]["reason"] == "insufficient_available_memory_for_local_embedding"
+    assert res.metadata["resource_guard"]["limit_mib"] == 768
+
+
+def test_memory_embed_backfill_runs_in_small_batches():
+    asyncio.run(_memory_embed_backfill_runs_in_small_batches())
+
+
+async def _memory_embed_backfill_runs_in_small_batches():
+    from store.semantic import MemoryNode, SemanticMemory
+    from tools.memory import memory_embed_backfill
+
+    calls: list[str] = []
+
+    def _embed(text: str) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0]
+
+    with tempfile.TemporaryDirectory() as d:
+        semantic = SemanticMemory(Path(d), decay_lambda=0.0, embed_fn=_embed)
+        semantic.upsert(MemoryNode(id="n1", kind="fact", title="one", body="alpha"))
+        semantic.upsert(MemoryNode(id="n2", kind="fact", title="two", body="beta"))
+        ctx = _tool_ctx(semantic=semantic)
+
+        first = await memory_embed_backfill(
+            {"batch_size": 1, "sleep_seconds": 0, "model": "test-model", "max_text_chars": 16},
+            ctx,
+        )
+        second = await memory_embed_backfill(
+            {"batch_size": 10, "sleep_seconds": 0, "model": "test-model", "max_text_chars": 16},
+            ctx,
+        )
+
+        assert first.error is None
+        assert first.metadata["processed"] == 1
+        assert second.error is None
+        assert second.metadata["processed"] == 1
+        assert len(calls) == 2
+        assert semantic.get_unembedded(modality="text", model="test-model", limit=10) == []
 
 
 def test_process_kill():

@@ -700,6 +700,17 @@ def test_judgment_prompt_includes_existing_task_dedup_rules():
     assert "调用 `task.add` 或 `delegate_tasks` 前" in skill_body
 
 
+def test_judgment_prompt_includes_adaptive_problem_solving_rules():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+    skill_body = (_proj_root() / "prompts" / "skills" / "adaptive-problem-solving" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "adaptive-problem-solving" in prompt
+    assert "task.workbench" in prompt
+    assert "domain/intent" in prompt
+    assert "通用循环" in skill_body
+    assert "能力发现" in skill_body
+
+
 def test_judgment_prompt_keeps_detailed_rules_in_skills():
     prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
 
@@ -1264,6 +1275,61 @@ def test_gateway_provider_preflight_uses_default_auth_profile(monkeypatch, tmp_p
     assert gateway_mod._gateway_provider_preflight_error(cfg) is None
 
 
+def test_gateway_provider_preflight_accepts_codex_oauth_profile(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from provider.codex_oauth import save_codex_oauth_tokens
+    from store import auth as auth_store
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    save_codex_oauth_tokens(
+        tokens={"access_token": "codex-access-token", "refresh_token": "codex-refresh-token"}
+    )
+    cfg = Config.model_validate({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+    })
+
+    assert cfg.providers["openai-codex"].auth_profile_id == "openai-codex:default"
+    assert gateway_mod._gateway_provider_preflight_error(cfg) is None
+
+
+def test_gateway_provider_preflight_reports_missing_codex_oauth(monkeypatch, tmp_path):
+    from cli import gateway as gateway_mod
+    from core.config import Config
+    from store import auth as auth_store
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_CODEX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(auth_store, "AUTH_PROFILES_PATH", tmp_path / "missing-auth-profiles.json")
+    cfg = Config.model_validate({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex/responses",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+    })
+
+    error = gateway_mod._gateway_provider_preflight_error(cfg)
+
+    assert error is not None
+    assert "provider 'openai-codex' 缺少 Codex OAuth token" in error
+    assert "lingzhou auth login-codex" in error
+
+
 def test_gateway_provider_preflight_does_not_require_fallback_provider_key(monkeypatch, tmp_path):
     from cli import gateway as gateway_mod
     from core.config import Config
@@ -1765,7 +1831,6 @@ async def _chat_with_retry_trims_before_first_call_when_budget_exceeded():
     from core.judgment.executor import JudgmentExecutor
     from core.judgment.output import ModelSelection
     from provider.base import Message
-
     from provider.catalog import resolve_context_window
 
     class _Provider:
@@ -3057,6 +3122,12 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
         task = await store.get_task_by_id(task_id)
         assert task is not None
         assert task.result_json["last_run_status"] == "succeeded"
+        cortex = task.result_json["cortex"]
+        assert cortex["experiments"][0]["run_id"] == str(run_id)
+        assert cortex["experiments"][0]["tool"] == "llm.simulated"
+        assert cortex["experiments"][0]["status"] == "succeeded"
+        assert cortex["capabilities"][0] == {"name": "llm.simulated 可用", "status": "available"}
+        assert any("final answer ready" in item for item in cortex["evidence"])
 
         completed = episodic.list_events("run_completed", limit=5)
         assert completed and completed[-1]["run_id"] == run_id
@@ -3118,6 +3189,15 @@ async def test_refresh_running_runs_failed_fact_monitored_run_records_learning()
         assert reflections
         assert reflections[0].run_id == run_id
         assert reflections[0].target_kind == "task_split"
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        cortex = task.result_json["cortex"]
+        assert cortex["experiments"][0]["run_id"] == str(run_id)
+        assert cortex["experiments"][0]["status"] == "failed"
+        assert "run#" in cortex["failures"][0]
+        assert "EmptyPath" in cortex["failures"][0]
+        assert cortex["recovery_state"] == "recovering_from_run_failure"
+        assert "next_verification" in cortex
 
         double_loop = episodic.list_events("double_loop_reflection", limit=5)
         assert double_loop and double_loop[-1]["run_id"] == run_id
@@ -3340,6 +3420,7 @@ def test_tool_registry():
     assert "file.list" in names
     assert "file.edit" in names
     assert "exec" in names
+    assert "task.workbench" in names
     assert "process.write" in names
     assert "skill.list" in names
     assert "skill.search" in names
@@ -3923,6 +4004,12 @@ async def _execution_dispatch_records_run():
         assert active.result_json["last_run_id"] == runs[0].id
         assert active.result_json["last_run_status"] == "succeeded"
         assert active.result_json["worker_type"] == "tool-chain-worker"
+        cortex = active.result_json["cortex"]
+        assert cortex["experiments"][0]["run_id"] == str(runs[0].id)
+        assert cortex["experiments"][0]["tool"] == "file.read"
+        assert cortex["experiments"][0]["status"] == "succeeded"
+        assert cortex["capabilities"][0] == {"name": "file.read 可用", "status": "available"}
+        assert any("hello" in item for item in cortex["evidence"])
 
         await store.close()
 

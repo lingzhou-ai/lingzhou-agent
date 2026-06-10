@@ -3,6 +3,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from core.cortex import (
+    build_cortex_workspace,
+    build_problem_solving_guard,
+    format_cortex_workspace,
+    format_problem_solving_guard,
+)
 from core.persona.self_model import fmt_self_model
 
 from ..context.budget import apply_context_budget, resolve_judgment_prompt_budget
@@ -75,10 +81,27 @@ def _build_context_task_sections(
     runnable_tasks: list[Any],
     similar_tasks: list[Any],
     context_facts: list[Any],
+    failures: list[Any],
+    user_message: str = "",
 ) -> dict[str, Any]:
     task_id = task.id if task else None
+    cortex_workspace = build_cortex_workspace(
+        task=task,
+        recent_runs=recent_runs,
+        context_facts=context_facts,
+        failures=failures,
+    )
+    problem_solving_guard = build_problem_solving_guard(
+        task=task,
+        workspace=cortex_workspace,
+        user_message=user_message,
+        failures=failures,
+        recent_runs=recent_runs,
+    )
     sections = {
         "task_section": _fmt_task(task),
+        "cortex_workspace_section": format_cortex_workspace(cortex_workspace),
+        "problem_solving_guard_section": format_problem_solving_guard(problem_solving_guard),
         "task_facts_section": _fmt_context_facts(context_facts),
         "recent_runs_section": _fmt_recent_runs(recent_runs),
         "chat_history_section": _fmt_chat_history(recent_turns, max_chars=assembler._cfg.thresholds.chat_history_max_chars),

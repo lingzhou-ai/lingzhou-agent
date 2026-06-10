@@ -42,6 +42,31 @@ def test_codex_oauth_profile_roundtrip(tmp_path):
     assert resolved.profile_id == "openai-codex:default"
 
 
+def test_provider_definition_api_key_accepts_oauth_profile(monkeypatch, tmp_path):
+    from core.config_models.base import ProviderDefinition
+    from store.auth import set_oauth_profile
+    import store.auth as auth_mod
+
+    auth_path = tmp_path / "auth-profiles.json"
+    set_oauth_profile(
+        profile_id="openai-codex:default",
+        provider="openai-codex",
+        tokens={"access_token": "codex-access-token", "refresh_token": "codex-refresh-token"},
+        path=auth_path,
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", auth_path)
+    provider = ProviderDefinition(
+        type="openai_compat",
+        mode="codex",
+        base_url="https://chatgpt.com/backend-api/codex/responses",
+        api_key_env="OPENAI_API_KEY",
+        auth_profile_id="openai-codex:default",
+    )
+
+    assert provider.api_key == "codex-access-token"
+
+
 def test_codex_oauth_resolution_falls_back_to_env_for_bad_profile(monkeypatch, tmp_path):
     from provider.codex_oauth import resolve_codex_oauth_token
     from store.auth import save_auth_profiles
@@ -64,6 +89,56 @@ def test_codex_oauth_resolution_falls_back_to_env_for_bad_profile(monkeypatch, t
     assert resolved is not None
     assert resolved.token == "env-codex-token"
     assert resolved.source == "env:OPENAI_CODEX_ACCESS_TOKEN"
+
+
+def test_codex_device_code_uses_explicit_proxy(monkeypatch):
+    import provider.codex_oauth as codex_mod
+
+    captured: dict[str, Any] = {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "user_code": "ABCD-EFGH",
+                "device_auth_id": "device-auth-id",
+                "interval": 1,
+            }
+
+    def _post(url: str, **kwargs: Any) -> _Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _Response()
+
+    monkeypatch.setattr(codex_mod.httpx, "post", _post)
+
+    device = codex_mod.request_codex_device_code(proxy_url="http://proxy.internal:7890")
+
+    assert device.user_code == "ABCD-EFGH"
+    assert captured["kwargs"]["proxy"] == "http://proxy.internal:7890"
+    assert captured["kwargs"]["trust_env"] is False
+
+
+def test_codex_login_proxy_url_loaded_from_config(tmp_path):
+    from cli.auth import _load_codex_proxy_url
+
+    config_path = tmp_path / "lingzhou.json"
+    config_path.write_text(json.dumps({
+        "providers": {
+            "openai-codex": {
+                "type": "openai_compat",
+                "mode": "codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key_env": "OPENAI_CODEX_ACCESS_TOKEN",
+                "proxy_url": "http://proxy.internal:7890",
+            }
+        },
+        "model": "openai-codex/gpt-5.5",
+        "loop": {"workspace_dir": "~/.lingzhou/workspace"},
+    }), encoding="utf-8")
+
+    assert _load_codex_proxy_url(config_path) == "http://proxy.internal:7890"
 
 
 def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
@@ -195,6 +270,7 @@ def test_codex_mode_builds_responses_payload(monkeypatch, tmp_path):
         payload = provider._build_responses_payload([SimpleNamespace(role="user", content="hi")])
         assert payload["model"] == "gpt-5.5"
         assert payload["store"] is False
+        assert payload["stream"] is True
         assert payload["reasoning"]["effort"] == "low"
         assert payload["reasoning"]["summary"] == "auto"
         assert "temperature" not in payload
@@ -504,6 +580,21 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
 
 def test_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
     asyncio.run(_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path))
+
+
+def test_routing_overrides_reject_numeric_model_refs():
+    from core.loop.routing_overrides import normalize_routing_overrides
+
+    overrides = normalize_routing_overrides({
+        "reader": "openai-codex/4",
+        "reasoner": "openai-codex/gpt-5.5",
+        "repair": "bailian/qwen3.6-plus",
+    })
+
+    assert overrides == {
+        "reasoner": "openai-codex/gpt-5.5",
+        "repair": "bailian/qwen3.6-plus",
+    }
 
 
 async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
@@ -829,6 +920,75 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     assert call["payload"]["reasoning"] == {"effort": "high"}
     assert "temperature" not in call["payload"]
     assert "messages" not in call["payload"]
+
+
+def test_codex_responses_stream_parses_sse_output_text(monkeypatch):
+    import httpx
+
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    class _FakeMode:
+        def resolve_url(self, path: str) -> str:
+            return f"https://chatgpt.com/backend-api/codex{path}"
+
+        async def request_headers(self) -> dict[str, str]:
+            return {"Authorization": "Bearer codex-token"}
+
+    class _FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.is_closed = False
+            self.timeout = SimpleNamespace(read=30.0, connect=30.0)
+
+        async def post(self, url, *, content=None, headers=None, timeout=None):
+            self.calls.append({
+                "url": url,
+                "payload": json.loads(content or "{}"),
+                "headers": headers,
+                "timeout": timeout,
+            })
+            body = "\n\n".join([
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":"hello"}',
+                'event: response.output_text.delta\n'
+                'data: {"type":"response.output_text.delta","delta":" world"}',
+                'event: response.completed\n'
+                'data: {"type":"response.completed","response":{"output_text":"hello world","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}',
+                "data: [DONE]",
+            ])
+            return httpx.Response(
+                200,
+                text=body,
+                request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+            )
+
+    monkeypatch.setattr("provider.openai_compat.lookup_model_ref", lambda model_ref, catalog_path=None: {
+        "api": "responses",
+        "reasoning": True,
+        "request_params": {"unsupported": ["temperature"]},
+    } if model_ref == "openai-codex/gpt-5.4" else None)
+
+    fake_client = _FakeAsyncClient()
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider.model_ref = "openai-codex/gpt-5.4"
+    provider._provider_mode = "codex"
+    provider._model = "gpt-5.4"
+    provider._temperature = 0.7
+    provider._thinking_level = "low"
+    provider._extra_body = {}
+    provider._client = cast("Any", fake_client)
+    provider._mode = _FakeMode()
+    provider.last_usage = {}
+
+    result = asyncio.run(provider.chat([Message(role="user", content="hi")]))
+
+    assert result == "hello world"
+    assert fake_client.calls[0]["payload"]["stream"] is True
+    assert fake_client.calls[0]["payload"]["store"] is False
+    assert provider.last_usage["prompt_tokens"] == 3
+    assert provider.last_usage["completion_tokens"] == 2
+    assert provider.last_usage["total_tokens"] == 5
 
 
 def test_copilot_gpt5_responses_payload_omits_temperature():

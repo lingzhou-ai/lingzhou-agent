@@ -9,6 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
+from core.cortex import build_action_first_cortex_patch, extract_action_first_signal
 from core.immune import extract_constitution_boundaries, load_constitution
 from core.log_fields import tick_scope_fields
 from core.loop.runs.refresh import refresh_running_runs
@@ -16,7 +17,7 @@ from core.loop.task.runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
 )
-from core.metabolic import update_task_data
+from core.metabolic import create_task, update_task_data, update_task_result
 from core.perception import (
     EthosValues,
     build_emotion_replay,
@@ -73,6 +74,18 @@ async def _maybe_steer_active_task_from_user_message(
         update["had_user_inbox"] = True
     writer = metabolic if metabolic is not None else task_store
     await update_task_data(writer, active_task.id, update, source="loop/tick/user_inbox")
+    result_json = getattr(active_task, "result_json", {}) or {}
+    existing_cortex = result_json.get("cortex") if isinstance(result_json, dict) else None
+    result_patch = build_action_first_cortex_patch(
+        existing_cortex=existing_cortex if isinstance(existing_cortex, dict) else {},
+        user_message=user_message,
+    )
+    if result_patch:
+        await update_task_result(writer, active_task.id, result_patch, source="loop/tick/action_first")
+        if isinstance(result_json, dict):
+            merged_result = dict(result_json)
+            merged_result.update(result_patch)
+            active_task.result_json = merged_result
     active_task.extras = dict(extras) if isinstance(extras, dict) else {}
     active_task.extras["inbox_messages"] = existing
     if is_self_drive:
@@ -100,6 +113,59 @@ async def _consume_active_task_inbox(task_store: Any, active_task: Any) -> Any:
     return active_task
 
 
+def _user_action_task_title(user_message: str) -> str:
+    text = " ".join(str(user_message or "").split())
+    if len(text) > 40:
+        text = text[:37] + "..."
+    return f"用户请求：{text or '待执行动作'}"
+
+
+async def _maybe_create_action_first_task_from_user_message(
+    loop: Any,
+    *,
+    active_task: Any,
+    user_message: str,
+    chat_id: str | None,
+) -> Any:
+    if active_task is not None:
+        return active_task
+    signal = extract_action_first_signal(user_message)
+    if not signal.must_act:
+        return active_task
+
+    result_patch = build_action_first_cortex_patch(existing_cortex=None, user_message=user_message)
+    next_step = signal.minimum_next_action or "执行一个能产生新证据的最小动作。"
+    data = {
+        "title": _user_action_task_title(user_message),
+        "goal": str(user_message or "").strip(),
+        "priority": "normal",
+        "source": "external",
+        "status": "pending",
+        "next_step": next_step,
+        "model_tier": "reasoner",
+        "result_json": result_patch,
+        "extras": {"created_from_user_message": True},
+    }
+    try:
+        task_id = await create_task(
+            loop,
+            proposal_source="loop/tick/action_first",
+            decision_basis="user message requires verifiable action",
+            **data,
+        )
+    except Exception:
+        task_store = getattr(loop, "_task_store", None)
+        adder = getattr(task_store, "add_task", None)
+        if adder is None:
+            return active_task
+        task_id = await adder(**data)
+
+    task = await loop._task_store.get_task_by_id(int(task_id))
+    await _bind_chat_id(loop, task, chat_id)
+    _log.info("[task-inbox] created action-first task=%s from user message", task_id)
+    return task
+
+
 async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: str | None) -> Any:
     active_task = await prepare_focus_task(loop, user_message=user_message, chat_id=chat_id)
     if (
@@ -123,6 +189,12 @@ async def _prepare_active_task_for_tick(loop: Any, user_message: str, chat_id: s
         _loop_metabolic(loop),
     )
     active_task = await _consume_active_task_inbox(loop._task_store, active_task)
+    active_task = await _maybe_create_action_first_task_from_user_message(
+        loop,
+        active_task=active_task,
+        user_message=user_message,
+        chat_id=chat_id,
+    )
     await _bind_chat_id(loop, active_task, chat_id)
     await claim_focus_task(loop, active_task, chat_id=chat_id, clear_current=not bool(str(chat_id or "").strip()))
 

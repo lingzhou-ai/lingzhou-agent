@@ -161,6 +161,10 @@ def test_finalize_focus_task_parks_user_facing_pause_into_waiting():
     asyncio.run(_finalize_focus_task_parks_user_facing_pause_into_waiting())
 
 
+def test_finalize_focus_task_keeps_wait_with_next_step_runnable():
+    asyncio.run(_finalize_focus_task_keeps_wait_with_next_step_runnable())
+
+
 async def _finalize_focus_task_parks_user_facing_pause_into_waiting():
     from core.judgment import JudgmentOutput
     from core.loop.cycle.focus import claim_focus_task, finalize_focus_task
@@ -202,6 +206,56 @@ async def _finalize_focus_task_parks_user_facing_pause_into_waiting():
         assert refreshed.status == "waiting"
         assert refreshed.wait_kind == "external"
         assert refreshed.wait_key == "chat:test"
+
+        current_focus, current_exists = await store.get_fact("focus:current_task_id")
+        chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")
+        assert current_exists is True
+        assert current_focus == str(task_id)
+        assert chat_exists is True
+        assert chat_focus == str(task_id)
+        await store.close()
+
+
+async def _finalize_focus_task_keeps_wait_with_next_step_runnable():
+    from core.judgment import JudgmentOutput
+    from core.loop.cycle.focus import claim_focus_task, finalize_focus_task
+    from store.task import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "focus-finalize-runnable.db")
+        await store.open()
+        task_id = await store.add_task(
+            "自我升级任务",
+            goal="回复用户后继续内部推进",
+            status="in_progress",
+            next_step="查询 open tasks 与最近 runs",
+        )
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        await store.set_fact(f"task:{task.id}:chat_id", "chat:test", scope="task")
+
+        loop = SimpleNamespace(_task_store=store)
+        await claim_focus_task(loop, task, chat_id="chat:test", clear_current=True)
+        action = JudgmentOutput(
+            decision="wait",
+            reply_to_user="我会继续查询 open tasks 与最近 runs。",
+            next_step="查询 open tasks 与最近 10 条 runs，并写入 task.workbench",
+        )
+
+        finalized = await finalize_focus_task(
+            loop,
+            action=action,
+            active_task=task,
+            chat_id=None,
+            user_message="",
+        )
+
+        assert finalized is not None
+        assert finalized.status == "in_progress"
+        refreshed = await store.get_task_by_id(task_id)
+        assert refreshed is not None
+        assert refreshed.status == "in_progress"
+        assert refreshed.wait_kind == ""
 
         current_focus, current_exists = await store.get_fact("focus:current_task_id")
         chat_focus, chat_exists = await store.get_fact("focus:chat:chat:test")
@@ -282,8 +336,16 @@ def test_wait_after_cycle_uses_focus_task_instead_of_global_active():
     asyncio.run(_wait_after_cycle_uses_focus_task_instead_of_global_active())
 
 
+def test_wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task():
+    asyncio.run(_wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task())
+
+
 def test_prepare_active_task_ignores_self_drive_for_user_message():
     asyncio.run(_prepare_active_task_ignores_self_drive_for_user_message())
+
+
+def test_prepare_active_task_creates_action_first_task_for_executable_user_message():
+    asyncio.run(_prepare_active_task_creates_action_first_task_for_executable_user_message())
 
 
 async def _adopt_result_task_picks_task_created_by_task_add():
@@ -379,6 +441,58 @@ async def _wait_after_cycle_uses_focus_task_instead_of_global_active():
         assert seen_before_task == [focus_id]
 
 
+async def _wait_after_cycle_dispatcher_uses_max_idle_gap_without_focus_task():
+    from core.loop.cycle.driver import _wait_after_cycle_impl
+    from store.task import TaskStore
+
+    class _Dispatcher:
+        enabled = True
+
+        def has_running(self) -> bool:
+            return False
+
+        def has_pending(self) -> bool:
+            return False
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "dispatcher-idle-gap.db")
+        await store.open()
+        seen: list[tuple[float, int | None]] = []
+
+        async def _capture_wait(loop: object, max_wait: float, before_task: object) -> None:
+            seen.append((max_wait, getattr(before_task, "id", None)))
+
+        from core.loop.cycle import driver as driver_module
+
+        original_wait = driver_module._wait_for_event_impl
+        driver_module._wait_for_event_impl = _capture_wait  # type: ignore[assignment]
+        try:
+            loop = SimpleNamespace(
+                _cfg=SimpleNamespace(
+                    loop=SimpleNamespace(
+                        arousal_min_factor=0.8,
+                        arousal_sensitivity=0.0,
+                        arousal_neutral=0.5,
+                        active_idle_gap=500,
+                        min_act_gap=100,
+                        idle_with_task_bounds=[100, 30000],
+                        max_idle_gap=60000,
+                        wake_poll_interval=100,
+                        wake_on_task_change=True,
+                    )
+                ),
+                _emotion=SimpleNamespace(arousal=0.5),
+                _tick_dispatcher=_Dispatcher(),
+                _task_store=store,
+            )
+            await _wait_after_cycle_impl(loop)
+        finally:
+            driver_module._wait_for_event_impl = original_wait  # type: ignore[assignment]
+            await store.close()
+
+        assert seen == [(60.0, None)]
+
+
 async def _prepare_active_task_ignores_self_drive_for_user_message():
     from core.loop.tick import prep as prep_module
 
@@ -442,3 +556,52 @@ async def _prepare_active_task_ignores_self_drive_for_user_message():
     assert active is None
     assert seen_claims == [None]
     assert self_drive_task.extras == {}
+
+
+async def _prepare_active_task_creates_action_first_task_for_executable_user_message():
+    from core.loop.tick import prep as prep_module
+    from memory.working import WorkingMemory
+    from store.task import TaskStore
+
+    async def _prepare_focus_task(loop, *, user_message, chat_id):
+        return None
+
+    async def _noop_ingest(*args, **kwargs):
+        return None
+
+    async def _consume_hints(task_store, active_task, wm, metabolic=None):
+        return active_task
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "action-first-focus.db")
+        await store.open()
+        original_prepare = prep_module.prepare_focus_task
+        original_ingest = prep_module._ingest_actionable_meta_reflections
+        original_hints = prep_module._consume_task_runtime_hints
+        try:
+            prep_module.prepare_focus_task = _prepare_focus_task  # type: ignore[assignment]
+            prep_module._ingest_actionable_meta_reflections = _noop_ingest  # type: ignore[assignment]
+            prep_module._consume_task_runtime_hints = _consume_hints  # type: ignore[assignment]
+
+            loop = SimpleNamespace(
+                _task_store=store,
+                _wm=WorkingMemory(),
+                _metabolic=None,
+            )
+            active = await prep_module._prepare_active_task_for_tick(
+                loop,
+                user_message="请你下载 https://example.com/config.yaml 并验证",
+                chat_id="chat:action-first",
+            )
+        finally:
+            prep_module.prepare_focus_task = original_prepare  # type: ignore[assignment]
+            prep_module._ingest_actionable_meta_reflections = original_ingest  # type: ignore[assignment]
+            prep_module._consume_task_runtime_hints = original_hints  # type: ignore[assignment]
+            await store.close()
+
+    assert active is not None
+    assert active.source == "external"
+    assert active.next_step
+    cortex = active.result_json["cortex"]
+    assert cortex["action_first"]["must_act"] is True
+    assert {"kind": "url", "value": "https://example.com/config.yaml"} in cortex["captured_inputs"]

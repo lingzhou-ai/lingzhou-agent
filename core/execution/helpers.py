@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.config_models import ThresholdsConfig, run_result_memory_affect
 from core.contracts.execution import action_key_param
+from core.cortex import build_auto_cortex_result_patch
 from core.log_fields import execution_scope_fields
 from core.metabolic import add_semantic_memory, update_run, update_task_result
 from store.task import build_task_run_result_patch
@@ -665,18 +666,32 @@ async def finalize_run(
             task_store=ctx.task_store,
         )
     if resolved_task_id:
+        task_result_patch = build_task_run_result_patch(
+            run_id=run_id,
+            status=status,
+            worker_type=str(result.metadata.get("worker_type") or ""),
+            tool_name=str(result.metadata.get("tool_name") or ""),
+            session_id=str(result.metadata.get("session_id") or ""),
+            summary=result.summary,
+            error=result.error,
+        )
+        task_result_patch.update(await build_auto_cortex_result_patch(
+            task_store=ctx.task_store,
+            task_id=resolved_task_id,
+            run_id=run_id,
+            tool_name=str(result.metadata.get("tool_name") or ""),
+            status=status,
+            summary=result.summary,
+            error=result.error,
+            evidence=result.evidence,
+            progress=progress,
+            state_delta=result.state_delta if isinstance(result.state_delta, dict) else {},
+            artifact_paths=result.artifact_paths,
+        ))
         await update_task_result(
             ctx,
             resolved_task_id,
-            build_task_run_result_patch(
-                run_id=run_id,
-                status=status,
-                worker_type=str(result.metadata.get("worker_type") or ""),
-                tool_name=str(result.metadata.get("tool_name") or ""),
-                session_id=str(result.metadata.get("session_id") or ""),
-                summary=result.summary,
-                error=result.error,
-            ),
+            task_result_patch,
             source="execution/helpers/finalize_run",
         )
     meta = build_meta_reflection(
