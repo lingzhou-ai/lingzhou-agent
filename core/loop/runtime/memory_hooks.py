@@ -7,7 +7,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from core.metabolic import add_semantic_memory, submit_fact
+from core.metabolic import add_semantic_memory, create_task, submit_fact
 from memory.consolidation import (
     build_consolidation_plan,
     build_daily_summary_node,
@@ -16,7 +16,7 @@ from memory.consolidation import (
 )
 from memory.working import WMItem
 
-from ..cycle.focus import resolve_focus_task
+from ..cycle.focus import claim_focus_task, resolve_focus_task
 
 _log = logging.getLogger("lingzhou.loop")
 
@@ -37,6 +37,62 @@ def _fmt_drive_template_list(items: Any) -> str:
     if not isinstance(items, list) or not items:
         return "- （未提供）"
     return "\n".join(f"- {str(item)}" for item in items)
+
+
+async def _create_self_drive_task(loop: Any, task_template: dict[str, Any], signal: Any) -> int | None:
+    """把高置信自驱信号转成一个可推进的轻量任务，而不是只停留在 WM 念头。"""
+    evidence_needed = [
+        str(item)
+        for item in task_template.get("evidence_needed", [])
+        if str(item or "").strip()
+    ]
+    cortex = {
+        "domain": str(task_template.get("domain") or "self_evolution"),
+        "intent": "self_drive_growth",
+        "hypothesis": "当前空闲期可能存在一个低成本、可验证的自我成长机会。",
+        "capabilities": ["读取状态/日志/任务", "整理记忆", "形成后续验证条件"],
+        "evidence": [],
+        "open_questions": [
+            str(task_template.get("question") or "当前最值得验证的自驱成长问题是什么？"),
+            "这个探索是否能改善连续性、能力边界或错误预防？",
+        ],
+        "next_verification": str(task_template.get("next_step") or "执行一次低成本取证动作。"),
+        "completion_checks": [
+            str(task_template.get("done_condition") or "能用具体证据回答问题，并写出下一步是否需要行动。")
+        ],
+    }
+    data = {
+        "title": str(task_template.get("title") or "自驱成长探索"),
+        "goal": str(task_template.get("goal") or ""),
+        "priority": "low",
+        "source": "self_drive",
+        "status": "pending",
+        "next_step": str(task_template.get("next_step") or ""),
+        "model_tier": "reasoner",
+        "result_json": {"cortex": cortex},
+        "extras": {
+            "drive_type": str(getattr(signal, "drive_type", "") or "explore"),
+            "curiosity_score": float(getattr(signal, "curiosity_score", 0.0) or 0.0),
+            "rationale": str(getattr(signal, "rationale", "") or ""),
+            "evidence_needed": evidence_needed,
+            "done_condition": str(task_template.get("done_condition") or ""),
+        },
+    }
+    try:
+        task_id = await create_task(
+            loop,
+            proposal_source="self_drive/auto_task",
+            decision_basis="high-confidence self-drive signal with no pending self-drive task",
+            **data,
+        )
+    except Exception:
+        adder = getattr(getattr(loop, "_task_store", None), "add_task", None)
+        if adder is None:
+            return None
+        task_id = await adder(**data)
+    task = await loop._task_store.get_task_by_id(int(task_id))
+    await claim_focus_task(loop, task, clear_current=True)
+    return int(task_id)
 
 
 async def emit_self_drive_signal(loop: Any) -> None:
@@ -108,6 +164,9 @@ async def emit_self_drive_signal(loop: Any) -> None:
     task_template = loop._self_drive.generate_exploration_task(
         signal.suggested_domain or "self_evolution"
     )
+    created_task_id: int | None = None
+    if not pending_sd:
+        created_task_id = await _create_self_drive_task(loop, task_template, signal)
     if signal.drive_type == "consolidate":
         drive_content = (
             "[自驱事件]\n"
@@ -117,6 +176,7 @@ async def emit_self_drive_signal(loop: Any) -> None:
             f"curiosity_score: {signal.curiosity_score:.2f}\n"
             f"signal_rationale: {signal.rationale}\n"
             f"pending_self_drive_tasks: {len(pending_sd)}\n"
+            f"created_self_drive_task: {created_task_id or 'none'}\n"
             f"last_self_drive_done: {last_done_ago}\n"
             "observed_need: recent traces may benefit from consolidation before new exploration.\n"
             "proposal:\n"
@@ -138,6 +198,7 @@ async def emit_self_drive_signal(loop: Any) -> None:
             f"signal_rationale: {signal.rationale}\n"
             f"candidate_domain: {signal.suggested_domain or 'self_evolution'}\n"
             f"pending_self_drive_tasks: {len(pending_sd)}\n"
+            f"created_self_drive_task: {created_task_id or 'none'}\n"
             f"last_self_drive_done: {last_done_ago}\n"
             f"candidate_task_title: {task_template['title']}\n"
             f"candidate_task_goal: {task_template['goal']}\n"
@@ -166,10 +227,11 @@ async def emit_self_drive_signal(loop: Any) -> None:
     loop._self_drive._last_injected_at = time.monotonic()
 
     _log.info(
-        "[self_drive] 注入 WM 信号 C=%.2f domain=%s idle=%d rationale=%s",
+        "[self_drive] 注入 WM 信号 C=%.2f domain=%s idle=%d created_task=%s rationale=%s",
         signal.curiosity_score,
         signal.suggested_domain,
         loop._behavior.wait_streak,
+        created_task_id or "-",
         signal.rationale,
     )
 

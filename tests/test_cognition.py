@@ -179,8 +179,12 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
-def test_self_drive_signal_does_not_auto_create_task():
-    asyncio.run(_self_drive_signal_does_not_auto_create_task())
+def test_self_drive_signal_auto_creates_lightweight_growth_task():
+    asyncio.run(_self_drive_signal_auto_creates_lightweight_growth_task())
+
+
+def test_self_drive_signal_does_not_duplicate_pending_growth_task():
+    asyncio.run(_self_drive_signal_does_not_duplicate_pending_growth_task())
 
 
 def test_self_drive_feedback_receives_tick_event():
@@ -302,7 +306,7 @@ def test_runtime_lifecycle_marks_clean_exit(tmp_path):
     assert snapshot["exit_type"] == "clean"
 
 
-async def _self_drive_signal_does_not_auto_create_task():
+async def _self_drive_signal_auto_creates_lightweight_growth_task():
     os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
     os.environ.setdefault("GITHUB_TOKEN", "test-token")
     from core.config import Config
@@ -324,7 +328,14 @@ async def _self_drive_signal_does_not_auto_create_task():
             await loop._emit_self_drive_signal()
 
             tasks = await loop.task_store.list_tasks(limit=20)
-            assert tasks == []
+            self_drive_tasks = [task for task in tasks if task.source == "self_drive"]
+            assert len(self_drive_tasks) == 1
+            task = self_drive_tasks[0]
+            assert task.status == "pending"
+            assert task.next_step
+            assert task.model_tier == "reasoner"
+            assert task.result_json["cortex"]["intent"] == "self_drive_growth"
+            assert task.extras["evidence_needed"]
 
             wm_items = loop._wm.get_top(10)
             self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
@@ -332,6 +343,7 @@ async def _self_drive_signal_does_not_auto_create_task():
             content = self_drive_items[0]["content"]
             assert "[自驱事件]" in content
             assert "scope: observation" in content
+            assert f"created_self_drive_task: {task.id}" in content
             assert "proposal:" in content
             assert "candidate_question:" in content
             assert "candidate_evidence_needed:" in content
@@ -339,7 +351,46 @@ async def _self_drive_signal_does_not_auto_create_task():
             assert "open_questions:" in content
             assert "available_directions:" in content
             assert "task.add" not in content
-            assert "source=self_drive" not in content
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
+async def _self_drive_signal_does_not_duplicate_pending_growth_task():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg = Config.load(_proj_root() / "lingzhou.json.example")
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            existing_id = await loop.task_store.add_task(
+                "已有自驱成长任务",
+                goal="避免重复创建",
+                source="self_drive",
+                status="pending",
+                next_step="继续已有成长任务",
+            )
+            loop._behavior._wait_streak = cfg.thresholds.curiosity_idle_min_cycles
+
+            await loop._emit_self_drive_signal()
+
+            tasks = await loop.task_store.list_tasks(limit=20)
+            self_drive_tasks = [task for task in tasks if task.source == "self_drive"]
+            assert [task.id for task in self_drive_tasks] == [existing_id]
+
+            wm_items = loop._wm.get_top(10)
+            self_drive_items = [item for item in wm_items if item["kind"] == "self_drive"]
+            assert self_drive_items == []
         finally:
             await loop.task_store.close()
             await loop.provider.close()
